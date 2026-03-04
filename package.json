@@ -1,0 +1,44 @@
+{
+  "name": "autoscreenshot",
+  "version": "0.1.0",
+  "description": "AI browser screenshot assistant with Eagle import support",
+  "type": "module",
+  "bin": {
+    "autosnap": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.json",
+    "build:web": "vite build --config web/vite.config.ts",
+    "start": "node dist/src/server/index.js",
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx src/server/index.ts",
+    "dev:web": "vite --config web/vite.config.ts",
+    "dev:cli": "tsx src/cli.ts",
+    "preautosnap": "npm run build:server",
+    "autosnap": "node dist/src/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@fastify/static": "^7.0.4",
+    "better-sqlite3": "^11.10.0",
+    "fastify": "^4.29.1",
+    "nanoid": "^5.1.5",
+    "playwright": "^1.53.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.21",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.5.2",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^2.1.8"
+  }
+}

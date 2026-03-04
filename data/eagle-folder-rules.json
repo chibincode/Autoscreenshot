@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "policy": {
+    "allowCreateFolder": false,
+    "missingFolderBehavior": "root"
+  },
+  "fallbackByName": true,
+  "urlNormalization": {
+    "stripQuery": true,
+    "stripHash": true,
+    "stripLocalePrefix": true
+  },
+  "sections": {
+    "hero": {
+      "folderId": "JZT9CKXK48QQ0",
+      "nameHints": ["section_hero", "hero"]
+    },
+    "feature": {
+      "folderId": "K60RMBANRMW95",
+      "nameHints": ["section_featured", "section_feature", "feature", "featured"]
+    },
+    "testimonial": {
+      "folderId": "K096I808K7O0H",
+      "nameHints": ["section_testimonials", "section_testimonial", "testimonials", "testimonial"]
+    },
+    "pricing": {
+      "folderId": "K0NKU4XF3F9QH",
+      "nameHints": ["section_pricing", "pricing", "price"]
+    },
+    "faq": {
+      "folderId": "K3ACYMZDU16Y1",
+      "nameHints": ["section_faq", "faq"]
+    },
+    "blog": {
+      "folderId": "K0998CNURE01U",
+      "nameHints": ["section_blog", "blog"]
+    },
+    "footer": {
+      "folderId": "K0B4OBLNAZSOR",
+      "nameHints": ["section_footer", "footer"]
+    }
+  },
+  "fullPage": {
+    "home": {
+      "folderId": "JZR6J2FS0KW4W",
+      "pathRules": ["/"]
+    },
+    "pricing": {
+      "folderId": "K0NKU4XF3F9QH",
+      "pathRules": ["/pricing"]
+    },
+    "about": {
+      "folderId": "JZULJID2HWWPV",
+      "pathRules": ["/about"]
+    },
+    "careers": {
+      "folderId": "K3ACUQBFHQCTL",
+      "pathRules": ["/careers"]
+    },
+    "blog_list": {
+      "folderId": "K09RV5HAHZ1E5",
+      "pathRules": ["/blog", "/blog/page/*", "/blog/tag/*"]
+    },
+    "blog_detail": {
+      "folderId": "K09RVEOJXWLA9",
+      "pathRules": ["/blog/:slug"]
+    },
+    "news": {
+      "folderId": "KDXA85NDSDOVK",
+      "pathRules": ["/news"]
+    },
+    "help": {
+      "folderId": "K4VENZVJKVIHP",
+      "pathRules": ["/help"]
+    },
+    "login": {
+      "folderId": "JZR6M1QFMZYMN",
+      "pathRules": ["/login"]
+    },
+    "signup": {
+      "folderId": "JZR6MFOA465XT",
+      "pathRules": ["/sign-up", "/signup", "/register"]
+    },
+    "products_list": {
+      "folderId": "K6INX63YA0AD8",
+      "pathRules": ["/products"]
+    },
+    "product_detail": {
+      "folderId": "K6INXZ75D5M84",
+      "pathRules": ["/products/:slug"]
+    },
+    "downloads_list": {
+      "folderId": "KSHBG91WK448P",
+      "pathRules": ["/downloads"]
+    },
+    "download_detail": {
+      "folderId": "K6FY6W2TDCH1Q",
+      "pathRules": ["/downloads/:slug"]
+    },
+    "integration": {
+      "folderId": "LR5VC4L6FB0KO",
+      "pathRules": ["/integration", "/integrations"]
+    }
+  }
+}
