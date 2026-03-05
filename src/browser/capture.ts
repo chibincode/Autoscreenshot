@@ -1,18 +1,17 @@
 import path from "node:path";
 import { chromium } from "playwright";
 import { detectSections } from "./section-detector.js";
+import { buildFixedSectionClip } from "./section-clip.js";
 import type {
   CaptureRunResult,
   ParsedTask,
   SectionDetectionDebug,
-  SectionResult,
   SectionScope,
 } from "../types.js";
 import { ensureDir, slugify, timestampForFile } from "../utils/manifest.js";
 
 const JPG_EXTENSION = "jpg";
 export const DPR_PIXEL_THRESHOLD = 120_000_000;
-const SECTION_TARGET_ASPECT_RATIO = 16 / 9;
 
 interface CaptureTaskOptions {
   outputDir: string;
@@ -102,51 +101,6 @@ async function warmupLazyLoad(page: import("playwright").Page): Promise<void> {
   await page.waitForTimeout(120);
 }
 
-function clampClip(section: SectionResult, pageSize: { width: number; height: number }) {
-  const padding = 12;
-  const x = Math.max(0, Math.round(section.bbox.x - padding));
-  const y = Math.max(0, Math.round(section.bbox.y - padding));
-  const right = Math.min(pageSize.width, Math.round(section.bbox.x + section.bbox.width + padding));
-  const bottom = Math.min(
-    pageSize.height,
-    Math.round(section.bbox.y + section.bbox.height + padding),
-  );
-  const width = Math.max(20, right - x);
-  const height = Math.max(20, bottom - y);
-  const centerX = x + width / 2;
-  const centerY = y + height / 2;
-
-  let targetWidth = width;
-  let targetHeight = height;
-  const currentRatio = width / Math.max(1, height);
-  if (currentRatio > SECTION_TARGET_ASPECT_RATIO) {
-    targetHeight = Math.round(targetWidth / SECTION_TARGET_ASPECT_RATIO);
-  } else {
-    targetWidth = Math.round(targetHeight * SECTION_TARGET_ASPECT_RATIO);
-  }
-
-  targetWidth = Math.min(pageSize.width, Math.max(20, targetWidth));
-  targetHeight = Math.min(pageSize.height, Math.max(20, targetHeight));
-
-  if (targetWidth / Math.max(1, targetHeight) > SECTION_TARGET_ASPECT_RATIO) {
-    targetHeight = Math.min(pageSize.height, Math.max(20, Math.round(targetWidth / SECTION_TARGET_ASPECT_RATIO)));
-  } else {
-    targetWidth = Math.min(pageSize.width, Math.max(20, Math.round(targetHeight * SECTION_TARGET_ASPECT_RATIO)));
-  }
-
-  const maxX = Math.max(0, pageSize.width - targetWidth);
-  const maxY = Math.max(0, pageSize.height - targetHeight);
-  const targetX = Math.min(maxX, Math.max(0, Math.round(centerX - targetWidth / 2)));
-  const targetY = Math.min(maxY, Math.max(0, Math.round(centerY - targetHeight / 2)));
-
-  return {
-    x: targetX,
-    y: targetY,
-    width: targetWidth,
-    height: targetHeight,
-  };
-}
-
 async function captureOnce(
   task: ParsedTask,
   options: CaptureTaskOptions,
@@ -206,11 +160,16 @@ async function captureOnce(
         options.sectionScope,
         sectionRequests,
         options.classicMaxSections,
+        pageSize,
       );
       sectionDebug = detected.debug;
+      const labelCounts = new Map<string, number>();
       for (const section of detected.sections) {
-        const clip = clampClip(section, pageSize);
-        const label = section.sectionType === "unknown" ? "section" : section.sectionType;
+        const clip = buildFixedSectionClip(section, pageSize);
+        const baseLabel = section.sectionType === "unknown" ? "section" : section.sectionType;
+        const count = (labelCounts.get(baseLabel) ?? 0) + 1;
+        labelCounts.set(baseLabel, count);
+        const label = count === 1 ? baseLabel : `${baseLabel}_${count}`;
         const sectionName = buildFileName(
           domain,
           timestamp,

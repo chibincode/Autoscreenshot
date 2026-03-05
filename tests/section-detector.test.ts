@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { classifySectionCandidate } from "../src/browser/section-detector.js";
+import {
+  classifySectionCandidate,
+  pickSectionsForScope,
+} from "../src/browser/section-detector.js";
 
 function baseCandidate() {
   return {
@@ -21,6 +24,44 @@ function baseCandidate() {
     mailtoCount: 0,
     telCount: 0,
     isSticky: false,
+  };
+}
+
+function scoreBreakdown(base: Partial<Record<string, number>>) {
+  return {
+    hero: 0,
+    feature: 0,
+    testimonial: 0,
+    pricing: 0,
+    team: 0,
+    faq: 0,
+    blog: 0,
+    cta: 0,
+    contact: 0,
+    footer: 0,
+    unknown: 0,
+    ...base,
+  };
+}
+
+function scoredSection(overrides: Record<string, unknown>) {
+  const bbox = (overrides.bbox as { x: number; y: number; width: number; height: number }) ?? {
+    x: 0,
+    y: 0,
+    width: 1920,
+    height: 400,
+  };
+  return {
+    sectionType: "unknown",
+    selector: "section",
+    bbox,
+    confidence: 0.5,
+    area: bbox.width * bbox.height,
+    tagName: "section",
+    textPreview: "",
+    scores: scoreBreakdown({ unknown: 1 }),
+    signals: [],
+    ...overrides,
   };
 }
 
@@ -237,5 +278,192 @@ describe("classifySectionCandidate", () => {
         (signal) => signal.rule === "conflict:testimonial_strong_vs_hero",
       ),
     ).toBe(true);
+  });
+
+  it("prioritizes faq on strong faq phrases even with testimonial noise", () => {
+    const candidate = {
+      ...baseCandidate(),
+      className: "faq customer-reviews",
+      text: "F.A.Q Questions & answers. Frequently asked questions. Customer review and quote.",
+      headingCount: 1,
+      y: 2500,
+      height: 820,
+    };
+    const result = classifySectionCandidate(candidate, 1080);
+    expect(result.sectionType).toBe("faq");
+    expect(result.scores.faq).toBeGreaterThan(result.scores.testimonial);
+    expect(
+      result.signals.some((signal) => signal.rule.startsWith("phrase:faq_strong:")),
+    ).toBe(true);
+    expect(
+      result.signals.some((signal) => signal.rule === "conflict:testimonial_strong"),
+    ).toBe(false);
+  });
+});
+
+describe("pickSectionsForScope classic selection", () => {
+  it("selects up to 3 feature sections in classic mode", () => {
+    const sections = [
+      scoredSection({
+        sectionType: "hero",
+        selector: "#hero",
+        confidence: 0.9,
+        scores: scoreBreakdown({ hero: 8 }),
+      }),
+      scoredSection({
+        sectionType: "feature",
+        selector: "#feature-1",
+        confidence: 0.95,
+        bbox: { x: 0, y: 1800, width: 1920, height: 500 },
+        scores: scoreBreakdown({ feature: 7 }),
+      }),
+      scoredSection({
+        sectionType: "feature",
+        selector: "#feature-2",
+        confidence: 0.92,
+        bbox: { x: 0, y: 2600, width: 1920, height: 500 },
+        scores: scoreBreakdown({ feature: 6 }),
+      }),
+      scoredSection({
+        sectionType: "feature",
+        selector: "#feature-3",
+        confidence: 0.9,
+        bbox: { x: 0, y: 3400, width: 1920, height: 500 },
+        scores: scoreBreakdown({ feature: 6 }),
+      }),
+      scoredSection({
+        sectionType: "feature",
+        selector: "#feature-4",
+        confidence: 0.88,
+        bbox: { x: 0, y: 4200, width: 1920, height: 500 },
+        scores: scoreBreakdown({ feature: 5 }),
+      }),
+      scoredSection({
+        sectionType: "testimonial",
+        selector: "#testimonial",
+        confidence: 0.85,
+        bbox: { x: 0, y: 5200, width: 1920, height: 600 },
+        scores: scoreBreakdown({ testimonial: 7 }),
+      }),
+    ] as any;
+
+    const selected = pickSectionsForScope(
+      sections,
+      "classic",
+      [],
+      10,
+      { width: 1920, height: 9000 },
+    );
+
+    const featureCount = selected.filter((item) => item.sectionType === "feature").length;
+    expect(featureCount).toBe(3);
+  });
+
+  it("respects classicMaxSections total limit while allowing multiple features", () => {
+    const sections = [
+      scoredSection({ sectionType: "hero", selector: "#hero", confidence: 0.9 }),
+      scoredSection({
+        sectionType: "feature",
+        selector: "#feature-1",
+        confidence: 0.95,
+        bbox: { x: 0, y: 1800, width: 1920, height: 500 },
+      }),
+      scoredSection({
+        sectionType: "feature",
+        selector: "#feature-2",
+        confidence: 0.92,
+        bbox: { x: 0, y: 2600, width: 1920, height: 500 },
+      }),
+      scoredSection({
+        sectionType: "feature",
+        selector: "#feature-3",
+        confidence: 0.9,
+        bbox: { x: 0, y: 3400, width: 1920, height: 500 },
+      }),
+      scoredSection({
+        sectionType: "testimonial",
+        selector: "#testimonial",
+        confidence: 0.85,
+        bbox: { x: 0, y: 5200, width: 1920, height: 600 },
+      }),
+    ] as any;
+
+    const selected = pickSectionsForScope(
+      sections,
+      "classic",
+      [],
+      4,
+      { width: 1920, height: 9000 },
+    );
+
+    expect(selected.length).toBe(4);
+    expect(selected[0].sectionType).toBe("hero");
+    expect(selected.filter((item) => item.sectionType === "feature").length).toBe(3);
+  });
+
+  it("dedupes high-overlap clips and replaces loser with alternate candidate", () => {
+    const sections = [
+      scoredSection({
+        sectionType: "feature",
+        selector: "#feature-main",
+        confidence: 0.98,
+        bbox: { x: 0, y: 4000, width: 1920, height: 320 },
+        scores: scoreBreakdown({ feature: 8 }),
+      }),
+      scoredSection({
+        sectionType: "testimonial",
+        selector: "#testimonial-main",
+        confidence: 0.86,
+        bbox: { x: 0, y: 4024, width: 1920, height: 360 },
+        scores: scoreBreakdown({ testimonial: 7 }),
+      }),
+      scoredSection({
+        sectionType: "testimonial",
+        selector: "#testimonial-alt",
+        confidence: 0.7,
+        bbox: { x: 0, y: 6200, width: 1920, height: 420 },
+        scores: scoreBreakdown({ testimonial: 5 }),
+      }),
+    ] as any;
+
+    const selected = pickSectionsForScope(
+      sections,
+      "classic",
+      [],
+      10,
+      { width: 1920, height: 10000 },
+    );
+
+    expect(selected.some((item) => item.selector === "#feature-main")).toBe(true);
+    expect(selected.some((item) => item.selector === "#testimonial-main")).toBe(false);
+    expect(selected.some((item) => item.selector === "#testimonial-alt")).toBe(true);
+  });
+
+  it("drops conflicting category when no non-overlapping alternate exists", () => {
+    const sections = [
+      scoredSection({
+        sectionType: "feature",
+        selector: "#feature-main",
+        confidence: 0.98,
+        bbox: { x: 0, y: 4000, width: 1920, height: 320 },
+      }),
+      scoredSection({
+        sectionType: "testimonial",
+        selector: "#testimonial-main",
+        confidence: 0.86,
+        bbox: { x: 0, y: 4024, width: 1920, height: 360 },
+      }),
+    ] as any;
+
+    const selected = pickSectionsForScope(
+      sections,
+      "classic",
+      [],
+      10,
+      { width: 1920, height: 10000 },
+    );
+
+    expect(selected.some((item) => item.sectionType === "feature")).toBe(true);
+    expect(selected.some((item) => item.sectionType === "testimonial")).toBe(false);
   });
 });

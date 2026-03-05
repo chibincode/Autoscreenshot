@@ -138,4 +138,47 @@ describe("section debug manifest wiring", () => {
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it("forces viewport to 1920x1080 before capture and logs override", async () => {
+    vi.resetModules();
+    const { executeInstruction } = await import("../src/core/job-service.js");
+
+    const task: ParsedTask = {
+      url: "https://example.com",
+      waitUntil: "networkidle",
+      captures: [{ mode: "section" }],
+      image: { format: "jpg", quality: 92, dpr: "auto" },
+      viewport: { width: 1440, height: 900 },
+      tags: [],
+      eagle: {},
+    };
+
+    parseInstructionMock.mockResolvedValue(task);
+    captureTaskMock.mockImplementation(async (receivedTask: ParsedTask) => {
+      expect(receivedTask.viewport).toEqual({ width: 1920, height: 1080 });
+      return {
+        assets: [],
+        usedDpr: 2,
+        fallbackToDpr1: false,
+        viewport: receivedTask.viewport,
+        fullPageSize: { width: 1920, height: 3600 },
+      } satisfies CaptureRunResult;
+    });
+
+    const logs: string[] = [];
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-viewport-override-"));
+    try {
+      const result = await executeInstruction({
+        instruction: "open https://example.com and capture section",
+        cwd,
+        runId: "job-viewport-override",
+        log: (_level, message) => logs.push(message),
+      });
+
+      expect(result.manifest.task.viewport).toEqual({ width: 1920, height: 1080 });
+      expect(logs).toContain("viewport_overridden_to_1920x1080 from 1440x900");
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

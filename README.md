@@ -49,6 +49,9 @@ npm start
 - 默认截图输出 `JPG`，可配置质量（默认 `92`）
 - `dpr=auto`：优先 `2x`，超阈值或异常自动回退 `1x`
 - section 混合切割：`hero, feature, testimonial, pricing, team, faq, blog, cta, contact, footer`
+- `classic` 模式支持多 feature 输出（默认最多 3 张），其它类别默认每类最多 1 张
+- section 导出窗口固定为 `1920x1080`（`dpr=2` 时产物为 `3840x2160`）
+- 执行时统一强制 viewport 为 `1920x1080`（非 1920 输入会自动修正并记录日志）
 - `classic` 模式默认最多输出 `10` 张，可通过任务参数覆盖
 - Debug 联动：在任务详情点击 `section` 图片可聚焦到对应 Debug 记录（fullPage 显示整页提示）
 - 每次任务生成 `manifest.json`，并记录 Eagle 导入结果

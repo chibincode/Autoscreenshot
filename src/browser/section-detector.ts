@@ -1,4 +1,5 @@
 import type { Page } from "playwright";
+import { buildFixedSectionClip, calcClipIoU, type PageSize } from "./section-clip.js";
 import type {
   CaptureRequest,
   SectionDebugCandidate,
@@ -77,6 +78,11 @@ export const CLASSIC_ORDER: SectionType[] = [
   "contact",
   "footer",
 ];
+
+const CLASSIC_TYPE_QUOTAS: Partial<Record<SectionType, number>> = {
+  feature: 3,
+};
+const CLIP_DEDUPE_IOU_THRESHOLD = 0.9;
 
 function createEmptyScores(): SectionScoreBreakdown {
   return {
@@ -242,10 +248,28 @@ export function classifySectionCandidate(
     "real customer feedback",
   ];
   let testimonialStrong = false;
+  let faqStrong = false;
   for (const phrase of testimonialPhrases) {
     if (haystack.includes(phrase)) {
       addScore("testimonial", 5, `phrase:${phrase.replace(/\s+/g, "_")}`);
       testimonialStrong = true;
+    }
+  }
+
+  const faqStrongPhrases = [
+    "faq",
+    "f.a.q",
+    "faqs",
+    "q&a",
+    "questions & answers",
+    "frequently asked questions",
+    "常见问题",
+    "问答",
+  ];
+  for (const phrase of faqStrongPhrases) {
+    if (haystack.includes(phrase)) {
+      addScore("faq", 6, `phrase:faq_strong:${phrase.replace(/\s+/g, "_")}`);
+      faqStrong = true;
     }
   }
 
@@ -306,7 +330,7 @@ export function classifySectionCandidate(
     addScore("feature", 1, "layout:image_and_headings");
   }
   if (
-    /["“”]|customer|review|testimonial|case study|评价|用户反馈/i.test(
+    /\b(testimonial|testimonials|review|reviews|quote|quotes|case study|case studies|customer stories)\b|评价|用户反馈/i.test(
       candidate.text,
     )
   ) {
@@ -366,7 +390,10 @@ export function classifySectionCandidate(
   if (scores.testimonial >= 4) {
     testimonialStrong = true;
   }
-  if (testimonialStrong && scores.faq > 0) {
+  if (faqStrong) {
+    addScore("testimonial", -3, "conflict:faq_strong_vs_testimonial");
+  }
+  if (testimonialStrong && scores.faq > 0 && !faqStrong) {
     addScore("faq", -1, "conflict:testimonial_strong");
   }
   if (testimonialStrong) {
@@ -489,29 +516,178 @@ export function mergeAdjacentSections(
   return merged;
 }
 
-function pickClassicSections(
+function cloneScoredSection(section: ScoredSection): ScoredSection {
+  return {
+    sectionType: section.sectionType,
+    selector: section.selector,
+    bbox: { ...section.bbox },
+    confidence: section.confidence,
+    area: section.area,
+    tagName: section.tagName,
+    textPreview: section.textPreview,
+    scores: { ...section.scores },
+    signals: [...section.signals],
+  };
+}
+
+function sectionPriorityScore(section: ScoredSection): number {
+  return section.confidence * section.area;
+}
+
+function buildClassicSelectionWithQuotas(
   sections: ScoredSection[],
-  maxSections = 10,
+  maxSections: number,
 ): ScoredSection[] {
   const selected: ScoredSection[] = [];
   const used = new Set<string>();
 
   for (const type of CLASSIC_ORDER) {
+    const typeQuota = CLASSIC_TYPE_QUOTAS[type] ?? 1;
+    let pickedForType = 0;
     const candidates = sections
       .filter((section) => section.sectionType === type)
-      .sort((a, b) => b.confidence * b.area - a.confidence * a.area);
+      .sort((a, b) => sectionPriorityScore(b) - sectionPriorityScore(a));
 
-    const picked = candidates.find((section) => !used.has(section.selector));
-    if (picked) {
-      selected.push(picked);
-      used.add(picked.selector);
+    for (const candidate of candidates) {
+      if (pickedForType >= typeQuota || selected.length >= maxSections) {
+        break;
+      }
+      if (used.has(candidate.selector)) {
+        continue;
+      }
+      selected.push(cloneScoredSection(candidate));
+      used.add(candidate.selector);
+      pickedForType += 1;
     }
+
     if (selected.length >= maxSections) {
-      return selected;
+      return selected.slice(0, maxSections);
     }
   }
 
   return selected.slice(0, maxSections);
+}
+
+function dedupeClassicSectionsByClip(
+  selectedSections: ScoredSection[],
+  allSections: ScoredSection[],
+  pageSize: PageSize,
+  iouThreshold = CLIP_DEDUPE_IOU_THRESHOLD,
+): ScoredSection[] {
+  const selected = [...selectedSections];
+  const selectedSelectors = new Set(selected.map((item) => item.selector));
+  const candidatesByType = new Map<SectionType, ScoredSection[]>();
+
+  for (const type of CLASSIC_ORDER) {
+    const candidates = allSections
+      .filter((section) => section.sectionType === type)
+      .sort((a, b) => sectionPriorityScore(b) - sectionPriorityScore(a));
+    candidatesByType.set(type, candidates);
+  }
+
+  const maxIterations = Math.max(1, selected.length * 10);
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    let conflict:
+      | {
+          i: number;
+          j: number;
+          iou: number;
+        }
+      | undefined;
+
+    for (let i = 0; i < selected.length; i += 1) {
+      for (let j = i + 1; j < selected.length; j += 1) {
+        const firstClip = buildFixedSectionClip(selected[i], pageSize);
+        const secondClip = buildFixedSectionClip(selected[j], pageSize);
+        const iou = calcClipIoU(firstClip, secondClip);
+        if (iou >= iouThreshold && (!conflict || iou > conflict.iou)) {
+          conflict = { i, j, iou };
+        }
+      }
+    }
+
+    if (!conflict) {
+      break;
+    }
+
+    const first = selected[conflict.i];
+    const second = selected[conflict.j];
+    const keepFirst = sectionPriorityScore(first) >= sectionPriorityScore(second);
+    const winnerIndex = keepFirst ? conflict.i : conflict.j;
+    const loserIndex = keepFirst ? conflict.j : conflict.i;
+    const winner = selected[winnerIndex];
+    const loser = selected[loserIndex];
+
+    winner.signals = dedupeSignals(
+      [
+        ...winner.signals,
+        {
+          label: winner.sectionType,
+          weight: 0,
+          rule: `dedupe:clip_iou_conflict:${loser.sectionType}:${conflict.iou.toFixed(3)}`,
+        },
+      ],
+    ).slice(0, MAX_SIGNAL_COUNT);
+
+    selected.splice(loserIndex, 1);
+    selectedSelectors.delete(loser.selector);
+
+    const alternatives = candidatesByType.get(loser.sectionType) ?? [];
+    let replacement: ScoredSection | undefined;
+    for (const alternative of alternatives) {
+      if (selectedSelectors.has(alternative.selector)) {
+        continue;
+      }
+      const alternativeClip = buildFixedSectionClip(alternative, pageSize);
+      const hasConflict = selected.some((existing) => {
+        const existingClip = buildFixedSectionClip(existing, pageSize);
+        return calcClipIoU(alternativeClip, existingClip) >= iouThreshold;
+      });
+      if (!hasConflict) {
+        replacement = cloneScoredSection(alternative);
+        break;
+      }
+    }
+
+    if (replacement) {
+      replacement.signals = dedupeSignals(
+        [
+          ...replacement.signals,
+          {
+            label: replacement.sectionType,
+            weight: 0,
+            rule: "dedupe:replaced_with_alternate",
+          },
+        ],
+      ).slice(0, MAX_SIGNAL_COUNT);
+      selected.splice(Math.min(loserIndex, selected.length), 0, replacement);
+      selectedSelectors.add(replacement.selector);
+      continue;
+    }
+
+    winner.signals = dedupeSignals(
+      [
+        ...winner.signals,
+        {
+          label: winner.sectionType,
+          weight: 0,
+          rule: "dedupe:dropped_no_alternate",
+        },
+      ],
+    ).slice(0, MAX_SIGNAL_COUNT);
+  }
+
+  return selected;
+}
+
+function pickClassicSections(
+  sections: ScoredSection[],
+  maxSections = 10,
+  pageSize: PageSize,
+): ScoredSection[] {
+  const selected = buildClassicSelectionWithQuotas(sections, maxSections);
+  const deduped = dedupeClassicSectionsByClip(selected, sections, pageSize);
+  return deduped.slice(0, maxSections);
 }
 
 export function pickSectionsForScope(
@@ -519,6 +695,7 @@ export function pickSectionsForScope(
   scope: SectionScope,
   manualRequests: CaptureRequest[],
   classicMaxSections: number,
+  pageSize: PageSize,
 ): ScoredSection[] {
   if (scope === "all-top-level") {
     return [...sections].sort((a, b) => a.bbox.y - b.bbox.y).slice(0, 12);
@@ -544,7 +721,7 @@ export function pickSectionsForScope(
     return selected;
   }
 
-  return pickClassicSections(sections, classicMaxSections);
+  return pickClassicSections(sections, classicMaxSections, pageSize);
 }
 
 function toDebugCandidate(section: ScoredSection): SectionDebugCandidate {
@@ -687,6 +864,7 @@ export async function detectSections(
   scope: SectionScope,
   manualRequests: CaptureRequest[],
   classicMaxSections = 10,
+  pageSizeArg?: PageSize,
 ): Promise<{ sections: SectionResult[]; debug: SectionDetectionDebug }> {
   const viewportSize = page.viewportSize() ?? DEFAULT_DESKTOP_VIEWPORT;
   const candidates = await collectSectionCandidates(page);
@@ -718,7 +896,21 @@ export async function detectSections(
     .filter((item) => item.bbox.height >= 220 && item.bbox.width >= 320);
 
   const merged = mergeAdjacentSections(scored);
-  const selected = pickSectionsForScope(merged, scope, manualRequests, classicMaxSections);
+  const estimatedContentHeight = scored.reduce(
+    (max, item) => Math.max(max, item.bbox.y + item.bbox.height),
+    viewportSize.height,
+  );
+  const pageSize = pageSizeArg ?? {
+    width: viewportSize.width,
+    height: estimatedContentHeight,
+  };
+  const selected = pickSectionsForScope(
+    merged,
+    scope,
+    manualRequests,
+    classicMaxSections,
+    pageSize,
+  );
   const debug: SectionDetectionDebug = {
     scope,
     viewportHeight: viewportSize.height,

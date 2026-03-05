@@ -21,6 +21,7 @@ import { readManifest, slugify, timestampForFile, writeManifest, writeManifestTo
 
 type LogLevel = "info" | "warn" | "error";
 type LogHandler = (level: LogLevel, message: string) => void;
+const FORCED_VIEWPORT = { width: 1920, height: 1080 } as const;
 
 export interface ExecuteInstructionParams {
   instruction: string;
@@ -227,12 +228,30 @@ export async function executeInstruction(
     dpr: options.dpr,
     sectionScope: options.sectionScope,
   });
+  const normalizedTask =
+    task.viewport.width === FORCED_VIEWPORT.width &&
+    task.viewport.height === FORCED_VIEWPORT.height
+      ? task
+      : {
+          ...task,
+          viewport: {
+            width: FORCED_VIEWPORT.width,
+            height: FORCED_VIEWPORT.height,
+          },
+        };
+  if (normalizedTask !== task) {
+    emit(
+      log,
+      "info",
+      `viewport_overridden_to_1920x1080 from ${task.viewport.width}x${task.viewport.height}`,
+    );
+  }
 
-  const runId = params.runId ?? makeRunId(task.url);
+  const runId = params.runId ?? makeRunId(normalizedTask.url);
   const outputDir = path.join(path.resolve(cwd, options.outputDir), runId);
 
-  emit(log, "info", `Capturing screenshots for ${task.url}`);
-  const captureResult = await captureTask(task, {
+  emit(log, "info", `Capturing screenshots for ${normalizedTask.url}`);
+  const captureResult = await captureTask(normalizedTask, {
     outputDir,
     sectionScope: options.sectionScope,
     classicMaxSections: options.classicMaxSections,
@@ -243,15 +262,15 @@ export async function executeInstruction(
     instruction: params.instruction,
     createdAt: new Date().toISOString(),
     task: {
-      ...task,
+      ...normalizedTask,
       image: {
-        ...task.image,
+        ...normalizedTask.image,
         dpr:
-          task.image.dpr === "auto"
+          normalizedTask.image.dpr === "auto"
             ? captureResult.usedDpr === 1
               ? 1
               : 2
-            : task.image.dpr,
+            : normalizedTask.image.dpr,
       },
     },
     sectionScope: options.sectionScope,

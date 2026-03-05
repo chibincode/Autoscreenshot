@@ -9,14 +9,64 @@ import type { ParsedTask } from "../src/types.js";
 let server: http.Server | null = null;
 let baseUrl = "";
 
+async function readJpegDimensions(filePath: string): Promise<{ width: number; height: number }> {
+  const buffer = await fs.readFile(filePath);
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) {
+    throw new Error(`Not a valid JPEG file: ${filePath}`);
+  }
+
+  let offset = 2;
+  while (offset + 4 < buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = buffer[offset + 1];
+    offset += 2;
+
+    if (marker === 0xd8 || marker === 0x01) {
+      continue;
+    }
+    if (marker === 0xd9 || marker === 0xda) {
+      break;
+    }
+
+    if (offset + 2 > buffer.length) {
+      break;
+    }
+    const segmentLength = buffer.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > buffer.length) {
+      break;
+    }
+
+    const isStartOfFrame =
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf);
+    if (isStartOfFrame) {
+      const height = buffer.readUInt16BE(offset + 3);
+      const width = buffer.readUInt16BE(offset + 5);
+      return { width, height };
+    }
+
+    offset += segmentLength;
+  }
+
+  throw new Error(`Unable to parse JPEG dimensions: ${filePath}`);
+}
+
 function pageTemplate(kind: "marketing" | "blog" | "docs" | "landing"): string {
   if (kind === "marketing") {
     return `
       <html><body>
       <main>
         <section class="hero"><h1>Build faster</h1><button>Start</button></section>
-        <section class="features"><h2>Features</h2><p>Feature A</p><p>Feature B</p></section>
+        <section class="features feature-group-1"><h2>Features</h2><p>Feature A</p><p>Feature B</p></section>
+        <section class="features feature-group-2"><h2>More Features</h2><p>Feature C</p><p>Feature D</p></section>
+        <section class="features feature-group-3"><h2>Advanced Features</h2><p>Feature E</p><p>Feature F</p></section>
         <section class="testimonials"><h2>Testimonials</h2><blockquote>"Great!"</blockquote></section>
+        <section class="faq"><h2>F.A.Q</h2><p>Questions & answers</p><p>How does it work?</p><p>Can I cancel?</p></section>
         <section class="pricing"><h2>Pricing</h2><p>$29 / month</p></section>
       </main>
       <footer>Privacy Terms Copyright</footer>
@@ -140,7 +190,7 @@ describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {
       waitUntil: "networkidle",
       captures: [{ mode: "fullPage" }, { mode: "section" }],
       image: { format: "jpg", quality: 92, dpr: "auto" },
-      viewport: { width: 1440, height: 900 },
+      viewport: { width: 1920, height: 1080 },
       tags: ["e2e"],
       eagle: {},
     };
@@ -152,13 +202,47 @@ describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {
     });
 
     const fullPageCount = result.assets.filter((asset) => asset.kind === "fullPage").length;
-    const sectionCount = result.assets.filter((asset) => asset.kind === "section").length;
+    const sectionAssets = result.assets.filter((asset) => asset.kind === "section");
     expect(fullPageCount).toBe(1);
-    expect(sectionCount).toBeGreaterThanOrEqual(3);
+    expect(sectionAssets.length).toBeGreaterThanOrEqual(3);
+    for (const sectionAsset of sectionAssets) {
+      const dim = await readJpegDimensions(sectionAsset.filePath);
+      if (sectionAsset.dpr === 2) {
+        expect(dim).toEqual({ width: 3840, height: 2160 });
+      } else {
+        expect(dim).toEqual({ width: 1920, height: 1080 });
+      }
+    }
   }
 
   it("captures marketing page", async () => {
     await runCase("/marketing");
+  });
+
+  it("captures multiple features and faq in classic mode", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-marketing-"));
+    const task: ParsedTask = {
+      url: `${baseUrl}/marketing`,
+      waitUntil: "networkidle",
+      captures: [{ mode: "fullPage" }, { mode: "section" }],
+      image: { format: "jpg", quality: 92, dpr: "auto" },
+      viewport: { width: 1920, height: 1080 },
+      tags: ["e2e"],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+    });
+
+    const sectionAssets = result.assets.filter((asset) => asset.kind === "section");
+    const featureAssets = sectionAssets.filter((asset) => asset.sectionType === "feature");
+    const featureCount = featureAssets.length;
+    expect(featureCount).toBeGreaterThanOrEqual(2);
+    expect(new Set(featureAssets.map((asset) => asset.fileName)).size).toBe(featureCount);
+    expect(sectionAssets.some((asset) => asset.sectionType === "faq")).toBe(true);
   });
 
   it("captures blog page", async () => {
@@ -176,7 +260,7 @@ describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {
       waitUntil: "networkidle",
       captures: [{ mode: "fullPage" }, { mode: "section" }],
       image: { format: "jpg", quality: 92, dpr: "auto" },
-      viewport: { width: 1440, height: 900 },
+      viewport: { width: 1920, height: 1080 },
       tags: ["e2e"],
       eagle: {},
     };
