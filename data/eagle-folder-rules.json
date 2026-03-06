@@ -51,7 +51,7 @@
     },
     "about": {
       "folderId": "JZULJID2HWWPV",
-      "pathRules": ["/about"]
+      "pathRules": ["/about", "/about-us", "/company", "/our-story", "/team"]
     },
     "careers": {
       "folderId": "K3ACUQBFHQCTL",

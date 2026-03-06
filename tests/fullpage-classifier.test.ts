@@ -6,7 +6,7 @@ const rules = normalizeEagleFolderRules({
   fullPage: {
     home: { folderId: "home-id", pathRules: ["/"] },
     pricing: { folderId: "pricing-id", pathRules: ["/pricing"] },
-    about: { folderId: "about-id", pathRules: ["/about"] },
+    about: { folderId: "about-id", pathRules: ["/about", "/about-us", "/company", "/team"] },
     careers: { folderId: "careers-id", pathRules: ["/careers"] },
     blog_list: { folderId: "blog-list-id", pathRules: ["/blog", "/blog/page/*", "/blog/tag/*"] },
     blog_detail: { folderId: "blog-detail-id", pathRules: ["/blog/:slug"] },
@@ -30,6 +30,12 @@ describe("classifyFullPageType", () => {
     const result = classifyFullPageType("https://example.com/en/about", rules);
     expect(result.type).toBe("about");
     expect(result.normalizedPathname).toBe("/about");
+  });
+
+  it("matches about-us/company/team variants to about", () => {
+    expect(classifyFullPageType("https://example.com/about-us", rules).type).toBe("about");
+    expect(classifyFullPageType("https://example.com/company", rules).type).toBe("about");
+    expect(classifyFullPageType("https://example.com/team", rules).type).toBe("about");
   });
 
   it("strictly distinguishes blog list and detail", () => {

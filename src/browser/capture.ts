@@ -117,6 +117,7 @@ async function captureOnce(
   try {
     await page.goto(task.url, { waitUntil: task.waitUntil, timeout: 75_000 });
     await warmupLazyLoad(page);
+    const pageTitle = (await page.title()).trim() || undefined;
 
     const pageSize = await getPageDimensions(page);
     const domain = sanitizeLabel(extractDomain(task.url));
@@ -146,6 +147,7 @@ async function captureOnce(
         label: "full_page",
         filePath: fullPath,
         fileName: fullName,
+        pageTitle,
         sourceUrl: task.url,
         quality: task.image.quality,
         dpr: forcedDpr,

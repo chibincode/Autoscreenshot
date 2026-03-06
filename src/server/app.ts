@@ -16,6 +16,12 @@ import {
   type ExecuteInstructionParams,
   type ExecuteInstructionResult,
 } from "../core/job-service.js";
+import {
+  executeCoreRoutesInstruction,
+  retryCoreRouteByManifest,
+  type ExecuteCoreRoutesParams,
+  type ExecuteCoreRoutesResult,
+} from "../core/core-routes-service.js";
 import { readManifest } from "../utils/manifest.js";
 import type {
   CreateJobRequest,
@@ -23,6 +29,8 @@ import type {
   JobEvent,
   JobExecutionOptions,
   JobStatus,
+  JobMode,
+  RouteTargetSummary,
   RunManifest,
 } from "../types.js";
 import { JobsRepository } from "./db.js";
@@ -33,7 +41,9 @@ export interface BuildServerOptions {
   queue?: JobQueue;
   webDistDir?: string;
   executeInstructionFn?: (params: ExecuteInstructionParams) => Promise<ExecuteInstructionResult>;
+  executeCoreRoutesInstructionFn?: (params: ExecuteCoreRoutesParams) => Promise<ExecuteCoreRoutesResult>;
   retryImportFn?: (manifestPath: string, log?: ExecuteInstructionParams["log"]) => Promise<RunManifest>;
+  retryCoreRouteFn?: (params: Parameters<typeof retryCoreRouteByManifest>[0]) => ReturnType<typeof retryCoreRouteByManifest>;
 }
 
 function statusFromManifest(manifest: RunManifest | null): JobStatus {
@@ -48,6 +58,46 @@ function statusFromManifest(manifest: RunManifest | null): JobStatus {
     return "partial_success";
   }
   return "failed";
+}
+
+function statusFromCoreRoutes(manifest: RunManifest | null): JobStatus {
+  if (!manifest || !Array.isArray(manifest.routes) || manifest.routes.length === 0) {
+    return "failed";
+  }
+  const successfulRoutes = manifest.routes.filter((route) => route.status === "success").length;
+  const failedRoutes = manifest.routes.filter((route) => route.status === "failed").length;
+  if (successfulRoutes === 0) {
+    return "failed";
+  }
+
+  const manifestStatus = statusFromManifest(manifest);
+  if (failedRoutes > 0) {
+    return "partial_success";
+  }
+  return manifestStatus;
+}
+
+function statusFromCoreRouteState(manifest: RunManifest | null, routes: RouteTargetSummary[]): JobStatus {
+  if (!manifest || routes.length === 0) {
+    return "failed";
+  }
+  const successCount = routes.filter((route) => route.status === "success").length;
+  if (successCount === 0) {
+    return "failed";
+  }
+  if (routes.some((route) => route.status === "failed" || route.status === "queued" || route.status === "running")) {
+    return "partial_success";
+  }
+  return statusFromManifest(manifest);
+}
+
+function parseJobMode(optionsJson: string): JobMode {
+  try {
+    const parsed = JSON.parse(optionsJson) as { mode?: unknown };
+    return parsed.mode === "core-routes" ? "core-routes" : "single";
+  } catch {
+    return "single";
+  }
 }
 
 function normalizeCreateJobRequest(body: CreateJobRequest): {
@@ -65,6 +115,8 @@ function normalizeCreateJobRequest(body: CreateJobRequest): {
     dpr: body.dpr,
     sectionScope: body.sectionScope,
     classicMaxSections: body.classicMaxSections,
+    mode: body.mode,
+    maxRoutes: body.maxRoutes,
     outputDir: body.outputDir,
   });
   return {
@@ -87,7 +139,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   const queue = options.queue ?? new JobQueue();
   const webDistDir = options.webDistDir ?? path.resolve(process.cwd(), "web/dist");
   const executeInstructionFn = options.executeInstructionFn ?? executeInstruction;
+  const executeCoreRoutesInstructionFn =
+    options.executeCoreRoutesInstructionFn ?? executeCoreRoutesInstruction;
   const retryImportFn = options.retryImportFn ?? retryImportByManifestPath;
+  const retryCoreRouteFn = options.retryCoreRouteFn ?? retryCoreRouteByManifest;
 
   app.addHook("onClose", async () => {
     if (!options.repo) {
@@ -122,6 +177,17 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       queue.enqueue(jobId, async () => {
         repo.setJobRunning(jobId);
         repo.addLog(jobId, "info", "Job started");
+        const log: ExecuteInstructionParams["log"] = (level, message) => {
+          repo.addLog(jobId, level, message);
+          emitToQueue(queue, {
+            type: "log",
+            jobId,
+            level,
+            message,
+            at: new Date().toISOString(),
+          });
+        };
+
         emitToQueue(queue, {
           type: "status",
           jobId,
@@ -130,24 +196,55 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
         });
 
         try {
-          const result = await executeInstructionFn({
-            instruction,
-            options: jobOptions,
-            runId: jobId,
-            log: (level, message) => {
-              repo.addLog(jobId, level, message);
-              emitToQueue(queue, {
-                type: "log",
-                jobId,
-                level,
-                message,
-                at: new Date().toISOString(),
-              });
-            },
-          });
+          const outputDir = path.join(path.resolve(process.cwd(), jobOptions.outputDir), jobId);
+          const manifestPath = path.join(outputDir, "manifest.json");
+
+          const result =
+            jobOptions.mode === "core-routes"
+              ? await executeCoreRoutesInstructionFn({
+                  instruction,
+                  options: jobOptions,
+                  runId: jobId,
+                  outputDir,
+                  manifestPath,
+                  log,
+                  onRoutesDiscovered: async (routes) => {
+                    repo.replaceRouteTargets(jobId, routes);
+                    emitToQueue(queue, {
+                      type: "assets_updated",
+                      jobId,
+                      at: new Date().toISOString(),
+                    });
+                  },
+                  onRouteStatus: async (update) => {
+                    repo.updateRouteTargetStatus({
+                      jobId,
+                      url: update.route.url,
+                      status: update.status,
+                      error: update.error ?? null,
+                      attemptCount: update.attemptCount,
+                      startedAt: update.startedAt ?? null,
+                      finishedAt: update.finishedAt ?? null,
+                    });
+                    emitToQueue(queue, {
+                      type: "assets_updated",
+                      jobId,
+                      at: new Date().toISOString(),
+                    });
+                  },
+                })
+              : await executeInstructionFn({
+                  instruction,
+                  options: jobOptions,
+                  runId: jobId,
+                  log,
+                });
 
           repo.replaceAssets(jobId, result.manifest);
-          const finalStatus = statusFromManifest(result.manifest);
+          const finalStatus =
+            jobOptions.mode === "core-routes"
+              ? statusFromCoreRouteState(result.manifest, repo.listRouteTargets(jobId))
+              : statusFromManifest(result.manifest);
           repo.setJobResult({
             jobId,
             status: finalStatus,
@@ -296,7 +393,11 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           });
         });
         repo.replaceAssets(job.id, manifest!);
-        const finalStatus = statusFromManifest(manifest);
+        const mode = parseJobMode(job.optionsJson);
+        const finalStatus =
+          mode === "core-routes"
+            ? statusFromCoreRouteState(manifest, repo.listRouteTargets(job.id))
+            : statusFromManifest(manifest);
         repo.setJobResult({
           jobId: job.id,
           status: finalStatus,
@@ -336,6 +437,150 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
 
     reply.code(202);
     return { jobId: job.id, status: "queued" };
+  });
+
+  app.post<{
+    Params: { jobId: string };
+    Body: { routeId?: number };
+  }>("/api/jobs/:jobId/retry-route", async (request, reply) => {
+    const job = repo.getJob(request.params.jobId);
+    if (!job) {
+      reply.code(404);
+      return { error: "Job not found" };
+    }
+    if (!job.manifestPath) {
+      reply.code(400);
+      return { error: "No manifest for this job" };
+    }
+    if (parseJobMode(job.optionsJson) !== "core-routes") {
+      reply.code(400);
+      return { error: "retry-route is only available for core-routes mode jobs" };
+    }
+
+    const routeId = Number(request.body?.routeId);
+    if (!Number.isFinite(routeId)) {
+      reply.code(400);
+      return { error: "routeId is required" };
+    }
+    const route = repo.getRouteTargetById(routeId);
+    if (!route || route.jobId !== job.id) {
+      reply.code(404);
+      return { error: "Route target not found" };
+    }
+
+    queue.enqueue(job.id, async () => {
+      repo.setJobRunning(job.id);
+      repo.addLog(job.id, "info", `Retry route started: ${route.path}`);
+      emitToQueue(queue, {
+        type: "status",
+        jobId: job.id,
+        status: "running",
+        at: new Date().toISOString(),
+      });
+
+      const startedAt = new Date().toISOString();
+      repo.updateRouteTargetById({
+        id: route.id,
+        status: "running",
+        error: null,
+        startedAt,
+      });
+      emitToQueue(queue, {
+        type: "assets_updated",
+        jobId: job.id,
+        at: new Date().toISOString(),
+      });
+
+      try {
+        const retried = await retryCoreRouteFn({
+          manifestPath: job.manifestPath!,
+          routeUrl: route.url,
+          routePath: route.path,
+          routeTitle: route.title,
+          routeSource: route.source,
+          routeDepth: route.depth,
+          routePriorityScore: route.priorityScore,
+          routeAttemptCount: route.attemptCount,
+          log: (level, message) => {
+            repo.addLog(job.id, level, message);
+            emitToQueue(queue, {
+              type: "log",
+              jobId: job.id,
+              level,
+              message,
+              at: new Date().toISOString(),
+            });
+          },
+        });
+
+        repo.updateRouteTargetById({
+          id: route.id,
+          status: "success",
+          error: null,
+          attemptCount: retried.route.attemptCount,
+          startedAt: retried.route.startedAt ?? startedAt,
+          finishedAt: retried.route.finishedAt ?? new Date().toISOString(),
+        });
+        repo.replaceAssets(job.id, retried.manifest);
+        const finalStatus = statusFromCoreRouteState(retried.manifest, repo.listRouteTargets(job.id));
+        repo.setJobResult({
+          jobId: job.id,
+          status: finalStatus,
+          taskJson: JSON.stringify(retried.manifest.task),
+          manifestPath: job.manifestPath,
+          outputDir: retried.manifest.outputDir,
+          error: finalStatus === "success" ? null : "Some routes or assets are still failing",
+        });
+
+        emitToQueue(queue, {
+          type: "assets_updated",
+          jobId: job.id,
+          at: new Date().toISOString(),
+        });
+        emitToQueue(queue, {
+          type: "status",
+          jobId: job.id,
+          status: finalStatus,
+          at: new Date().toISOString(),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const attempts =
+          error && typeof error === "object" && "attempts" in error && typeof error.attempts === "number"
+            ? error.attempts
+            : 1;
+        repo.addLog(job.id, "error", message);
+        repo.updateRouteTargetById({
+          id: route.id,
+          status: "failed",
+          error: message,
+          attemptCount: route.attemptCount + attempts,
+          finishedAt: new Date().toISOString(),
+        });
+        const latestManifest = job.manifestPath ? await readManifest(job.manifestPath).catch(() => null) : null;
+        const finalStatus = statusFromCoreRouteState(latestManifest, repo.listRouteTargets(job.id));
+        repo.setJobResult({
+          jobId: job.id,
+          status: finalStatus,
+          error: message,
+        });
+        emitToQueue(queue, {
+          type: "assets_updated",
+          jobId: job.id,
+          at: new Date().toISOString(),
+        });
+        emitToQueue(queue, {
+          type: "status",
+          jobId: job.id,
+          status: finalStatus,
+          at: new Date().toISOString(),
+          message,
+        });
+      }
+    });
+
+    reply.code(202);
+    return { jobId: job.id, routeId: route.id, status: "queued" };
   });
 
   app.get<{ Params: { jobId: string } }>("/api/jobs/:jobId/events", async (request, reply) => {

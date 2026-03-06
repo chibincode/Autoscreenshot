@@ -262,6 +262,11 @@ body {
   color: #991b1b;
 }
 
+.status-skipped {
+  background: #e5e7eb;
+  color: #374151;
+}
+
 .pagination {
   margin-top: 8px;
   display: flex;
@@ -307,6 +312,72 @@ body {
   align-items: center;
   color: var(--text-muted);
   font-size: 0.82rem;
+}
+
+.route-list-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fffdf7;
+  padding: 10px;
+}
+
+.route-list-panel h4 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+}
+
+.route-list {
+  display: grid;
+  gap: 8px;
+}
+
+.route-row {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+}
+
+.route-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.route-path {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.route-url {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.route-meta {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.route-error {
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
+.route-row button {
+  border: 1px solid var(--brand);
+  background: #ecfdf8;
+  color: var(--brand);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
 .assets-grid {

@@ -59,7 +59,7 @@ async function readJpegDimensions(filePath: string): Promise<{ width: number; he
 function pageTemplate(kind: "marketing" | "blog" | "docs" | "landing"): string {
   if (kind === "marketing") {
     return `
-      <html><body>
+      <html><head><title>Marketing Page</title></head><body>
       <main>
         <section class="hero"><h1>Build faster</h1><button>Start</button></section>
         <section class="features feature-group-1"><h2>Features</h2><p>Feature A</p><p>Feature B</p></section>
@@ -80,7 +80,7 @@ function pageTemplate(kind: "marketing" | "blog" | "docs" | "landing"): string {
   }
   if (kind === "blog") {
     return `
-      <html><body>
+      <html><head><title>Relace Blog</title></head><body>
       <main>
         <section class="hero"><h1>Blog Home</h1></section>
         <section class="blog-posts"><h2>Latest Posts</h2><a href="#">Post 1</a><a href="#">Post 2</a><a href="#">Post 3</a></section>
@@ -93,7 +93,7 @@ function pageTemplate(kind: "marketing" | "blog" | "docs" | "landing"): string {
   }
   if (kind === "landing") {
     return `
-      <html><body>
+      <html><head><title>Launch Faster</title></head><body>
       <main>
         <section class="hero"><h1>Grow faster</h1><button>Get started</button></section>
         <section class="team"><h2>Our Team</h2><img alt="m1"/><img alt="m2"/><img alt="m3"/><p>Founder · CEO</p></section>
@@ -109,7 +109,7 @@ function pageTemplate(kind: "marketing" | "blog" | "docs" | "landing"): string {
     `;
   }
   return `
-    <html><body>
+    <html><head><title>Docs</title></head><body>
     <main>
       <section class="hero"><h1>Docs</h1></section>
       <article class="feature"><h2>Feature Overview</h2></article>
@@ -202,8 +202,10 @@ describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {
     });
 
     const fullPageCount = result.assets.filter((asset) => asset.kind === "fullPage").length;
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
     const sectionAssets = result.assets.filter((asset) => asset.kind === "section");
     expect(fullPageCount).toBe(1);
+    expect(fullPageAsset?.pageTitle).toBeTruthy();
     expect(sectionAssets.length).toBeGreaterThanOrEqual(3);
     for (const sectionAsset of sectionAssets) {
       const dim = await readJpegDimensions(sectionAsset.filePath);

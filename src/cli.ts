@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
 import path from "node:path";
+import { nanoid } from "nanoid";
 import { resolveJobOptions, executeInstruction, retryImportByManifestPath, summarizeManifest } from "./core/job-service.js";
+import { executeCoreRoutesInstruction } from "./core/core-routes-service.js";
 import { loadDotEnvFile } from "./core/env.js";
-import type { DprOption, JobExecutionOptions, SectionScope } from "./types.js";
+import type { DprOption, JobExecutionOptions, JobMode, SectionScope } from "./types.js";
 
 type ParsedArgs =
   | { command: "help" }
@@ -22,6 +24,8 @@ Options:
   --section-scope <classic|all-top-level|manual>
                                      Section capture policy (default: classic)
   --max-sections <1-20>              Classic mode max selected sections (default: 10)
+  --mode <single|core-routes>        Job mode (default: single)
+  --max-routes <1-30>                Core-routes max discovered routes (default: 12)
   --output-dir <path>               Output base directory (default: ./output)
   -h, --help                        Show help
 `.trimStart(),
@@ -101,6 +105,26 @@ function parseCliArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    if (arg === "--mode") {
+      const value = argv[i + 1];
+      if (value !== "single" && value !== "core-routes") {
+        throw new Error("--mode must be one of: single, core-routes");
+      }
+      options.mode = value as JobMode;
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--max-routes") {
+      const value = Number(argv[i + 1]);
+      if (!Number.isFinite(value) || value < 1 || value > 30) {
+        throw new Error("--max-routes must be a number between 1 and 30");
+      }
+      options.maxRoutes = Math.round(value);
+      i += 1;
+      continue;
+    }
+
     throw new Error(`Unknown option: ${arg}`);
   }
 
@@ -114,15 +138,29 @@ function parseCliArgs(argv: string[]): ParsedArgs {
 
 async function runCapture(instruction: string, rawOptions: Partial<JobExecutionOptions>): Promise<void> {
   const options = resolveJobOptions(rawOptions);
-  const result = await executeInstruction({
-    instruction,
-    options,
-    cwd: process.cwd(),
-    log: (level, message) => {
-      const prefix = level.toUpperCase();
-      process.stdout.write(`[${prefix}] ${message}\n`);
-    },
-  });
+  const log = (level: "info" | "warn" | "error", message: string) => {
+    const prefix = level.toUpperCase();
+    process.stdout.write(`[${prefix}] ${message}\n`);
+  };
+  const runId = nanoid(12);
+  const outputDir = path.join(path.resolve(process.cwd(), options.outputDir), runId);
+  const manifestPath = path.join(outputDir, "manifest.json");
+  const result =
+    options.mode === "core-routes"
+      ? await executeCoreRoutesInstruction({
+          instruction,
+          options,
+          runId,
+          outputDir,
+          manifestPath,
+          log,
+        })
+      : await executeInstruction({
+          instruction,
+          options,
+          cwd: process.cwd(),
+          log,
+        });
 
   const summary = summarizeManifest(result.manifest);
   process.stdout.write(
@@ -131,6 +169,9 @@ async function runCapture(instruction: string, rawOptions: Partial<JobExecutionO
       `Output: ${result.manifest.outputDir}`,
       `Manifest: ${result.manifestPath}`,
       `Assets: ${summary.total} (imported: ${summary.imported}, failed: ${summary.failed})`,
+      ...(options.mode === "core-routes"
+        ? [`Routes: ${Array.isArray(result.manifest.routes) ? result.manifest.routes.length : 0}`]
+        : []),
     ].join("\n") + "\n",
   );
 }

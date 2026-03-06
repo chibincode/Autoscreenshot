@@ -120,9 +120,12 @@ export class EagleClient {
   }
 
   async addImageFromPath(input: EagleImportInput): Promise<EagleImportResult> {
+    const importName = input.asset.pageTitle?.trim()
+      ? input.asset.pageTitle.trim()
+      : path.basename(input.asset.fileName, path.extname(input.asset.fileName));
     const payload = this.withToken({
       path: input.asset.filePath,
-      name: path.basename(input.asset.fileName, path.extname(input.asset.fileName)),
+      name: importName,
       website: input.asset.sourceUrl,
       tags: input.extraTags,
       annotation: input.annotation,

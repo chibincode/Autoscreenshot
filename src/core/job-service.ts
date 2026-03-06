@@ -8,6 +8,7 @@ import type {
   EagleImportResult,
   FullPageType,
   JobExecutionOptions,
+  JobMode,
   RunManifest,
 } from "../types.js";
 import { loadEagleFolderRules } from "./eagle-folder-rules.js";
@@ -52,6 +53,14 @@ function clampClassicMaxSections(value: number): number {
   return Math.max(1, Math.min(20, Math.round(value)));
 }
 
+function clampMaxRoutes(value: number): number {
+  return Math.max(1, Math.min(30, Math.round(value)));
+}
+
+function normalizeMode(value: unknown): JobMode {
+  return value === "core-routes" ? "core-routes" : "single";
+}
+
 export function resolveJobOptions(
   options?: Partial<JobExecutionOptions>,
 ): JobExecutionOptions {
@@ -66,6 +75,11 @@ export function resolveJobOptions(
       typeof options?.classicMaxSections === "number"
         ? clampClassicMaxSections(options.classicMaxSections)
         : DEFAULT_JOB_OPTIONS.classicMaxSections,
+    mode: normalizeMode(options?.mode),
+    maxRoutes:
+      typeof options?.maxRoutes === "number"
+        ? clampMaxRoutes(options.maxRoutes)
+        : DEFAULT_JOB_OPTIONS.maxRoutes,
     outputDir: options?.outputDir ?? DEFAULT_JOB_OPTIONS.outputDir,
   };
 }

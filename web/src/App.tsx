@@ -8,6 +8,7 @@ type JobStatus =
   | "failed"
   | "cancelled";
 
+type JobMode = "single" | "core-routes";
 type DprOption = "auto" | 1 | 2;
 type SectionScope = "classic" | "all-top-level" | "manual";
 type SectionType =
@@ -123,7 +124,26 @@ interface JobDetail {
   };
   assets: JobAsset[];
   logs: JobLog[];
+  routes: RouteTargetSummary[];
   manifest: ManifestView | null;
+}
+
+interface RouteTargetSummary {
+  id: number;
+  url: string;
+  path: string;
+  title: string | null;
+  source: "nav" | "link";
+  depth: number;
+  priorityScore: number;
+  status: "queued" | "running" | "success" | "failed" | "skipped";
+  error: string | null;
+  attemptCount: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  updatedAt: string;
+  assetCount: number;
+  lastExecutedAt: string | null;
 }
 
 interface AppConfig {
@@ -132,6 +152,8 @@ interface AppConfig {
     dpr: DprOption;
     sectionScope: SectionScope;
     classicMaxSections: number;
+    mode: JobMode;
+    maxRoutes: number;
     outputDir: string;
   };
   eagleImportPolicy?: {
@@ -147,6 +169,8 @@ interface CreateJobRequest {
   dpr: DprOption;
   sectionScope: SectionScope;
   classicMaxSections: number;
+  mode: JobMode;
+  maxRoutes: number;
   outputDir: string;
 }
 
@@ -187,7 +211,7 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-function statusClass(status: JobStatus): string {
+function statusClass(status: string): string {
   return `status status-${status}`;
 }
 
@@ -346,6 +370,8 @@ export function App() {
   const [instruction, setInstruction] = useState("");
   const [quality, setQuality] = useState(92);
   const [dpr, setDpr] = useState<DprOption>("auto");
+  const [mode, setMode] = useState<JobMode>("single");
+  const [maxRoutes, setMaxRoutes] = useState(12);
   const [sectionScope, setSectionScope] = useState<SectionScope>("classic");
   const [classicMaxSections, setClassicMaxSections] = useState(10);
   const [outputDir, setOutputDir] = useState("./output");
@@ -465,6 +491,8 @@ export function App() {
     setConfig(result);
     setQuality(result.defaults.quality);
     setDpr(result.defaults.dpr);
+    setMode(result.defaults.mode);
+    setMaxRoutes(result.defaults.maxRoutes);
     setSectionScope(result.defaults.sectionScope);
     setClassicMaxSections(result.defaults.classicMaxSections);
     setOutputDir(result.defaults.outputDir);
@@ -582,6 +610,8 @@ export function App() {
         dpr,
         sectionScope,
         classicMaxSections,
+        mode,
+        maxRoutes,
         outputDir,
       };
       const result = await apiFetch<{ jobId: string }>("/api/jobs", {
@@ -608,6 +638,19 @@ export function App() {
       await loadJobDetail(jobId);
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "重试导入失败");
+    }
+  }
+
+  async function retryRoute(jobId: string, routeId: number): Promise<void> {
+    try {
+      await apiFetch(`/api/jobs/${jobId}/retry-route`, {
+        method: "POST",
+        body: JSON.stringify({ routeId }),
+      });
+      await loadJobs();
+      await loadJobDetail(jobId);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "重试路由失败");
     }
   }
 
@@ -690,6 +733,13 @@ export function App() {
             </select>
           </label>
           <label className="field">
+            <span>Mode</span>
+            <select value={mode} onChange={(event) => setMode(event.target.value as JobMode)}>
+              <option value="single">single</option>
+              <option value="core-routes">core-routes</option>
+            </select>
+          </label>
+          <label className="field">
             <span>Section Scope</span>
             <select value={sectionScope} onChange={(event) => setSectionScope(event.target.value as SectionScope)}>
               <option value="classic">classic</option>
@@ -711,6 +761,22 @@ export function App() {
               }
             />
           </label>
+          {mode === "core-routes" ? (
+            <label className="field">
+              <span>Max Routes</span>
+              <input
+                type="number"
+                min={1}
+                max={30}
+                value={maxRoutes}
+                onChange={(event) =>
+                  setMaxRoutes(
+                    Math.max(1, Math.min(30, Number(event.target.value) || 12)),
+                  )
+                }
+              />
+            </label>
+          ) : null}
         </div>
 
         <label className="field">
@@ -726,6 +792,8 @@ export function App() {
 
         <div className="meta-lines">
           <div>默认值：quality {config?.defaults.quality ?? "..."}</div>
+          <div>默认模式：{config?.defaults.mode ?? "single"}</div>
+          <div>max routes：{config?.defaults.maxRoutes ?? "..."}</div>
           <div>classic max：{config?.defaults.classicMaxSections ?? "..."}</div>
           <div>实时连接：{liveConnected ? "已连接" : "未连接"}</div>
           <div>
@@ -824,6 +892,33 @@ export function App() {
                   <span>开始: {formatDate(selectedJobDetail.job.startedAt)}</span>
                   <span>完成: {formatDate(selectedJobDetail.job.finishedAt)}</span>
                 </div>
+
+                {selectedJobDetail.routes.length > 0 ? (
+                  <div className="route-list-panel">
+                    <h4>核心路由列表</h4>
+                    <div className="route-list">
+                      {selectedJobDetail.routes.map((route) => (
+                        <div key={route.id} className="route-row">
+                          <div className="route-main">
+                            <span className={statusClass(route.status)}>{route.status}</span>
+                            <span className="route-path">{route.path}</span>
+                            <span className="route-url">{route.url}</span>
+                            <span className="route-meta">
+                              assets {route.assetCount} · attempts {route.attemptCount}
+                            </span>
+                            {route.error ? <span className="route-error">{route.error}</span> : null}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void retryRoute(selectedJobDetail.job.id, route.id)}
+                          >
+                            重试该路由
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="assets-grid">
                   {selectedJobDetail.assets.map((asset) => (

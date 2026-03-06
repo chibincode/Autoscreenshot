@@ -100,6 +100,7 @@ describe("import routing", () => {
             label: "full_page",
             filePath: fullPath,
             fileName: "full.jpg",
+            pageTitle: "Pricing | Example",
             sourceUrl: "https://example.com/pricing?campaign=abc#top",
             quality: 92,
             dpr: 2,
@@ -177,6 +178,9 @@ describe("import routing", () => {
       expect(addCalls[0].body?.folderId).toBe("hero-folder-id");
       expect(addCalls[1].body?.folderId).toBe("page-pricing-id");
       expect(addCalls[2].body?.folderId).toBeUndefined();
+      expect(addCalls[0].body?.name).toBe("hero");
+      expect(addCalls[1].body?.name).toBe("Pricing | Example");
+      expect(addCalls[2].body?.name).toBe("faq");
 
       expect(result.assets.every((asset) => asset.import.ok)).toBe(true);
     } finally {

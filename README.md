@@ -53,6 +53,9 @@ npm start
 - section 导出窗口固定为 `1920x1080`（`dpr=2` 时产物为 `3840x2160`）
 - 执行时统一强制 viewport 为 `1920x1080`（非 1920 输入会自动修正并记录日志）
 - `classic` 模式默认最多输出 `10` 张，可通过任务参数覆盖
+- 新增 `core-routes` 模式：自动发现同域核心路由并输出 fullPage 长图（默认最多 12 路由）
+- `core-routes` 路由截图默认先尝试 `2x`，遇到可重试错误时自动降为 `1x` 再试一次
+- 支持路由级重试：`POST /api/jobs/:jobId/retry-route`（只重跑单一路由，不重跑整任务）
 - Debug 联动：在任务详情点击 `section` 图片可聚焦到对应 Debug 记录（fullPage 显示整页提示）
 - 每次任务生成 `manifest.json`，并记录 Eagle 导入结果
 - 支持任务级 `retry-import`
@@ -67,6 +70,7 @@ npm start
 - `GET /api/jobs/:jobId`
 - `GET /api/jobs/:jobId/events` (SSE)
 - `POST /api/jobs/:jobId/retry-import`
+- `POST /api/jobs/:jobId/retry-route`
 - `GET /api/assets/:assetId/file`
 
 ## CLI
@@ -75,6 +79,7 @@ npm start
 npm run autosnap -- "打开 https://example.com 抓 full page 和 section 图"
 npm run autosnap -- "open https://example.com only section, hero and footer" --section-scope manual --quality 95
 npm run autosnap -- "open https://example.com and capture sections" --max-sections 8
+npm run autosnap -- "open https://example.com and map core routes" --mode core-routes --max-routes 12
 npm run autosnap -- retry-import ./output/<run_id>/manifest.json
 ```
 
@@ -89,12 +94,45 @@ npm run autosnap -- retry-import ./output/<run_id>/manifest.json
 - `OPENAI_API_KEY`（可选，用于 LLM 指令解析）
 - `OPENAI_BASE_URL`（可选）
 - `OPENAI_MODEL`（可选）
+- `NOTION_API_KEY`（rules 同步到 Notion 必填）
+- `NOTION_RULES_DATABASE_ID`（已存在库时填写）
+- `NOTION_RULES_PARENT_PAGE_ID`（无库时用于自动创建数据库）
+- `NOTION_RULES_DATABASE_TITLE`（默认 `Autoscreenshot Rules Registry`）
+- `NOTION_RULES_OWNER_USER_ID`（可选）
+- `NOTION_RULES_JSON_PATH`（默认 `./output/rules/rules-registry.json`）
 
 Eagle 文件夹映射配置：
 
 - 文件：`data/eagle-folder-rules.json`
 - 映射目标使用 `folderId`（稳定，不受改名影响）
 - 若映射缺失、歧义或未命中：自动导入 Eagle 根目录
+
+## Rules Registry（统一规则表）
+
+本项目支持把三层规则导出并同步到 Notion 单数据库：
+
+- `section_classifier`：`src/browser/section-detector.ts`
+- `fullpage_classifier`：`src/core/fullpage-classifier.ts`
+- `eagle_mapping`：`data/eagle-folder-rules.json`
+
+命令：
+
+```bash
+npm run rules:export
+npm run rules:sync:notion
+npm run rules:refresh
+```
+
+输出文件：
+
+- `output/rules/rules-registry.json`
+- `output/rules/rules-registry.csv`
+
+同步策略：
+
+- 以 `Rule ID` 为唯一键 upsert（存在则更新，不存在则创建）
+- 不自动删除 Notion 数据
+- 本地缺失但远端存在的规则会标记为 `deprecated`
 
 ## 测试
 

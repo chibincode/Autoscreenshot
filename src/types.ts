@@ -36,6 +36,7 @@ export type FullPageType =
 export type SectionScope = "classic" | "all-top-level" | "manual";
 
 export type DprOption = "auto" | 1 | 2;
+export type JobMode = "single" | "core-routes";
 
 export type JobStatus =
   | "queued"
@@ -138,6 +139,7 @@ export interface CapturedAsset {
   label: string;
   filePath: string;
   fileName: string;
+  pageTitle?: string;
   sourceUrl: string;
   quality: number;
   dpr: number;
@@ -233,6 +235,7 @@ export interface RunManifest {
   sectionScope: SectionScope;
   outputDir: string;
   sectionDebug?: SectionDetectionDebug;
+  routes?: RouteTargetSummary[];
   assets: Array<
     CapturedAsset & {
       import: EagleImportResult;
@@ -245,6 +248,8 @@ export interface JobExecutionOptions {
   dpr: DprOption;
   sectionScope: SectionScope;
   classicMaxSections: number;
+  mode: JobMode;
+  maxRoutes: number;
   outputDir: string;
 }
 
@@ -254,7 +259,62 @@ export interface CreateJobRequest {
   dpr?: DprOption;
   sectionScope?: SectionScope;
   classicMaxSections?: number;
+  mode?: JobMode;
+  maxRoutes?: number;
   outputDir?: string;
+}
+
+export type RouteTargetSource = "nav" | "link";
+
+export type RouteTargetStatus = "queued" | "running" | "success" | "failed" | "skipped";
+
+export interface RouteTargetRecord {
+  id: number;
+  jobId: string;
+  url: string;
+  path: string;
+  title: string | null;
+  source: RouteTargetSource;
+  depth: number;
+  priorityScore: number;
+  status: RouteTargetStatus;
+  error: string | null;
+  attemptCount: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  updatedAt: string;
+}
+
+export interface RouteTargetSummary {
+  id?: number;
+  url: string;
+  path: string;
+  title: string | null;
+  source: RouteTargetSource;
+  depth: number;
+  priorityScore: number;
+  status: RouteTargetStatus;
+  error: string | null;
+  attemptCount: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  updatedAt: string;
+  assetCount: number;
+  lastExecutedAt: string | null;
+}
+
+export interface RouteDiscoveryTarget {
+  url: string;
+  path: string;
+  title?: string;
+  source: RouteTargetSource;
+  depth: number;
+  priorityScore: number;
+}
+
+export interface RouteDiscoveryResult {
+  entryUrl: string;
+  routes: RouteDiscoveryTarget[];
 }
 
 export interface JobRecord {
@@ -321,6 +381,7 @@ export interface JobDetail {
   job: JobRecord;
   assets: AssetRecord[];
   logs: JobLogRecord[];
+  routes: RouteTargetSummary[];
   manifest: RunManifest | null;
 }
 

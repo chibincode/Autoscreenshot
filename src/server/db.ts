@@ -9,6 +9,10 @@ import type {
   JobRecord,
   JobStatus,
   JobSummary,
+  RouteDiscoveryTarget,
+  RouteTargetRecord,
+  RouteTargetStatus,
+  RouteTargetSummary,
   RunManifest,
 } from "../types.js";
 
@@ -65,6 +69,28 @@ interface JobLogRow {
   ts: string;
 }
 
+interface RouteTargetRow {
+  id: number;
+  job_id: string;
+  url: string;
+  path: string;
+  title: string | null;
+  source: "nav" | "link";
+  depth: number;
+  priority_score: number;
+  status: RouteTargetStatus;
+  error: string | null;
+  attempt_count: number;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+}
+
+interface RouteTargetSummaryRow extends RouteTargetRow {
+  asset_count: number;
+  last_executed_at: string | null;
+}
+
 function toJobRecord(row: JobRow): JobRecord {
   return {
     id: row.id,
@@ -108,6 +134,33 @@ function toJobLogRecord(row: JobLogRow): JobLogRecord {
     level: row.level,
     message: row.message,
     ts: row.ts,
+  };
+}
+
+function toRouteTargetRecord(row: RouteTargetRow): RouteTargetRecord {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    url: row.url,
+    path: row.path,
+    title: row.title,
+    source: row.source,
+    depth: row.depth,
+    priorityScore: row.priority_score,
+    status: row.status,
+    error: row.error,
+    attemptCount: row.attempt_count,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toRouteTargetSummary(row: RouteTargetSummaryRow): RouteTargetSummary {
+  return {
+    ...toRouteTargetRecord(row),
+    assetCount: Number(row.asset_count) || 0,
+    lastExecutedAt: row.last_executed_at,
   };
 }
 
@@ -182,10 +235,31 @@ export class JobsRepository {
         FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS route_targets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        path TEXT NOT NULL,
+        title TEXT,
+        source TEXT NOT NULL,
+        depth INTEGER NOT NULL,
+        priority_score INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT,
+        finished_at TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE,
+        UNIQUE(job_id, url)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_assets_job_id ON assets(job_id);
       CREATE INDEX IF NOT EXISTS idx_logs_job_id ON job_logs(job_id);
+      CREATE INDEX IF NOT EXISTS idx_route_targets_job_id ON route_targets(job_id);
+      CREATE INDEX IF NOT EXISTS idx_route_targets_status ON route_targets(status);
     `);
   }
 
@@ -287,6 +361,109 @@ export class JobsRepository {
     };
   }
 
+  replaceRouteTargets(jobId: string, routes: RouteDiscoveryTarget[]): void {
+    const now = new Date().toISOString();
+    const tx = this.db.transaction((id: string, discoveredRoutes: RouteDiscoveryTarget[]) => {
+      this.db.prepare("DELETE FROM route_targets WHERE job_id = ?").run(id);
+      const insert = this.db.prepare(`
+        INSERT INTO route_targets (
+          job_id, url, path, title, source, depth, priority_score, status, error, attempt_count, updated_at
+        ) VALUES (
+          @jobId, @url, @path, @title, @source, @depth, @priorityScore, 'queued', NULL, 0, @updatedAt
+        )
+      `);
+      for (const route of discoveredRoutes) {
+        insert.run({
+          jobId: id,
+          url: route.url,
+          path: route.path,
+          title: route.title ?? null,
+          source: route.source,
+          depth: route.depth,
+          priorityScore: route.priorityScore,
+          updatedAt: now,
+        });
+      }
+    });
+    tx(jobId, routes);
+  }
+
+  updateRouteTargetStatus(params: {
+    jobId: string;
+    url: string;
+    status: RouteTargetStatus;
+    error?: string | null;
+    attemptCount?: number;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+  }): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `
+      UPDATE route_targets
+      SET status = @status,
+          error = @error,
+          attempt_count = COALESCE(@attemptCount, attempt_count),
+          started_at = COALESCE(@startedAt, started_at),
+          finished_at = CASE
+            WHEN @finishedAt IS NOT NULL THEN @finishedAt
+            WHEN @status IN ('success', 'failed', 'skipped') THEN @now
+            ELSE finished_at
+          END,
+          updated_at = @now
+      WHERE job_id = @jobId AND url = @url
+    `,
+      )
+      .run({
+        jobId: params.jobId,
+        url: params.url,
+        status: params.status,
+        error: params.error ?? null,
+        attemptCount: params.attemptCount ?? null,
+        startedAt: params.startedAt ?? null,
+        finishedAt: params.finishedAt ?? null,
+        now,
+      });
+  }
+
+  updateRouteTargetById(params: {
+    id: number;
+    status: RouteTargetStatus;
+    error?: string | null;
+    attemptCount?: number;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+  }): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `
+      UPDATE route_targets
+      SET status = @status,
+          error = @error,
+          attempt_count = COALESCE(@attemptCount, attempt_count),
+          started_at = COALESCE(@startedAt, started_at),
+          finished_at = CASE
+            WHEN @finishedAt IS NOT NULL THEN @finishedAt
+            WHEN @status IN ('success', 'failed', 'skipped') THEN @now
+            ELSE finished_at
+          END,
+          updated_at = @now
+      WHERE id = @id
+    `,
+      )
+      .run({
+        id: params.id,
+        status: params.status,
+        error: params.error ?? null,
+        attemptCount: params.attemptCount ?? null,
+        startedAt: params.startedAt ?? null,
+        finishedAt: params.finishedAt ?? null,
+        now,
+      });
+  }
+
   replaceAssets(jobId: string, manifest: RunManifest): void {
     const tx = this.db.transaction((id: string, currentManifest: RunManifest) => {
       this.db.prepare("DELETE FROM assets WHERE job_id = ?").run(id);
@@ -323,6 +500,32 @@ export class JobsRepository {
       .prepare("SELECT * FROM assets WHERE job_id = ? ORDER BY id ASC")
       .all(jobId) as AssetRow[];
     return rows.map(toAssetRecord);
+  }
+
+  listRouteTargets(jobId: string): RouteTargetSummary[] {
+    const rows = this.db
+      .prepare(
+        `
+      SELECT
+        rt.*,
+        COUNT(a.id) AS asset_count,
+        MAX(a.captured_at) AS last_executed_at
+      FROM route_targets rt
+      LEFT JOIN assets a ON a.job_id = rt.job_id AND a.source_url = rt.url
+      WHERE rt.job_id = ?
+      GROUP BY rt.id
+      ORDER BY rt.priority_score DESC, rt.id ASC
+    `,
+      )
+      .all(jobId) as RouteTargetSummaryRow[];
+    return rows.map(toRouteTargetSummary);
+  }
+
+  getRouteTargetById(routeId: number): RouteTargetRecord | null {
+    const row = this.db
+      .prepare("SELECT * FROM route_targets WHERE id = ?")
+      .get(routeId) as RouteTargetRow | undefined;
+    return row ? toRouteTargetRecord(row) : null;
   }
 
   getLogs(jobId: string, limit = 500): JobLogRecord[] {
@@ -406,10 +609,12 @@ export class JobsRepository {
     }
     const assets = this.getAssets(jobId);
     const logs = this.getLogs(jobId);
+    const routes = this.listRouteTargets(jobId);
     return {
       job,
       assets,
       logs,
+      routes,
       manifest: null,
     };
   }
