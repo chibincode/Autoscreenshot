@@ -178,8 +178,6 @@ export function classifySectionCandidate(
       "plans",
       "plan",
       "subscription",
-      "monthly",
-      "yearly",
       "套餐",
       "价格",
     ],
@@ -338,7 +336,9 @@ export function classifySectionCandidate(
     testimonialStrong = true;
   }
   if (
-    /\$|\b\d+\s?(mo|month|year|yr)\b|monthly|yearly|每月|每年/i.test(candidate.text)
+    /\$\s?\d+|\b(?:usd|eur|gbp|cny|rmb)\s?\d+|\b\d+(?:\.\d+)?\s?(?:usd|eur|gbp|cny|rmb)\b|\b(?:from|starting at)\s+\$\s?\d+|\b(?:per|\/)\s?(?:mo|month|yr|year)\b|\bbilled\s+(?:monthly|annually|yearly)\b|\b(?:monthly|annual|yearly)\s+billing\b|每月\s*\d+|每年\s*\d+/i.test(
+      candidate.text,
+    )
   ) {
     addScore("pricing", 2, "regex:pricing_semantic");
   }
@@ -401,6 +401,14 @@ export function classifySectionCandidate(
   }
   if ((candidate.formCount >= 1 || candidate.inputCount >= 2) && scores.cta > 0) {
     addScore("cta", -1, "conflict:contact_form_strong");
+  }
+  if (
+    scores.cta >= 3 &&
+    scores.pricing > 0 &&
+    !/\$\s?\d+|\bplans?\b|\bsubscription\b|套餐|\bcompare\b/i.test(candidate.text) &&
+    /\bcustom pricing\b|\bcontact sales\b/i.test(candidate.text)
+  ) {
+    addScore("pricing", -3, "conflict:cta_sales_motion_vs_pricing");
   }
 
   if (candidate.tagName === "footer" && scores.footer >= 4) {

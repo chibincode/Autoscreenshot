@@ -173,6 +173,43 @@ describe("classifySectionCandidate", () => {
     expect(result.scores.cta).toBeGreaterThan(0);
   });
 
+  it("does not misclassify sales cta with custom pricing copy as pricing", () => {
+    const candidate = {
+      ...baseCandidate(),
+      className: "cta-banner",
+      text:
+        "Ready to build? Start building a voice AI agent with a free account. Reach out to us if you're interested in custom pricing. Contact sales. No credit card required. 1,000 free agent session minutes monthly.",
+      headingCount: 1,
+      buttonCount: 2,
+      y: 2600,
+      height: 520,
+    };
+    const result = classifySectionCandidate(candidate, 1080);
+    expect(result.sectionType).toBe("cta");
+    expect(result.scores.cta).toBeGreaterThan(result.scores.pricing);
+    expect(
+      result.signals.some((signal) => signal.rule === "conflict:cta_sales_motion_vs_pricing"),
+    ).toBe(true);
+  });
+
+  it("still recognizes actual pricing blocks with price and billing semantics", () => {
+    const candidate = {
+      ...baseCandidate(),
+      className: "pricing-plans",
+      text: "Pricing plans. Start at $29 / month. Billed yearly for teams.",
+      headingCount: 1,
+      buttonCount: 3,
+      y: 1800,
+      height: 620,
+    };
+    const result = classifySectionCandidate(candidate, 1080);
+    expect(result.sectionType).toBe("pricing");
+    expect(result.scores.pricing).toBeGreaterThan(result.scores.cta);
+    expect(
+      result.signals.some((signal) => signal.rule === "regex:pricing_semantic"),
+    ).toBe(true);
+  });
+
   it("recognizes contact blocks", () => {
     const candidate = {
       ...baseCandidate(),
