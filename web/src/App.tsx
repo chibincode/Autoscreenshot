@@ -1,4 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  buildFeedbackContext,
+  canFocusDebugAsset,
+  findAssetForRoute,
+  getCoreRoutePreviewState,
+} from "./asset-feedback";
+import { deriveRouteProgress, isActiveStatus } from "./job-progress";
+import { getNextSelectedJobId } from "./job-selection";
+import { canRetryRoute } from "./route-retry";
 
 type JobStatus =
   | "queued"
@@ -74,6 +83,15 @@ interface ManifestView {
   [key: string]: unknown;
 }
 
+interface ManifestAssetView {
+  kind: "fullPage" | "section";
+  sectionType: string | null;
+  label: string;
+  fileName: string;
+  pageTitle?: string;
+  sourceUrl: string | null;
+}
+
 interface JobSummary {
   id: string;
   status: JobStatus;
@@ -95,13 +113,17 @@ interface JobAsset {
   sectionType: string | null;
   label: string;
   fileName: string;
+  pageTitle?: string;
   quality: number;
   dpr: number;
   capturedAt: string;
   importOk: boolean;
   importError: string | null;
   eagleId: string | null;
+  eagleFolderId?: string | null;
+  eagleFolderPath?: string | null;
   previewUrl: string;
+  sourceUrl: string | null;
 }
 
 interface JobLog {
@@ -116,6 +138,7 @@ interface JobDetail {
     id: string;
     status: JobStatus;
     instruction: string;
+    optionsJson: string | null;
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
@@ -155,6 +178,10 @@ interface AppConfig {
     mode: JobMode;
     maxRoutes: number;
     outputDir: string;
+  };
+  queue: {
+    queued: number;
+    runningJobId: string | null;
   };
   eagleImportPolicy?: {
     allowCreateFolder: boolean;
@@ -198,11 +225,18 @@ const SECTION_TYPES: SectionType[] = [
 ];
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  const hasBody = init?.body !== undefined && init.body !== null;
+  if (hasBody) {
+    const contentType = headers.get("Content-Type");
+    if (!contentType) {
+      headers.set("Content-Type", "application/json");
+    }
+  }
+
   const response = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-    },
     ...init,
+    headers,
   });
   if (!response.ok) {
     const message = await response.text();
@@ -213,6 +247,10 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
 
 function statusClass(status: string): string {
   return `status status-${status}`;
+}
+
+function cx(...classes: Array<string | false | null | undefined>): string {
+  return classes.filter(Boolean).join(" ");
 }
 
 function formatDate(input: string | null): string {
@@ -338,6 +376,74 @@ function readSectionDebug(manifest: ManifestView | null): SectionDetectionDebug 
   };
 }
 
+function readManifestAssets(manifest: ManifestView | null): ManifestAssetView[] {
+  if (!manifest || !Array.isArray(manifest.assets)) {
+    return [];
+  }
+
+  return manifest.assets
+    .map((asset) => {
+      if (!isRecord(asset) || typeof asset.kind !== "string" || typeof asset.fileName !== "string") {
+        return null;
+      }
+      const kind = asset.kind === "fullPage" || asset.kind === "section" ? asset.kind : null;
+      if (!kind) {
+        return null;
+      }
+      return {
+        kind,
+        sectionType: typeof asset.sectionType === "string" ? asset.sectionType : null,
+        label: typeof asset.label === "string" ? asset.label : "",
+        fileName: asset.fileName,
+        pageTitle: typeof asset.pageTitle === "string" ? asset.pageTitle : undefined,
+        sourceUrl: typeof asset.sourceUrl === "string" ? asset.sourceUrl : null,
+      } satisfies ManifestAssetView;
+    })
+    .filter((asset): asset is ManifestAssetView => asset !== null);
+}
+
+function findManifestAssetForPreview(
+  manifestAssets: ManifestAssetView[],
+  asset: JobAsset | null,
+): ManifestAssetView | null {
+  if (!asset) {
+    return null;
+  }
+  return (
+    manifestAssets.find(
+      (candidate) =>
+        candidate.fileName === asset.fileName &&
+        candidate.kind === asset.kind &&
+        candidate.label === asset.label &&
+        candidate.sectionType === asset.sectionType &&
+        candidate.sourceUrl === asset.sourceUrl,
+    ) ?? null
+  );
+}
+
+function resolvePreviewEagleName(asset: JobAsset | null, manifestAsset: ManifestAssetView | null): string | null {
+  if (!asset) {
+    return null;
+  }
+  const backendPageTitle = asset.pageTitle?.trim();
+  if (backendPageTitle) {
+    return backendPageTitle;
+  }
+  const pageTitle = manifestAsset?.pageTitle?.trim();
+  if (pageTitle) {
+    return pageTitle;
+  }
+  return asset.fileName;
+}
+
+function resolvePreviewEaglePath(asset: JobAsset | null, eagleName: string | null): string | null {
+  if (!asset || !eagleName) {
+    return null;
+  }
+  const folderPath = asset.eagleFolderPath?.trim();
+  return folderPath ? `${folderPath}/${eagleName}` : eagleName;
+}
+
 function pickTopTwoScores(scores: SectionScoreBreakdown): {
   top1: { label: keyof SectionScoreBreakdown; score: number };
   top2: { label: keyof SectionScoreBreakdown; score: number } | null;
@@ -363,6 +469,39 @@ function toSectionType(value: string | null): SectionType | null {
 
 function debugRowKey(row: SectionDebugRow): string {
   return `${row.phase}:${row.selector}:${row.bbox.y}:${row.bbox.height}`;
+}
+
+function parseJobMode(optionsJson: string | null): JobMode {
+  if (!optionsJson) {
+    return "single";
+  }
+  try {
+    const parsed = JSON.parse(optionsJson) as { mode?: unknown };
+    return parsed.mode === "core-routes" ? "core-routes" : "single";
+  } catch {
+    return "single";
+  }
+}
+
+function StatusBadge({
+  status,
+  emphasis = false,
+}: {
+  status: JobStatus | RouteTargetSummary["status"];
+  emphasis?: boolean;
+}) {
+  const active = isActiveStatus(status);
+  return (
+    <span className={cx(statusClass(status), active && "status-live", emphasis && "status-emphasis")}>
+      {active ? (
+        <span className="status-indicator" aria-hidden="true">
+          <span className="status-indicator-ring" />
+          <span className="status-indicator-dot" />
+        </span>
+      ) : null}
+      <span>{status}</span>
+    </span>
+  );
 }
 
 export function App() {
@@ -393,11 +532,70 @@ export function App() {
   const [focusSectionType, setFocusSectionType] = useState<SectionType | null>(null);
   const [focusSelector, setFocusSelector] = useState<string | null>(null);
   const [focusMessage, setFocusMessage] = useState<string | null>(null);
+  const [previewAssetId, setPreviewAssetId] = useState<number | null>(null);
+  const [copyFeedbackState, setCopyFeedbackState] = useState<string | null>(null);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(totalJobs / pageSize)), [pageSize, totalJobs]);
+  const selectedJobMode = useMemo(
+    () => parseJobMode(selectedJobDetail?.job.optionsJson ?? null),
+    [selectedJobDetail?.job.optionsJson],
+  );
+  const routeProgress = useMemo(
+    () => deriveRouteProgress(selectedJobDetail?.routes ?? []),
+    [selectedJobDetail?.routes],
+  );
+  const selectedJobIsRunning = useMemo(() => {
+    if (!selectedJobDetail) {
+      return false;
+    }
+    return config?.queue.runningJobId === selectedJobDetail.job.id || isActiveStatus(selectedJobDetail.job.status);
+  }, [config?.queue.runningJobId, selectedJobDetail]);
+  const selectedJobStatusNote = useMemo(() => {
+    if (!selectedJobDetail) {
+      return null;
+    }
+    if (selectedJobMode === "core-routes") {
+      if (routeProgress.total === 0) {
+        return selectedJobIsRunning ? "实时执行中 · 正在发现核心路由" : "等待核心路由列表";
+      }
+      if (selectedJobIsRunning) {
+        if (routeProgress.currentRouteLabel) {
+          return `实时执行中 · 当前路由 ${routeProgress.currentRouteLabel}`;
+        }
+        return `实时执行中 · 进度 ${routeProgress.done} / ${routeProgress.total}`;
+      }
+      return `核心路由进度 ${routeProgress.done} / ${routeProgress.total}`;
+    }
+    if (selectedJobIsRunning) {
+      return "实时执行中 · 正在采集页面与导入资源";
+    }
+    return null;
+  }, [routeProgress.currentRouteLabel, routeProgress.done, routeProgress.total, selectedJobDetail, selectedJobIsRunning, selectedJobMode]);
+  const canCancelSelectedJob = useMemo(() => {
+    if (!selectedJobDetail) {
+      return false;
+    }
+    if (selectedJobDetail.job.status === "queued") {
+      return true;
+    }
+    return selectedJobDetail.job.status === "running" && selectedJobMode === "core-routes";
+  }, [selectedJobDetail, selectedJobMode]);
   const sectionDebug = useMemo(
     () => readSectionDebug(selectedJobDetail?.manifest ?? null),
     [selectedJobDetail],
+  );
+  const manifestAssets = useMemo(
+    () => readManifestAssets(selectedJobDetail?.manifest ?? null),
+    [selectedJobDetail?.manifest],
+  );
+  const hasSectionDebug = sectionDebug !== null;
+  const routeAssetEntries = useMemo(
+    () =>
+      (selectedJobDetail?.routes ?? []).map((route) => ({
+        route,
+        asset: findAssetForRoute(route, selectedJobDetail?.assets ?? []),
+      })),
+    [selectedJobDetail?.assets, selectedJobDetail?.routes],
   );
   const focusedAsset = useMemo(
     () =>
@@ -405,6 +603,36 @@ export function App() {
         ? selectedJobDetail?.assets.find((asset) => asset.id === selectedAssetId) ?? null
         : null,
     [selectedAssetId, selectedJobDetail],
+  );
+  const previewAsset = useMemo(
+    () =>
+      previewAssetId !== null
+        ? selectedJobDetail?.assets.find((asset) => asset.id === previewAssetId) ?? null
+        : null,
+    [previewAssetId, selectedJobDetail],
+  );
+  const previewRoute = useMemo(() => {
+    if (!previewAsset || !selectedJobDetail) {
+      return null;
+    }
+    return (
+      selectedJobDetail.routes.find((route) => route.url === previewAsset.sourceUrl) ?? null
+    );
+  }, [previewAsset, selectedJobDetail]);
+  const previewManifestAsset = useMemo(
+    () => findManifestAssetForPreview(manifestAssets, previewAsset),
+    [manifestAssets, previewAsset],
+  );
+  const previewEagleName = useMemo(
+    () => resolvePreviewEagleName(previewAsset, previewManifestAsset),
+    [previewAsset, previewManifestAsset],
+  );
+  const previewEaglePath = useMemo(
+    () => resolvePreviewEaglePath(previewAsset, previewEagleName),
+    [previewAsset, previewEagleName],
+  );
+  const previewHasDistinctEagleName = Boolean(
+    previewAsset && previewEagleName && previewEagleName !== previewAsset.fileName,
   );
   const sectionDebugRows = useMemo(() => {
     if (!sectionDebug) {
@@ -498,7 +726,7 @@ export function App() {
     setOutputDir(result.defaults.outputDir);
   }
 
-  async function loadJobs(): Promise<void> {
+  async function loadJobs(preferredSelectedJobId?: string | null): Promise<void> {
     const params = new URLSearchParams();
     if (statusFilter) {
       params.set("status", statusFilter);
@@ -514,9 +742,9 @@ export function App() {
     }>(`/api/jobs?${params.toString()}`);
     setJobs(result.items);
     setTotalJobs(result.total);
-    if (!selectedJobId && result.items.length > 0) {
-      setSelectedJobId(result.items[0].id);
-    }
+    setSelectedJobId((currentSelectedJobId) =>
+      getNextSelectedJobId(preferredSelectedJobId ?? currentSelectedJobId, result.items),
+    );
   }
 
   async function loadJobDetail(jobId: string): Promise<void> {
@@ -558,7 +786,22 @@ export function App() {
     setFocusSectionType(null);
     setFocusSelector(null);
     setFocusMessage(null);
+    setPreviewAssetId(null);
+    setCopyFeedbackState(null);
   }, [selectedJobId]);
+
+  useEffect(() => {
+    if (previewAssetId === null) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPreviewAssetId(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [previewAssetId]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -620,7 +863,7 @@ export function App() {
       });
       setInstruction("");
       setSelectedJobId(result.jobId);
-      await loadJobs();
+      await loadJobs(result.jobId);
       await loadJobDetail(result.jobId);
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "提交任务失败");
@@ -654,11 +897,47 @@ export function App() {
     }
   }
 
+  async function cancelJob(jobId: string): Promise<void> {
+    const firstConfirm = window.confirm("确定要取消这个任务吗？");
+    if (!firstConfirm) {
+      return;
+    }
+    const secondConfirm = window.confirm("再次确认：取消后当前任务不会继续执行。");
+    if (!secondConfirm) {
+      return;
+    }
+
+    try {
+      const result = await apiFetch<{ cancellationRequested?: boolean }>(`/api/jobs/${jobId}/cancel`, {
+        method: "POST",
+      });
+      await loadJobs();
+      await loadJobDetail(jobId);
+      setErrorText(
+        result.cancellationRequested
+          ? "已请求取消，当前路由结束后会停止。"
+          : null,
+      );
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "取消任务失败");
+    }
+  }
+
   function clearFocus(): void {
     setSelectedAssetId(null);
     setFocusSectionType(null);
     setFocusSelector(null);
     setFocusMessage(null);
+  }
+
+  function openPreview(assetId: number): void {
+    setPreviewAssetId(assetId);
+    setCopyFeedbackState(null);
+  }
+
+  function closePreview(): void {
+    setPreviewAssetId(null);
+    setCopyFeedbackState(null);
   }
 
   function focusDebugFromAsset(asset: JobAsset): void {
@@ -688,6 +967,51 @@ export function App() {
     } else {
       setFocusSelector(null);
       setFocusMessage("未找到对应候选（可能被过滤）。");
+    }
+  }
+
+  async function copyText(value: string): Promise<void> {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "absolute";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    if (!copied) {
+      throw new Error("Clipboard unavailable");
+    }
+  }
+
+  async function copyFeedbackContext(): Promise<void> {
+    if (!previewAsset || !selectedJobDetail) {
+      return;
+    }
+    try {
+      const assetUrl = previewAsset.previewUrl.startsWith("http")
+        ? previewAsset.previewUrl
+        : `${window.location.origin}${previewAsset.previewUrl}`;
+      const payload = buildFeedbackContext({
+        job: {
+          id: selectedJobDetail.job.id,
+          mode: selectedJobMode,
+          status: selectedJobDetail.job.status,
+        },
+        asset: previewAsset,
+        assetUrl,
+        route: previewRoute,
+      });
+      await copyText(payload);
+      setCopyFeedbackState("反馈上下文已复制");
+    } catch (error) {
+      setCopyFeedbackState(error instanceof Error ? error.message : "复制失败");
     }
   }
 
@@ -732,13 +1056,29 @@ export function App() {
               <option value="2">2</option>
             </select>
           </label>
-          <label className="field">
+          <div className="field field-mode">
             <span>Mode</span>
-            <select value={mode} onChange={(event) => setMode(event.target.value as JobMode)}>
-              <option value="single">single</option>
-              <option value="core-routes">core-routes</option>
-            </select>
-          </label>
+            <div className="segmented-control" role="tablist" aria-label="Capture mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "single"}
+                className={mode === "single" ? "segmented-control-option active" : "segmented-control-option"}
+                onClick={() => setMode("single")}
+              >
+                single
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "core-routes"}
+                className={mode === "core-routes" ? "segmented-control-option active" : "segmented-control-option"}
+                onClick={() => setMode("core-routes")}
+              >
+                core-routes
+              </button>
+            </div>
+          </div>
           <label className="field">
             <span>Section Scope</span>
             <select value={sectionScope} onChange={(event) => setSectionScope(event.target.value as SectionScope)}>
@@ -835,11 +1175,15 @@ export function App() {
               <button
                 key={job.id}
                 type="button"
-                className={`job-card ${selectedJobId === job.id ? "selected" : ""}`}
+                className={cx(
+                  "job-card",
+                  selectedJobId === job.id && "selected",
+                  (config?.queue.runningJobId === job.id || isActiveStatus(job.status)) && "job-card-live",
+                )}
                 onClick={() => setSelectedJobId(job.id)}
               >
                 <div className="job-top">
-                  <span className={statusClass(job.status)}>{job.status}</span>
+                  <StatusBadge status={job.status} />
                   <span className="job-time">{formatDate(job.createdAt)}</span>
                 </div>
                 <div className="job-title">{job.sourceUrl ?? "未解析 URL"}</div>
@@ -849,6 +1193,9 @@ export function App() {
                   <span>导入成功 {job.importSuccessCount}</span>
                   <span>导入失败 {job.importFailedCount}</span>
                 </div>
+                {config?.queue.runningJobId === job.id ? (
+                  <div className="job-live-note">队列执行中</div>
+                ) : null}
               </button>
             ))}
             {jobs.length === 0 ? <div className="empty-text">暂无任务</div> : null}
@@ -880,12 +1227,22 @@ export function App() {
                     <h3>{selectedJobDetail.job.id}</h3>
                     <p>{selectedJobDetail.job.instruction}</p>
                   </div>
-                  <div className={statusClass(selectedJobDetail.job.status)}>
-                    {selectedJobDetail.job.status}
+                  <div className={cx("detail-status", selectedJobIsRunning && "detail-status-live")}>
+                    <StatusBadge status={selectedJobDetail.job.status} emphasis />
+                    {selectedJobStatusNote ? <span className="detail-status-note">{selectedJobStatusNote}</span> : null}
                   </div>
                 </div>
 
                 <div className="detail-actions">
+                  {canCancelSelectedJob ? (
+                    <button
+                      type="button"
+                      className="danger-button"
+                      onClick={() => void cancelJob(selectedJobDetail.job.id)}
+                    >
+                      取消任务
+                    </button>
+                  ) : null}
                   <button type="button" onClick={() => void retryImport(selectedJobDetail.job.id)}>
                     重试导入失败项
                   </button>
@@ -893,51 +1250,152 @@ export function App() {
                   <span>完成: {formatDate(selectedJobDetail.job.finishedAt)}</span>
                 </div>
 
-                {selectedJobDetail.routes.length > 0 ? (
-                  <div className="route-list-panel">
-                    <h4>核心路由列表</h4>
-                    <div className="route-list">
-                      {selectedJobDetail.routes.map((route) => (
-                        <div key={route.id} className="route-row">
-                          <div className="route-main">
-                            <span className={statusClass(route.status)}>{route.status}</span>
-                            <span className="route-path">{route.path}</span>
-                            <span className="route-url">{route.url}</span>
-                            <span className="route-meta">
-                              assets {route.assetCount} · attempts {route.attemptCount}
-                            </span>
-                            {route.error ? <span className="route-error">{route.error}</span> : null}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void retryRoute(selectedJobDetail.job.id, route.id)}
-                          >
-                            重试该路由
-                          </button>
-                        </div>
-                      ))}
+                {selectedJobMode === "core-routes" ? (
+                  <div className={cx("progress-panel", selectedJobIsRunning && "progress-panel-live")}>
+                    <div className="progress-panel-top">
+                      <div>
+                        <div className="progress-kicker">核心路由进度</div>
+                        <strong>
+                          进度 {routeProgress.done} / {routeProgress.total || 0}
+                        </strong>
+                        <p>
+                          {routeProgress.total === 0
+                            ? selectedJobIsRunning
+                              ? "正在发现核心路由..."
+                              : "尚未生成核心路由"
+                            : routeProgress.currentRouteLabel
+                              ? `当前路由 ${routeProgress.currentRouteLabel}`
+                              : routeProgress.done === routeProgress.total
+                                ? "全部路由已处理"
+                                : `等待中 ${routeProgress.queued} 条`}
+                        </p>
+                      </div>
+                      <div className="progress-counters">
+                        <span>running {routeProgress.running}</span>
+                        <span>queued {routeProgress.queued}</span>
+                        <span>failed {routeProgress.failed}</span>
+                      </div>
+                    </div>
+                    <div
+                      className={cx("progress-track", selectedJobIsRunning && "progress-track-live")}
+                      aria-label={`核心路由进度 ${routeProgress.done} / ${routeProgress.total || 0}`}
+                    >
+                      <div
+                        className="progress-fill"
+                        style={{ width: `${Math.max(0, Math.min(100, routeProgress.completionRatio * 100))}%` }}
+                      />
                     </div>
                   </div>
                 ) : null}
 
-                <div className="assets-grid">
-                  {selectedJobDetail.assets.map((asset) => (
-                    <article
-                      key={asset.id}
-                      className={`asset-card ${selectedAssetId === asset.id ? "asset-card-focused" : ""}`}
-                      onClick={() => focusDebugFromAsset(asset)}
-                    >
-                      <img src={asset.previewUrl} alt={asset.fileName} loading="lazy" />
-                      <div className="asset-meta">
-                        <strong>{asset.label}</strong>
-                        <span>{asset.kind}{asset.sectionType ? ` · ${asset.sectionType}` : ""}</span>
-                        <span>q{asset.quality} · dpr{asset.dpr}</span>
-                        <span>{asset.importOk ? "Eagle 导入成功" : `导入失败: ${asset.importError ?? "未知错误"}`}</span>
+                {selectedJobMode === "core-routes" ? (
+                  selectedJobDetail.routes.length > 0 ? (
+                    <div className="route-list-panel">
+                      <h4>核心路由卡片</h4>
+                      <div className="core-route-card-list">
+                        {routeAssetEntries.map(({ route, asset }) => {
+                          const previewState = getCoreRoutePreviewState(route.status, asset);
+                          return (
+                            <article
+                              key={route.id}
+                              className={cx(
+                                "core-route-card",
+                                route.status === "running" && "core-route-card-live",
+                                route.status === "queued" && "core-route-card-queued",
+                              )}
+                            >
+                              <div className="core-route-card-main">
+                                <div className="core-route-card-top">
+                                  <StatusBadge status={route.status} />
+                                </div>
+                                <div className="core-route-card-path" title={route.url}>
+                                  {route.path}
+                                </div>
+                                <div className="core-route-card-actions">
+                                  {asset && canFocusDebugAsset(asset, hasSectionDebug) ? (
+                                    <button type="button" onClick={() => focusDebugFromAsset(asset)}>
+                                      Debug 聚焦
+                                    </button>
+                                  ) : null}
+                                  {canRetryRoute(selectedJobDetail.job.status, route.status) ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => void retryRoute(selectedJobDetail.job.id, route.id)}
+                                    >
+                                      重试该路由
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+                              <div className="core-route-card-preview">
+                                {asset ? (
+                                  <button
+                                    type="button"
+                                    className="asset-preview-trigger core-route-preview-trigger"
+                                    onClick={() => openPreview(asset.id)}
+                                  >
+                                    <img src={asset.previewUrl} alt={asset.fileName} loading="lazy" />
+                                  </button>
+                                ) : (
+                                  <div className={cx("route-preview-placeholder", `route-preview-${previewState}`)}>
+                                    <strong className="route-preview-title">
+                                      {previewState === "pending"
+                                        ? "等待截图"
+                                        : previewState === "failed"
+                                          ? "截图失败"
+                                          : "暂无封面"}
+                                    </strong>
+                                    <span className="route-preview-copy">
+                                      {previewState === "pending"
+                                        ? "仍在执行或排队"
+                                        : previewState === "failed"
+                                          ? "没有成功产物"
+                                          : "无匹配封面"}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </article>
+                          );
+                        })}
                       </div>
-                    </article>
-                  ))}
-                  {selectedJobDetail.assets.length === 0 ? <div className="empty-text">暂无产物</div> : null}
-                </div>
+                    </div>
+                  ) : null
+                ) : (
+                  <div className="assets-grid">
+                    {selectedJobDetail.assets.map((asset) => (
+                      <article
+                        key={asset.id}
+                        className={`asset-card ${selectedAssetId === asset.id ? "asset-card-focused" : ""}`}
+                      >
+                        <button
+                          type="button"
+                          className="asset-preview-trigger"
+                          onClick={() => openPreview(asset.id)}
+                        >
+                          <img src={asset.previewUrl} alt={asset.fileName} loading="lazy" />
+                        </button>
+                        <div className="asset-meta">
+                          <strong>{asset.label}</strong>
+                          <span>{asset.kind}{asset.sectionType ? ` · ${asset.sectionType}` : ""}</span>
+                          <span>q{asset.quality} · dpr{asset.dpr}</span>
+                          <span>{asset.importOk ? "Eagle 导入成功" : `导入失败: ${asset.importError ?? "未知错误"}`}</span>
+                        </div>
+                        <div className="asset-card-actions">
+                          <button type="button" onClick={() => openPreview(asset.id)}>
+                            打开预览
+                          </button>
+                          {canFocusDebugAsset(asset, hasSectionDebug) ? (
+                            <button type="button" onClick={() => focusDebugFromAsset(asset)}>
+                              Debug 聚焦
+                            </button>
+                          ) : null}
+                        </div>
+                      </article>
+                    ))}
+                    {selectedJobDetail.assets.length === 0 ? <div className="empty-text">暂无产物</div> : null}
+                  </div>
+                )}
 
                 <details className="section-debug-panel" open>
                   <summary>Section Debug</summary>
@@ -1073,6 +1531,117 @@ export function App() {
           </section>
         </div>
       </main>
+
+      {previewAsset ? (
+        <div className="asset-preview-modal-backdrop" onClick={closePreview}>
+          <div className="asset-preview-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="asset-preview-modal-header">
+              <div>
+                <strong>{previewEagleName ?? previewAsset.fileName}</strong>
+                <span>
+                  {previewRoute ? `${previewRoute.path} · ${previewRoute.status}` : previewAsset.label}
+                </span>
+              </div>
+              <button type="button" className="asset-preview-close" onClick={closePreview}>
+                关闭
+              </button>
+            </div>
+            <div className="asset-preview-modal-body">
+              <div className="asset-preview-image-wrap">
+                <img src={previewAsset.previewUrl} alt={previewAsset.fileName} className="asset-preview-image" />
+              </div>
+              <aside className="asset-preview-sidebar">
+                <div className="asset-preview-actions">
+                  <button type="button" onClick={() => void copyFeedbackContext()}>
+                    Copy Feedback Context
+                  </button>
+                  {canFocusDebugAsset(previewAsset, hasSectionDebug) ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        focusDebugFromAsset(previewAsset);
+                        closePreview();
+                      }}
+                    >
+                      Debug 聚焦
+                    </button>
+                  ) : null}
+                </div>
+                {copyFeedbackState ? <div className="copy-feedback-state">{copyFeedbackState}</div> : null}
+                <dl className="asset-preview-meta">
+                  <div>
+                    <dt>Eagle Path</dt>
+                    <dd>{previewEaglePath ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Eagle Folder</dt>
+                    <dd>{previewAsset.eagleFolderPath ?? "Root"}</dd>
+                  </div>
+                  <div>
+                    <dt>Eagle Name</dt>
+                    <dd>{previewEagleName ?? "—"}</dd>
+                  </div>
+                  {previewHasDistinctEagleName ? (
+                    <div>
+                      <dt>File Name</dt>
+                      <dd>{previewAsset.fileName}</dd>
+                    </div>
+                  ) : null}
+                  <div>
+                    <dt>Job</dt>
+                    <dd>
+                      {selectedJobDetail.job.id} · {selectedJobMode} · {selectedJobDetail.job.status}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Route</dt>
+                    <dd>{previewRoute ? `${previewRoute.path} · ${previewRoute.url}` : "—"}</dd>
+                  </div>
+                  {previewRoute ? (
+                    <div>
+                      <dt>Route Stats</dt>
+                      <dd>
+                        assets {previewRoute.assetCount} · attempts {previewRoute.attemptCount}
+                      </dd>
+                    </div>
+                  ) : null}
+                  <div>
+                    <dt>Asset</dt>
+                    <dd>
+                      #{previewAsset.id} · {previewAsset.label} · {previewAsset.kind}
+                      {previewAsset.sectionType ? ` · ${previewAsset.sectionType}` : ""}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Capture</dt>
+                    <dd>
+                      q{previewAsset.quality} · dpr{previewAsset.dpr} · {formatDate(previewAsset.capturedAt)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Import</dt>
+                    <dd>
+                      {previewAsset.importOk
+                        ? `成功${previewAsset.eagleId ? ` · Eagle ${previewAsset.eagleId}` : ""}`
+                        : `失败 · ${previewAsset.importError ?? "未知错误"}`}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Preview URL</dt>
+                    <dd>{previewAsset.previewUrl}</dd>
+                  </div>
+                  {previewRoute?.error ? (
+                    <div>
+                      <dt>Route Error</dt>
+                      <dd>{previewRoute.error}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+              </aside>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

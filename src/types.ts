@@ -20,6 +20,9 @@ export type FullPageType =
   | "pricing"
   | "about"
   | "careers"
+  | "contact"
+  | "customers_list"
+  | "customer_detail"
   | "blog_list"
   | "blog_detail"
   | "news"
@@ -159,6 +162,19 @@ export interface CaptureRunResult {
     height: number;
   };
   sectionDebug?: SectionDetectionDebug;
+  scrollSceneDebug?: ScrollSceneReplacementDebug[];
+}
+
+export interface ScrollSceneReplacementDebug {
+  sceneId: string;
+  outerTop: number;
+  outerHeight: number;
+  stickyHeight: number;
+  sampledFrameCount: number;
+  distinctFrameCount: number;
+  replacementHeight: number;
+  sourceUrl?: string;
+  routePath?: string;
 }
 
 export interface EagleImportInput {
@@ -235,6 +251,7 @@ export interface RunManifest {
   sectionScope: SectionScope;
   outputDir: string;
   sectionDebug?: SectionDetectionDebug;
+  scrollSceneDebug?: ScrollSceneReplacementDebug[];
   routes?: RouteTargetSummary[];
   assets: Array<
     CapturedAsset & {

@@ -12,7 +12,7 @@
     "build:web": "vite build --config web/vite.config.ts",
     "start": "node dist/src/server/index.js",
     "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
-    "dev:server": "tsx src/server/index.ts",
+    "dev:server": "tsx watch src/server/index.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "dev:cli": "tsx src/cli.ts",
     "rules:export": "tsx scripts/rules/export-rules.ts",
@@ -30,7 +30,8 @@
     "nanoid": "^5.1.5",
     "playwright": "^1.53.2",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

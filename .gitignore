@@ -8,3 +8,5 @@ data/*
 .env
 playwright-report
 test-results
+.codex/
+.playwright-cli/

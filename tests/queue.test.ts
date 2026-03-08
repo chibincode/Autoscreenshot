@@ -41,4 +41,53 @@ describe("JobQueue", () => {
     expect(statusEvents).toContain("job-2:queued");
     expect(statusEvents).toContain("job-2:running");
   });
+
+  it("cancels a queued job before it starts", async () => {
+    const queue = new JobQueue();
+    const executed: string[] = [];
+
+    let releaseFirst: () => void = () => {
+      // no-op until promise initializer runs
+    };
+    const firstDone = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    queue.enqueue("job-1", async () => {
+      executed.push("job-1");
+      await firstDone;
+    });
+    queue.enqueue("job-2", async () => {
+      executed.push("job-2");
+    });
+
+    expect(queue.cancel("job-2")).toBe("queued_cancelled");
+    releaseFirst();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(executed).toEqual(["job-1"]);
+    expect(queue.getStats().queued).toBe(0);
+  });
+
+  it("marks a running job for cancellation", async () => {
+    const queue = new JobQueue();
+
+    let releaseFirst: () => void = () => {
+      // no-op until promise initializer runs
+    };
+    const firstDone = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    queue.enqueue("job-1", async () => {
+      await firstDone;
+    });
+
+    expect(queue.cancel("job-1")).toBe("running_cancel_requested");
+    expect(queue.isCancellationRequested("job-1")).toBe(true);
+
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(queue.isCancellationRequested("job-1")).toBe(false);
+  });
 });

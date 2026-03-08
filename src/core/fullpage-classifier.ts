@@ -5,6 +5,9 @@ const FULL_PAGE_MATCH_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "pricing",
   "about",
   "careers",
+  "contact",
+  "customers_list",
+  "customer_detail",
   "blog_list",
   "blog_detail",
   "news",
@@ -17,6 +20,14 @@ const FULL_PAGE_MATCH_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "download_detail",
   "integration",
 ];
+
+function normalizeHostname(hostname: string): string {
+  return hostname.replace(/^www\./i, "").trim().toLowerCase();
+}
+
+function isBrandBlogHost(hostname: string): boolean {
+  return /^blog\./i.test(normalizeHostname(hostname));
+}
 
 function normalizePathname(pathname: string): string {
   if (!pathname) {
@@ -88,6 +99,21 @@ export function classifyFullPageType(
   sourceUrl: string,
   rules: EagleFolderRules,
 ): { type: FullPageType; normalizedPathname: string } {
+  try {
+    const parsedUrl = new URL(sourceUrl);
+    const normalizedHostname = normalizeHostname(parsedUrl.hostname);
+    const normalizedPathname = normalizePathnameForClassification(sourceUrl, rules.urlNormalization);
+
+    if (isBrandBlogHost(normalizedHostname)) {
+      return {
+        type: normalizedPathname === "/" ? "blog_list" : "blog_detail",
+        normalizedPathname,
+      };
+    }
+  } catch {
+    // Fall through to pathname-only classification.
+  }
+
   const normalizedPathname = normalizePathnameForClassification(sourceUrl, rules.urlNormalization);
 
   for (const type of FULL_PAGE_MATCH_ORDER) {

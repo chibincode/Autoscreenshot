@@ -9,6 +9,12 @@ import {
   loadEagleFolderRules,
 } from "../core/eagle-folder-rules.js";
 import {
+  buildFolderIndex,
+  resolveFullPageFolder,
+  resolveSectionFolder,
+} from "../core/folder-resolver.js";
+import { classifyFullPageType } from "../core/fullpage-classifier.js";
+import {
   executeInstruction,
   resolveJobOptions,
   retryImportByManifestPath,
@@ -22,8 +28,10 @@ import {
   type ExecuteCoreRoutesParams,
   type ExecuteCoreRoutesResult,
 } from "../core/core-routes-service.js";
+import { EagleClient } from "../eagle/client.js";
 import { readManifest } from "../utils/manifest.js";
 import type {
+  AssetRecord,
   CreateJobRequest,
   JobDetail,
   JobEvent,
@@ -91,6 +99,10 @@ function statusFromCoreRouteState(manifest: RunManifest | null, routes: RouteTar
   return statusFromManifest(manifest);
 }
 
+function isTerminalJobStatus(status: JobStatus): boolean {
+  return status !== "queued" && status !== "running";
+}
+
 function parseJobMode(optionsJson: string): JobMode {
   try {
     const parsed = JSON.parse(optionsJson) as { mode?: unknown };
@@ -129,8 +141,88 @@ function emitToQueue(queue: JobQueue, event: JobEvent): void {
   queue.emit(event);
 }
 
+function cancelOrphanedRoutes(repo: JobsRepository, jobId: string): void {
+  const routes = repo.listRouteTargets(jobId);
+  for (const route of routes) {
+    if (route.status === "queued" || route.status === "running") {
+      repo.updateRouteTargetById({
+        id: route.id!,
+        status: "skipped",
+        error: "Cancelled by user",
+      });
+    }
+  }
+}
+
 function serializeSse(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
+}
+
+function findManifestAsset(
+  manifest: RunManifest | null,
+  asset: AssetRecord,
+): RunManifest["assets"][number] | null {
+  if (!manifest) {
+    return null;
+  }
+  return (
+    manifest.assets.find(
+      (candidate) =>
+        candidate.fileName === asset.fileName &&
+        candidate.kind === asset.kind &&
+        candidate.label === asset.label &&
+        (candidate.sectionType ?? null) === asset.sectionType &&
+        candidate.sourceUrl === asset.sourceUrl,
+    ) ?? null
+  );
+}
+
+async function decorateAssetsForResponse(
+  assets: AssetRecord[],
+  manifest: RunManifest | null,
+  cwd = process.cwd(),
+): Promise<
+  Array<
+    AssetRecord & {
+      previewUrl: string;
+      eagleFolderId: string | null;
+      eagleFolderPath: string | null;
+    }
+  >
+> {
+  const rulesState = await loadEagleFolderRules(cwd);
+  let folderIndex = buildFolderIndex([]);
+
+  try {
+    const eagle = new EagleClient();
+    const folders = await eagle.listFolders();
+    folderIndex = buildFolderIndex(eagle.flattenFolders(folders));
+  } catch {
+    folderIndex = buildFolderIndex([]);
+  }
+
+  return assets.map((asset) => {
+    const manifestAsset = findManifestAsset(manifest, asset);
+    const folderResolution =
+      asset.kind === "section"
+        ? resolveSectionFolder(asset.sectionType ?? undefined, rulesState.rules, folderIndex)
+        : resolveFullPageFolder(
+            classifyFullPageType(asset.sourceUrl, rulesState.rules).type,
+            rulesState.rules,
+            folderIndex,
+          );
+    const folder = folderResolution.folderId
+      ? folderIndex.byId.get(folderResolution.folderId) ?? null
+      : null;
+
+    return {
+      ...asset,
+      pageTitle: manifestAsset?.pageTitle,
+      previewUrl: `/api/assets/${asset.id}/file`,
+      eagleFolderId: folderResolution.folderId ?? null,
+      eagleFolderPath: folder?.path ?? null,
+    };
+  });
 }
 
 export async function buildServer(options: BuildServerOptions = {}): Promise<FastifyInstance> {
@@ -208,6 +300,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
                   outputDir,
                   manifestPath,
                   log,
+                  shouldCancel: () => queue.isCancellationRequested(jobId),
                   onRoutesDiscovered: async (routes) => {
                     repo.replaceRouteTargets(jobId, routes);
                     emitToQueue(queue, {
@@ -241,9 +334,12 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
                 });
 
           repo.replaceAssets(jobId, result.manifest);
+          const wasCancelled = jobOptions.mode === "core-routes" && "cancelled" in result && result.cancelled;
           const finalStatus =
             jobOptions.mode === "core-routes"
-              ? statusFromCoreRouteState(result.manifest, repo.listRouteTargets(jobId))
+              ? wasCancelled
+                ? "cancelled"
+                : statusFromCoreRouteState(result.manifest, repo.listRouteTargets(jobId))
               : statusFromManifest(result.manifest);
           repo.setJobResult({
             jobId,
@@ -251,7 +347,12 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
             taskJson: JSON.stringify(result.manifest.task),
             manifestPath: result.manifestPath,
             outputDir: result.manifest.outputDir,
-            error: finalStatus === "success" ? null : "Some assets failed to import into Eagle",
+            error:
+              finalStatus === "success"
+                ? null
+                : finalStatus === "cancelled"
+                  ? "Cancelled by user"
+                  : "Some assets failed to import into Eagle",
           });
 
           emitToQueue(queue, {
@@ -296,6 +397,94 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     }
   });
 
+  app.post<{ Params: { jobId: string } }>("/api/jobs/:jobId/cancel", async (request, reply) => {
+    const job = repo.getJob(request.params.jobId);
+    if (!job) {
+      reply.code(404);
+      return { error: "Job not found" };
+    }
+    if (isTerminalJobStatus(job.status)) {
+      reply.code(400);
+      return { error: "cancel is only available for queued or running jobs" };
+    }
+
+    const mode = parseJobMode(job.optionsJson);
+    if (job.status === "running" && mode !== "core-routes") {
+      reply.code(400);
+      return { error: "cancel currently supports queued jobs and running core-routes jobs only" };
+    }
+
+    const cancelResult = queue.cancel(job.id);
+    if (cancelResult === "queued_cancelled") {
+      repo.addLog(job.id, "info", "Job cancelled before execution");
+      repo.setJobResult({
+        jobId: job.id,
+        status: "cancelled",
+        error: "Cancelled by user",
+      });
+      emitToQueue(queue, {
+        type: "log",
+        jobId: job.id,
+        level: "info",
+        message: "Job cancelled before execution",
+        at: new Date().toISOString(),
+      });
+      emitToQueue(queue, {
+        type: "status",
+        jobId: job.id,
+        status: "cancelled",
+        at: new Date().toISOString(),
+        message: "Cancelled by user",
+      });
+      return { jobId: job.id, status: "cancelled" as const };
+    }
+
+    if (cancelResult === "running_cancel_requested") {
+      repo.addLog(job.id, "warn", "Cancellation requested; current route will finish first");
+      emitToQueue(queue, {
+        type: "log",
+        jobId: job.id,
+        level: "warn",
+        message: "Cancellation requested; current route will finish first",
+        at: new Date().toISOString(),
+      });
+      return { jobId: job.id, status: "running" as const, cancellationRequested: true };
+    }
+
+    if (cancelResult === "not_found" && (job.status === "queued" || job.status === "running")) {
+      repo.addLog(job.id, "warn", "Job cancelled after queue recovery mismatch");
+      cancelOrphanedRoutes(repo, job.id);
+      repo.setJobResult({
+        jobId: job.id,
+        status: "cancelled",
+        error: "Cancelled by user",
+      });
+      emitToQueue(queue, {
+        type: "log",
+        jobId: job.id,
+        level: "warn",
+        message: "Job cancelled after queue recovery mismatch",
+        at: new Date().toISOString(),
+      });
+      emitToQueue(queue, {
+        type: "status",
+        jobId: job.id,
+        status: "cancelled",
+        at: new Date().toISOString(),
+        message: "Cancelled by user",
+      });
+      emitToQueue(queue, {
+        type: "assets_updated",
+        jobId: job.id,
+        at: new Date().toISOString(),
+      });
+      return { jobId: job.id, status: "cancelled" as const, recovered: true };
+    }
+
+    reply.code(409);
+    return { error: "Job is not cancellable in current queue state" };
+  });
+
   app.get<{
     Querystring: {
       status?: JobStatus;
@@ -336,13 +525,12 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       }
     }
 
+    const assets = await decorateAssetsForResponse(detail.assets, manifest);
+
     return {
       ...detail,
       manifest,
-      assets: detail.assets.map((asset) => ({
-        ...asset,
-        previewUrl: `/api/assets/${asset.id}/file`,
-      })),
+      assets,
     };
   });
 
@@ -466,6 +654,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     if (!route || route.jobId !== job.id) {
       reply.code(404);
       return { error: "Route target not found" };
+    }
+    if (!isTerminalJobStatus(job.status)) {
+      reply.code(400);
+      return { error: "retry-route is only available after the core-routes job has finished" };
+    }
+    if (route.status !== "failed") {
+      reply.code(400);
+      return { error: "retry-route is only available for failed routes" };
     }
 
     queue.enqueue(job.id, async () => {

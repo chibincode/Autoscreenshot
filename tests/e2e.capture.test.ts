@@ -2,8 +2,15 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { chromium } from "playwright";
+import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { captureTask, isRetryableCaptureError, resolveDpr } from "../src/browser/capture.js";
+import {
+  captureTask,
+  isRetryableCaptureError,
+  resolveDpr,
+  stabilizeFullPageViewport,
+} from "../src/browser/capture.js";
 import type { ParsedTask } from "../src/types.js";
 
 let server: http.Server | null = null;
@@ -121,6 +128,132 @@ function pageTemplate(kind: "marketing" | "blog" | "docs" | "landing"): string {
   `;
 }
 
+function smoothScrollPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Smooth Scroll Page</title>
+        <style>
+          html, body {
+            margin: 0;
+            scroll-behavior: smooth;
+            font-family: sans-serif;
+          }
+          header {
+            position: sticky;
+            top: 0;
+            height: 88px;
+            display: flex;
+            align-items: center;
+            padding: 0 32px;
+            background: rgba(10, 20, 40, 0.95);
+            color: white;
+          }
+          main {
+            min-height: 4200px;
+            padding: 32px;
+            background: linear-gradient(#eef4ff, #dbe7ff);
+          }
+        </style>
+      </head>
+      <body>
+        <header>Sticky navigation</header>
+        <main>
+          <h1>Smooth scroll demo</h1>
+          <p>Used to verify fullPage viewport stabilization.</p>
+        </main>
+      </body>
+    </html>
+  `;
+}
+
+function scrollScenePageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Scroll Scene Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #111827;
+            color: white;
+          }
+          header,
+          footer,
+          .intro {
+            min-height: 720px;
+            padding: 48px;
+            box-sizing: border-box;
+          }
+          .intro {
+            background: linear-gradient(180deg, #111827, #1f2937);
+          }
+          .scroll-scene {
+            position: relative;
+            height: 4200px;
+            padding: 0 48px;
+            box-sizing: border-box;
+            background: #020617;
+          }
+          .scene-window {
+            position: sticky;
+            top: 80px;
+            height: 520px;
+            width: min(100%, 1180px);
+            margin: 0 auto;
+            border-radius: 24px;
+            overflow: hidden;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+          }
+          .scene-frame {
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 72px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+          }
+          footer {
+            background: #0f172a;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="intro"><h1>Intro</h1><p>Scroll down for the scene.</p></div>
+        <section class="scroll-scene" id="scroll-scene">
+          <div class="scene-window">
+            <div class="scene-frame" id="scene-frame">FRAME 1</div>
+          </div>
+        </section>
+        <footer><h2>Footer</h2></footer>
+        <script>
+          const frame = document.getElementById('scene-frame');
+          const section = document.getElementById('scroll-scene');
+          const palette = [
+            ['FRAME 1', '#ef4444'],
+            ['FRAME 2', '#f59e0b'],
+            ['FRAME 3', '#10b981'],
+            ['FRAME 4', '#3b82f6'],
+          ];
+          function renderScene() {
+            const start = section.offsetTop;
+            const end = start + section.offsetHeight - window.innerHeight;
+            const progress = Math.max(0, Math.min(0.9999, (window.scrollY - start) / Math.max(1, end - start)));
+            const index = Math.min(palette.length - 1, Math.floor(progress * palette.length));
+            frame.textContent = palette[index][0];
+            frame.style.background = palette[index][1];
+          }
+          window.addEventListener('scroll', renderScene, { passive: true });
+          renderScene();
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     const pathname = req.url ?? "/";
@@ -137,6 +270,16 @@ beforeAll(async () => {
     if (pathname.startsWith("/landing")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(pageTemplate("landing"));
+      return;
+    }
+    if (pathname.startsWith("/smooth")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(smoothScrollPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/scroll-scene")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(scrollScenePageTemplate());
       return;
     }
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -178,8 +321,98 @@ describe("capture utils", () => {
   it("marks crash and timeout as retryable", () => {
     expect(isRetryableCaptureError(new Error("Target crashed unexpectedly"))).toBe(true);
     expect(isRetryableCaptureError(new Error("navigation timeout"))).toBe(true);
+    expect(
+      isRetryableCaptureError(
+        new Error("browserContext.close: Target page, context or browser has been closed"),
+      ),
+    ).toBe(true);
     expect(isRetryableCaptureError(new Error("selector not found"))).toBe(false);
   });
+});
+
+describe("fullPage stabilization", () => {
+  it("forces scroll-smooth pages back to top before fullPage capture", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      viewport: { width: 1920, height: 1080 },
+      deviceScaleFactor: 1,
+    });
+    const page = await context.newPage();
+    const logs: string[] = [];
+
+    try {
+      await page.goto(`${baseUrl}/smooth`, { waitUntil: "domcontentloaded" });
+      await page.evaluate(() => window.scrollTo(0, 1400));
+      await page.waitForTimeout(120);
+
+      const before = await page.evaluate(() => window.scrollY);
+      expect(before).toBeGreaterThan(0);
+
+      const result = await stabilizeFullPageViewport(page, `${baseUrl}/smooth`, (_level, message) => {
+        logs.push(message);
+      });
+
+      const after = await page.evaluate(() => ({
+        scrollY: window.scrollY,
+        scrollTop: (document.scrollingElement ?? document.documentElement ?? document.body)?.scrollTop ?? 0,
+      }));
+
+      expect(result.stable).toBe(true);
+      expect(after.scrollY).toBe(0);
+      expect(after.scrollTop).toBe(0);
+      expect(logs).toContain(`fullpage_scroll_stabilized url=${baseUrl}/smooth scrollY=0`);
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+  });
+});
+
+describe("scroll scene unfolding", () => {
+  it("shrinks tall sticky scenes into a stitched multi-frame full-page section", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-scroll-scene-"));
+    const task: ParsedTask = {
+      url: `${baseUrl}/scroll-scene`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: ["e2e"],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(result.scrollSceneDebug).toBeTruthy();
+    expect(result.scrollSceneDebug?.[0]?.distinctFrameCount).toBeGreaterThanOrEqual(2);
+
+    const metadata = await sharp(fullPageAsset!.filePath).metadata();
+    expect(metadata.height).toBeLessThan(result.fullPageSize.height - 1200);
+
+    const firstScene = result.scrollSceneDebug![0];
+    const gap = 24;
+    const sampleOffsets = Array.from({ length: firstScene.distinctFrameCount }, (_value, index) =>
+      Math.round(firstScene.outerTop + index * (firstScene.stickyHeight + gap) + firstScene.stickyHeight / 2),
+    );
+
+    const samples = await Promise.all(
+      sampleOffsets.map(async (top) =>
+        sharp(fullPageAsset!.filePath)
+          .extract({ left: 960, top, width: 1, height: 1 })
+          .raw()
+          .toBuffer(),
+      ),
+    );
+
+    const uniqueColors = new Set(samples.map((sample) => `${sample[0]}-${sample[1]}-${sample[2]}`));
+    expect(uniqueColors.size).toBeGreaterThanOrEqual(Math.min(3, firstScene.distinctFrameCount));
+  }, 20_000);
 });
 
 describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {

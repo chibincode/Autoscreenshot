@@ -181,6 +181,12 @@ describe("import routing", () => {
       expect(addCalls[0].body?.name).toBe("hero");
       expect(addCalls[1].body?.name).toBe("Pricing | Example");
       expect(addCalls[2].body?.name).toBe("faq");
+      expect(addCalls[0].body?.tags).toEqual(["imported by Autoscreenshot"]);
+      expect(addCalls[1].body?.tags).toEqual(["imported by Autoscreenshot"]);
+      expect(addCalls[2].body?.tags).toEqual(["imported by Autoscreenshot"]);
+      expect(addCalls[0].body).not.toHaveProperty("annotation");
+      expect(addCalls[1].body).not.toHaveProperty("annotation");
+      expect(addCalls[2].body).not.toHaveProperty("annotation");
 
       expect(result.assets.every((asset) => asset.import.ok)).toBe(true);
     } finally {

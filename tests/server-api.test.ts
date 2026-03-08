@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildServer } from "../src/server/app.js";
 import { JobsRepository } from "../src/server/db.js";
 import { JobQueue } from "../src/server/queue.js";
@@ -31,16 +31,87 @@ async function waitForTerminalStatus(
   throw new Error("Job did not finish in expected time");
 }
 
+async function createManualCoreRoutesJob(
+  repo: JobsRepository,
+  tmpDir: string,
+  params: {
+    id: string;
+    jobStatus: "running" | "partial_success";
+    routeStatus: "queued" | "running" | "success" | "failed" | "skipped";
+  },
+): Promise<{ jobId: string; routeId: number }> {
+  const outputDir = path.join(tmpDir, params.id);
+  await fs.mkdir(outputDir, { recursive: true });
+  const manifestPath = path.join(outputDir, "manifest.json");
+  await fs.writeFile(manifestPath, JSON.stringify({ runId: params.id, assets: [], routes: [] }), "utf8");
+
+  repo.createJob({
+    id: params.id,
+    instruction: "manual core routes test job",
+    options: {
+      quality: 92,
+      dpr: "auto",
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      mode: "core-routes",
+      maxRoutes: 8,
+      outputDir,
+    },
+  });
+  repo.setJobResult({
+    jobId: params.id,
+    status: params.jobStatus,
+    manifestPath,
+    outputDir,
+    taskJson: JSON.stringify({
+      url: "https://example.com",
+      waitUntil: "networkidle",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 2 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    }),
+  });
+  repo.replaceRouteTargets(params.id, [
+    {
+      url: "https://example.com/pricing",
+      path: "/pricing",
+      title: "Pricing",
+      source: "nav",
+      depth: 0,
+      priorityScore: 900,
+    },
+  ]);
+  repo.updateRouteTargetStatus({
+    jobId: params.id,
+    url: "https://example.com/pricing",
+    status: params.routeStatus,
+    error: params.routeStatus === "failed" ? "timeout" : null,
+    attemptCount: 1,
+    startedAt: new Date().toISOString(),
+    finishedAt: params.routeStatus === "failed" || params.routeStatus === "success" ? new Date().toISOString() : null,
+  });
+
+  const route = repo.listRouteTargets(params.id)[0];
+  if (!route || typeof route.id !== "number") {
+    throw new Error("Expected seeded route target");
+  }
+  return { jobId: params.id, routeId: route.id };
+}
+
 describe("server api", () => {
   let app: Awaited<ReturnType<typeof buildServer>>;
   let tmpDir: string;
   let dbPath: string;
+  let repo: JobsRepository;
+  let queue: JobQueue;
 
   beforeAll(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-api-"));
     dbPath = path.join(tmpDir, "jobs.db");
-    const repo = new JobsRepository(dbPath);
-    const queue = new JobQueue();
+    repo = new JobsRepository(dbPath);
+    queue = new JobQueue();
     const manifestMap = new Map<string, RunManifest>();
 
     const executeInstructionFn = async (
@@ -275,6 +346,7 @@ describe("server api", () => {
         manifest,
         routes: manifest.routes ?? [],
         fallbackRoutes: 0,
+        cancelled: false,
       };
     };
 
@@ -358,6 +430,10 @@ describe("server api", () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("returns config with eagle import policy summary", async () => {
     const response = await app.inject({
       method: "GET",
@@ -386,6 +462,34 @@ describe("server api", () => {
   });
 
   it("creates a job and returns detail", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/folder/list")) {
+        return new Response(
+          JSON.stringify({
+            status: "success",
+            data: [
+              {
+                id: "pages-root",
+                name: "Pages",
+                children: [
+                  {
+                    id: "JZR6J2FS0KW4W",
+                    name: "Page_Home",
+                  },
+                ],
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
     const createResponse = await app.inject({
       method: "POST",
       url: "/api/jobs",
@@ -416,7 +520,12 @@ describe("server api", () => {
     });
     expect(detailResponse.statusCode).toBe(200);
     const detailData = detailResponse.json() as {
-      assets: Array<{ previewUrl: string }>;
+      assets: Array<{
+        previewUrl: string;
+        eagleFolderId: string | null;
+        eagleFolderPath: string | null;
+        pageTitle?: string;
+      }>;
       logs: Array<{ message: string }>;
       manifest: {
         sectionDebug?: {
@@ -426,6 +535,8 @@ describe("server api", () => {
     };
     expect(detailData.assets.length).toBeGreaterThan(0);
     expect(detailData.assets[0].previewUrl).toContain("/api/assets/");
+    expect(detailData.assets[0].eagleFolderId).toBe("JZR6J2FS0KW4W");
+    expect(detailData.assets[0].eagleFolderPath).toBe("Pages/Page_Home");
     expect(detailData.logs.length).toBeGreaterThan(0);
     expect(detailData.manifest.sectionDebug?.rawCandidates.length).toBe(1);
   });
@@ -469,6 +580,180 @@ describe("server api", () => {
 
     const retriedStatus = await waitForTerminalStatus(app, createData.jobId);
     expect(["success", "partial_success"]).toContain(retriedStatus);
+  });
+
+  it("rejects retry-route while the core-routes job is still running", async () => {
+    const seeded = await createManualCoreRoutesJob(repo, tmpDir, {
+      id: "manual-running-job",
+      jobStatus: "running",
+      routeStatus: "failed",
+    });
+
+    const retryResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${seeded.jobId}/retry-route`,
+      payload: {
+        routeId: seeded.routeId,
+      },
+    });
+
+    expect(retryResponse.statusCode).toBe(400);
+    expect(retryResponse.json()).toEqual({
+      error: "retry-route is only available after the core-routes job has finished",
+    });
+  });
+
+  it("rejects retry-route for routes that are not failed", async () => {
+    const seeded = await createManualCoreRoutesJob(repo, tmpDir, {
+      id: "manual-success-job",
+      jobStatus: "partial_success",
+      routeStatus: "success",
+    });
+
+    const retryResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${seeded.jobId}/retry-route`,
+      payload: {
+        routeId: seeded.routeId,
+      },
+    });
+
+    expect(retryResponse.statusCode).toBe(400);
+    expect(retryResponse.json()).toEqual({
+      error: "retry-route is only available for failed routes",
+    });
+  });
+
+  it("cancels a queued job before execution", async () => {
+    let releaseRunningJob = () => {
+      // no-op until promise initializer runs
+    };
+    const runningJobDone = new Promise<void>((resolve) => {
+      releaseRunningJob = resolve;
+    });
+
+    repo.createJob({
+      id: "running-job",
+      instruction: "running job",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir: path.join(tmpDir, "running-job"),
+      },
+    });
+    repo.setJobRunning("running-job");
+    queue.enqueue("running-job", async () => {
+      await runningJobDone;
+    });
+
+    repo.createJob({
+      id: "queued-job",
+      instruction: "queued job",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir: path.join(tmpDir, "queued-job"),
+      },
+    });
+    queue.enqueue("queued-job", async () => {
+      throw new Error("queued job should have been cancelled before execution");
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const cancelResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs/queued-job/cancel",
+    });
+
+    expect(cancelResponse.statusCode).toBe(200);
+    expect(cancelResponse.json()).toEqual({
+      jobId: "queued-job",
+      status: "cancelled",
+    });
+    expect(repo.getJob("queued-job")?.status).toBe("cancelled");
+
+    releaseRunningJob();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  it("requests cancellation for a running core-routes job", async () => {
+    repo.createJob({
+      id: "running-core-job",
+      instruction: "running core-routes job",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "core-routes",
+        maxRoutes: 8,
+        outputDir: path.join(tmpDir, "running-core-job"),
+      },
+    });
+    repo.setJobRunning("running-core-job");
+
+    let releaseRunningJob = () => {
+      // no-op until promise initializer runs
+    };
+    const runningJobDone = new Promise<void>((resolve) => {
+      releaseRunningJob = resolve;
+    });
+
+    queue.enqueue("running-core-job", async () => {
+      await runningJobDone;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const cancelResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs/running-core-job/cancel",
+    });
+
+    expect(cancelResponse.statusCode).toBe(200);
+    expect(cancelResponse.json()).toEqual({
+      jobId: "running-core-job",
+      status: "running",
+      cancellationRequested: true,
+    });
+    expect(queue.isCancellationRequested("running-core-job")).toBe(true);
+
+    releaseRunningJob();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+
+  it("cancels an orphaned running core-routes job after queue recovery mismatch", async () => {
+    const seeded = await createManualCoreRoutesJob(repo, tmpDir, {
+      id: "orphan-running-job",
+      jobStatus: "running",
+      routeStatus: "running",
+    });
+
+    const cancelResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${seeded.jobId}/cancel`,
+    });
+
+    expect(cancelResponse.statusCode).toBe(200);
+    expect(cancelResponse.json()).toEqual({
+      jobId: seeded.jobId,
+      status: "cancelled",
+      recovered: true,
+    });
+
+    expect(repo.getJob(seeded.jobId)?.status).toBe("cancelled");
+    const route = repo.listRouteTargets(seeded.jobId)[0];
+    expect(route?.status).toBe("skipped");
+    expect(route?.error).toBe("Cancelled by user");
   });
 
   it("queues retry import", async () => {

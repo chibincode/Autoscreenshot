@@ -94,35 +94,8 @@ function makeRunId(url: string): string {
   return `${slugify(host)}_${timestampForFile()}`;
 }
 
-function buildAssetTags(asset: RunManifest["assets"][number], userTags: string[]): string[] {
-  const tags = new Set<string>();
-  for (const userTag of userTags) {
-    tags.add(userTag);
-  }
-  tags.add("format:jpg");
-  tags.add(`quality:${asset.quality}`);
-  tags.add(`dpr:${asset.dpr}`);
-  tags.add(`capture:${asset.kind}`);
-  tags.add(`captured_at:${asset.capturedAt.replace(/[:.]/g, "-")}`);
-  if (asset.sectionType) {
-    tags.add(`section:${asset.sectionType}`);
-  }
-  return [...tags];
-}
-
-function buildAnnotation(
-  asset: RunManifest["assets"][number],
-  userAnnotation?: string,
-): string {
-  const lines = [
-    userAnnotation?.trim() ?? "",
-    `source_url=${asset.sourceUrl}`,
-    `section_type=${asset.sectionType ?? "fullPage"}`,
-    `quality=${asset.quality}`,
-    `dpr=${asset.dpr}`,
-    `captured_at=${asset.capturedAt}`,
-  ].filter(Boolean);
-  return lines.join("\n");
+function buildAssetTags(): string[] {
+  return ["imported by Autoscreenshot"];
 }
 
 function importedCounts(manifest: RunManifest): { imported: number; failed: number } {
@@ -209,8 +182,7 @@ export async function importManifestAssets(
     emit(log, "info", `Importing ${asset.fileName} into Eagle`);
     const importResult = await eagle.addImageFromPath({
       asset,
-      extraTags: buildAssetTags(asset, manifest.task.tags),
-      annotation: buildAnnotation(asset, manifest.task.eagle.annotation),
+      extraTags: buildAssetTags(),
       folderId: resolveResult.folderId,
       star: manifest.task.eagle.star,
     });
@@ -269,6 +241,7 @@ export async function executeInstruction(
     outputDir,
     sectionScope: options.sectionScope,
     classicMaxSections: options.classicMaxSections,
+    log,
   });
 
   const manifest: RunManifest = {
@@ -290,6 +263,7 @@ export async function executeInstruction(
     sectionScope: options.sectionScope,
     outputDir,
     sectionDebug: captureResult.sectionDebug,
+    scrollSceneDebug: captureResult.scrollSceneDebug,
     assets: captureResult.assets.map((asset) => ({
       ...asset,
       import: {

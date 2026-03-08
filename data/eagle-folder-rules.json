@@ -57,6 +57,18 @@
       "folderId": "K3ACUQBFHQCTL",
       "pathRules": ["/careers"]
     },
+    "contact": {
+      "folderId": "JZR6PTFNN3KV5",
+      "pathRules": ["/contact", "/contact-sales", "/demo", "/book-demo"]
+    },
+    "customers_list": {
+      "folderId": "K0IC2N67H834Z",
+      "pathRules": ["/customers", "/use-cases"]
+    },
+    "customer_detail": {
+      "folderId": "K0IC2S1PICKEP",
+      "pathRules": ["/customers/:slug", "/use-cases/:slug"]
+    },
     "blog_list": {
       "folderId": "K09RV5HAHZ1E5",
       "pathRules": ["/blog", "/blog/page/*", "/blog/tag/*"]
@@ -83,11 +95,17 @@
     },
     "products_list": {
       "folderId": "K6INX63YA0AD8",
-      "pathRules": ["/products"]
+      "pathRules": ["/product", "/products", "/feature", "/features", "/solutions"]
     },
     "product_detail": {
       "folderId": "K6INXZ75D5M84",
-      "pathRules": ["/products/:slug"]
+      "pathRules": [
+        "/products/:slug",
+        "/product/:slug",
+        "/features/:slug",
+        "/feature/:slug",
+        "/solutions/:slug"
+      ]
     },
     "downloads_list": {
       "folderId": "KSHBG91WK448P",

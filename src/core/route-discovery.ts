@@ -1,5 +1,6 @@
 import { chromium } from "playwright";
 import { DEFAULT_DESKTOP_VIEWPORT } from "./defaults.js";
+import { gotoWithFallback, type NavigationFallbackEvent } from "../browser/navigation.js";
 import type {
   RouteDiscoveryResult,
   RouteDiscoveryTarget,
@@ -11,6 +12,7 @@ interface DiscoverCoreRoutesOptions {
   entryUrl: string;
   maxRoutes: number;
   waitUntil: WaitUntilState;
+  onNavigationFallback?: (event: NavigationFallbackEvent) => void;
 }
 
 interface RawLink {
@@ -18,6 +20,12 @@ interface RawLink {
   title: string;
   source: RouteTargetSource;
   depth: number;
+}
+
+interface NormalizedRouteCandidate {
+  url: string;
+  path: string;
+  hostname: string;
 }
 
 const RESOURCE_EXT_RE = /\.(pdf|zip|png|jpe?g|gif|svg|webp|mp4|webm|mov|mp3|wav|json|xml|txt|ico)$/i;
@@ -35,10 +43,12 @@ const PATH_PRIORITY_GROUPS: Array<{ paths: string[]; score: number }> = [
   { paths: ["/about", "/company", "/team"], score: 6_600 },
   { paths: ["/careers", "/jobs"], score: 6_300 },
   { paths: ["/blog", "/news", "/changelog"], score: 6_000 },
-  { paths: ["/contact", "/demo", "/book-demo"], score: 5_700 },
+  { paths: ["/contact", "/contact-sales", "/demo", "/book-demo"], score: 5_700 },
   { paths: ["/login", "/signin"], score: 5_400 },
   { paths: ["/signup", "/register"], score: 5_100 },
 ];
+
+const BLOG_GROUP_SCORE = PATH_PRIORITY_GROUPS.find((group) => group.paths.includes("/blog"))?.score ?? 6_000;
 
 function normalizePath(inputPath: string): string {
   const withoutDuplicateSlash = inputPath.replace(/\/+/g, "/");
@@ -49,6 +59,28 @@ function normalizePath(inputPath: string): string {
     return "/";
   }
   return withLeadingSlash.replace(/\/+$/, "") || "/";
+}
+
+function normalizeHostname(hostname: string): string {
+  return hostname.replace(/^www\./i, "").trim().toLowerCase();
+}
+
+function isDirectBrandSubdomain(hostname: string, entry: URL): boolean {
+  const normalizedHost = normalizeHostname(hostname);
+  const rootHost = normalizeHostname(entry.hostname);
+  const hostLabels = normalizedHost.split(".");
+  const rootLabels = rootHost.split(".");
+  return normalizedHost.endsWith(`.${rootHost}`) && hostLabels.length === rootLabels.length + 1;
+}
+
+function isAllowedBrandHost(hostname: string, entry: URL): boolean {
+  const normalizedHost = normalizeHostname(hostname);
+  const normalizedEntryHost = normalizeHostname(entry.hostname);
+  return normalizedHost === normalizedEntryHost || isDirectBrandSubdomain(normalizedHost, entry);
+}
+
+function isBrandBlogHost(hostname: string, entry: URL): boolean {
+  return normalizeHostname(hostname) === `blog.${normalizeHostname(entry.hostname)}`;
 }
 
 function pathMatches(pathname: string, template: string): boolean {
@@ -106,7 +138,7 @@ export function shouldExcludeRoute(pathname: string): boolean {
   return false;
 }
 
-function normalizeSameDomainUrl(rawHref: string, entry: URL): { url: string; path: string } | null {
+function normalizeSameDomainUrl(rawHref: string, entry: URL): NormalizedRouteCandidate | null {
   let parsed: URL;
   try {
     parsed = new URL(rawHref, entry);
@@ -114,7 +146,7 @@ function normalizeSameDomainUrl(rawHref: string, entry: URL): { url: string; pat
     return null;
   }
 
-  if (parsed.hostname !== entry.hostname) {
+  if (!isAllowedBrandHost(parsed.hostname, entry)) {
     return null;
   }
   if (!/^https?:$/.test(parsed.protocol)) {
@@ -133,10 +165,43 @@ function normalizeSameDomainUrl(rawHref: string, entry: URL): { url: string; pat
   return {
     url: `${parsed.protocol}//${parsed.host}${parsed.pathname}`,
     path,
+    hostname: normalizeHostname(parsed.hostname),
   };
 }
 
-async function collectRawLinks(entryUrl: string, waitUntil: WaitUntilState): Promise<RawLink[]> {
+function scoreDiscoveredRoute(
+  routeUrl: string,
+  pathname: string,
+  source: RouteTargetSource,
+  depth: number,
+  entry: URL,
+): number {
+  const normalizedPath = normalizePath(pathname);
+  const parsedUrl = new URL(routeUrl);
+  const normalizedHost = normalizeHostname(parsedUrl.hostname);
+  const normalizedEntryHost = normalizeHostname(entry.hostname);
+
+  if (normalizedHost !== normalizedEntryHost) {
+    let score = 1_000;
+    if (isBrandBlogHost(normalizedHost, entry)) {
+      score = BLOG_GROUP_SCORE;
+    }
+    if (source === "nav") {
+      score += 120;
+    }
+    score -= Math.min(depth, 5) * 10;
+    score -= Math.min(normalizedPath.length, 120);
+    return score;
+  }
+
+  return scoreCoreRoute(normalizedPath, source, depth);
+}
+
+async function collectRawLinks(
+  entryUrl: string,
+  waitUntil: WaitUntilState,
+  onNavigationFallback?: (event: NavigationFallbackEvent) => void,
+): Promise<RawLink[]> {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     viewport: {
@@ -148,7 +213,15 @@ async function collectRawLinks(entryUrl: string, waitUntil: WaitUntilState): Pro
   const page = await context.newPage();
 
   try {
-    await page.goto(entryUrl, { waitUntil, timeout: 75_000 });
+    await gotoWithFallback({
+      page,
+      url: entryUrl,
+      waitUntil,
+      timeoutMs: 75_000,
+      phase: "discovery",
+      fallbackWaitUntil: "domcontentloaded",
+      onFallback: onNavigationFallback,
+    });
     const links = await page.evaluate(() => {
       const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"));
       return anchors.map((anchor) => {
@@ -178,7 +251,7 @@ async function collectRawLinks(entryUrl: string, waitUntil: WaitUntilState): Pro
 
 export async function discoverCoreRoutes(options: DiscoverCoreRoutesOptions): Promise<RouteDiscoveryResult> {
   const entry = new URL(options.entryUrl);
-  const rawLinks = await collectRawLinks(options.entryUrl, options.waitUntil);
+  const rawLinks = await collectRawLinks(options.entryUrl, options.waitUntil, options.onNavigationFallback);
 
   const dedup = new Map<string, RouteDiscoveryTarget>();
 
@@ -206,7 +279,7 @@ export async function discoverCoreRoutes(options: DiscoverCoreRoutesOptions): Pr
       title: rawLink.title || undefined,
       source: rawLink.source,
       depth: rawLink.depth,
-      priorityScore: scoreCoreRoute(normalized.path, rawLink.source, rawLink.depth),
+      priorityScore: scoreDiscoveredRoute(normalized.url, normalized.path, rawLink.source, rawLink.depth, entry),
     };
 
     const existing = dedup.get(route.url);
@@ -224,8 +297,7 @@ export async function discoverCoreRoutes(options: DiscoverCoreRoutesOptions): Pr
   }
 
   const routes = [...dedup.values()]
-    .sort((a, b) => b.priorityScore - a.priorityScore || a.path.localeCompare(b.path))
-    .slice(0, options.maxRoutes);
+    .sort((a, b) => b.priorityScore - a.priorityScore || a.url.localeCompare(b.url));
 
   return {
     entryUrl: options.entryUrl,
@@ -238,5 +310,7 @@ export function __testables() {
     normalizePath,
     normalizeSameDomainUrl,
     pathMatches,
+    isAllowedBrandHost,
+    scoreDiscoveredRoute,
   };
 }
