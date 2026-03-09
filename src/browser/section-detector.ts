@@ -163,10 +163,10 @@ export function classifySectionCandidate(
     testimonial: [
       "testimonial",
       "testimonials",
-      "review",
-      "reviews",
-      "customer",
-      "customers",
+      "customer review",
+      "customer reviews",
+      "user review",
+      "user reviews",
       "quote",
       "case study",
       "评价",
@@ -182,8 +182,8 @@ export function classifySectionCandidate(
       "价格",
     ],
     team: [
-      "team",
       "our team",
+      "meet the team",
       "members",
       "leadership",
       "founders",
@@ -192,7 +192,20 @@ export function classifySectionCandidate(
       "创始人",
     ],
     faq: ["faq", "questions", "question", "frequently asked questions", "常见问题", "问答"],
-    blog: ["blog", "news", "posts", "post", "articles", "insights", "博客", "文章"],
+    blog: [
+      "blog",
+      "news",
+      "posts",
+      "post",
+      "articles",
+      "insights",
+      "changelog",
+      "release",
+      "releases",
+      "release notes",
+      "博客",
+      "文章",
+    ],
     cta: [
       "cta",
       "call to action",
@@ -254,6 +267,17 @@ export function classifySectionCandidate(
     }
   }
 
+  const hasQuotedCopy = /["“”]/.test(candidate.text);
+  const hasTestimonialAttribution =
+    /\b(founder|co-founder|ceo|cto|cpo|coo|vp|head|director|manager)\b\s+(?:at|of)\s+[a-z0-9][a-z0-9&.' -]{1,}/i.test(
+      candidate.text,
+    );
+  if (hasQuotedCopy && hasTestimonialAttribution) {
+    addScore("testimonial", 6, "pattern:quote_with_role_company");
+    addScore("team", -2, "conflict:testimonial_attribution_vs_team");
+    testimonialStrong = true;
+  }
+
   const faqStrongPhrases = [
     "faq",
     "f.a.q",
@@ -291,6 +315,21 @@ export function classifySectionCandidate(
     }
   }
 
+  const blogStrongPhrases = [
+    "changelog",
+    "release notes",
+    "see all releases",
+    "view all releases",
+    "latest updates",
+  ];
+  let blogStrong = false;
+  for (const phrase of blogStrongPhrases) {
+    if (haystack.includes(phrase)) {
+      addScore("blog", 4, `phrase:blog_strong:${phrase.replace(/\s+/g, "_")}`);
+      blogStrong = true;
+    }
+  }
+
   const aspectRatio = candidate.width / Math.max(1, candidate.height);
   if (candidate.y <= viewportHeight * 0.35) {
     addScore("hero", 3, "hard:hero_top_fold");
@@ -317,6 +356,12 @@ export function classifySectionCandidate(
     addScore("hero", 1, "heading_count>0");
     addScore("feature", 1, "heading_count>0");
   }
+  if (candidate.headingCount >= 3 && candidate.linkCount <= 2) {
+    addScore("feature", 2, "layout:multi_heading_sequence");
+  }
+  if (/0?1\S*.*0?2\S*.*0?3\S*/s.test(candidate.text)) {
+    addScore("feature", 2, "content:numbered_steps");
+  }
   if (candidate.buttonCount > 0) {
     addScore("hero", 1, "button_count>0");
     addScore("pricing", 1, "button_count>0");
@@ -328,12 +373,25 @@ export function classifySectionCandidate(
     addScore("feature", 1, "layout:image_and_headings");
   }
   if (
-    /\b(testimonial|testimonials|review|reviews|quote|quotes|case study|case studies|customer stories)\b|评价|用户反馈/i.test(
+    /\b(testimonial|testimonials|customer review|customer reviews|user review|user reviews|quote|quotes|case study|case studies|customer stories)\b|评价|用户反馈/i.test(
       candidate.text,
     )
   ) {
     addScore("testimonial", 3, "regex:testimonial_semantic");
     testimonialStrong = true;
+  }
+  const datedUpdateMatches =
+    candidate.text.match(
+      /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+\d{1,2},\s+\d{4}\b/gi,
+    ) ?? [];
+  if (datedUpdateMatches.length >= 2) {
+    addScore("blog", 3, "content:dated_updates");
+  }
+  if (candidate.linkCount >= 3) {
+    addScore("blog", 1, "link_count>=3");
+  }
+  if (candidate.linkCount >= 3 && /(changelog|release|latest)/i.test(candidate.text)) {
+    addScore("blog", 2, "layout:linked_update_list");
   }
   if (
     /\$\s?\d+|\b(?:usd|eur|gbp|cny|rmb)\s?\d+|\b\d+(?:\.\d+)?\s?(?:usd|eur|gbp|cny|rmb)\b|\b(?:from|starting at)\s+\$\s?\d+|\b(?:per|\/)\s?(?:mo|month|yr|year)\b|\bbilled\s+(?:monthly|annually|yearly)\b|\b(?:monthly|annual|yearly)\s+billing\b|每月\s*\d+|每年\s*\d+/i.test(
@@ -392,6 +450,9 @@ export function classifySectionCandidate(
   }
   if (faqStrong) {
     addScore("testimonial", -3, "conflict:faq_strong_vs_testimonial");
+  }
+  if (blogStrong) {
+    addScore("testimonial", -2, "conflict:blog_strong_vs_testimonial");
   }
   if (testimonialStrong && scores.faq > 0 && !faqStrong) {
     addScore("faq", -1, "conflict:testimonial_strong");

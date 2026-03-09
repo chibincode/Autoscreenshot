@@ -95,6 +95,24 @@ describe("classifySectionCandidate", () => {
     expect(result.sectionType).toBe("testimonial");
   });
 
+  it("prefers testimonial for quotes with company role attribution", () => {
+    const candidate = {
+      ...baseCandidate(),
+      className: "customer-quote",
+      text:
+        "“Every hour spent chasing bugs is time away from building features that users actually want.” Dylan Babbs CTO of Profound",
+      imageCount: 1,
+      y: 2100,
+      height: 420,
+    };
+    const result = classifySectionCandidate(candidate, 1080);
+    expect(result.sectionType).toBe("testimonial");
+    expect(result.scores.testimonial).toBeGreaterThan(result.scores.team);
+    expect(
+      result.signals.some((signal) => signal.rule === "pattern:quote_with_role_company"),
+    ).toBe(true);
+  });
+
   it("keeps testimonial over faq on mixed signals", () => {
     const candidate = {
       ...baseCandidate(),
@@ -156,6 +174,49 @@ describe("classifySectionCandidate", () => {
     const result = classifySectionCandidate(candidate, 900);
     expect(result.sectionType).toBe("team");
     expect(result.scores.team).toBeGreaterThan(0);
+  });
+
+  it("prefers feature for numbered walkthrough sections even when customers are mentioned", () => {
+    const candidate = {
+      ...baseCandidate(),
+      className: "product-walkthrough",
+      text:
+        "Interfere finds 01issues in your app, understands 02what's happening, and owns resolution 03from first signal to production. 01 Learn about issues before your customers do 02 Understand what's going wrong 03 Fix problems with confidence",
+      headingCount: 5,
+      buttonCount: 2,
+      y: 1400,
+      height: 820,
+    };
+    const result = classifySectionCandidate(candidate, 1080);
+    expect(result.sectionType).toBe("feature");
+    expect(result.scores.feature).toBeGreaterThan(result.scores.testimonial);
+    expect(result.scores.feature).toBeGreaterThan(result.scores.cta);
+    expect(
+      result.signals.some((signal) => signal.rule === "content:numbered_steps"),
+    ).toBe(true);
+  });
+
+  it("recognizes changelog grids as blog sections", () => {
+    const candidate = {
+      ...baseCandidate(),
+      className: "changelog-grid",
+      text:
+        "CHANGELOG The Latest FEB 11, 2026 Timeline Improvements FEB 1, 2026 OAuth applications & scoped API keys DEC 22, 2025 We're in review to be certified as SOC 2 Type II compliant See all releases",
+      headingCount: 1,
+      linkCount: 4,
+      y: 5400,
+      height: 560,
+    };
+    const result = classifySectionCandidate(candidate, 1080);
+    expect(result.sectionType).toBe("blog");
+    expect(result.scores.blog).toBeGreaterThan(result.scores.feature);
+    expect(result.scores.blog).toBeGreaterThan(result.scores.testimonial);
+    expect(
+      result.signals.some((signal) => signal.rule === "content:dated_updates"),
+    ).toBe(true);
+    expect(
+      result.signals.some((signal) => signal.rule === "phrase:blog_strong:changelog"),
+    ).toBe(true);
   });
 
   it("recognizes cta blocks", () => {

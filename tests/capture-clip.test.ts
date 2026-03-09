@@ -6,9 +6,15 @@ import {
 } from "../src/browser/section-clip.js";
 import type { SectionResult } from "../src/types.js";
 
-function makeSection(x: number, y: number, width: number, height: number): SectionResult {
+function makeSection(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  sectionType: SectionResult["sectionType"] = "feature",
+): SectionResult {
   return {
-    sectionType: "feature",
+    sectionType,
     selector: "#feature",
     confidence: 1,
     bbox: { x, y, width, height },
@@ -38,6 +44,42 @@ describe("buildFixedSectionClip", () => {
     expect(clip.height).toBe(FIXED_SECTION_CLIP_HEIGHT);
     expect(clip.x).toBe(0);
     expect(clip.y).toBe(0);
+  });
+
+  it("anchors hero clips to the first viewport to preserve top navigation", () => {
+    const clip = buildFixedSectionClip(makeSection(0, 52, 1920, 1104, "hero"), {
+      width: 1920,
+      height: 6000,
+    });
+
+    expect(clip.width).toBe(FIXED_SECTION_CLIP_WIDTH);
+    expect(clip.height).toBe(FIXED_SECTION_CLIP_HEIGHT);
+    expect(clip.x).toBe(0);
+    expect(clip.y).toBe(0);
+  });
+
+  it("keeps below-fold hero clips center-aligned to avoid breaking misclassified sections", () => {
+    const clip = buildFixedSectionClip(makeSection(0, 1402, 1920, 1093, "hero"), {
+      width: 1920,
+      height: 6000,
+    });
+
+    expect(clip.width).toBe(FIXED_SECTION_CLIP_WIDTH);
+    expect(clip.height).toBe(FIXED_SECTION_CLIP_HEIGHT);
+    expect(clip.x).toBe(0);
+    expect(clip.y).toBe(1409);
+  });
+
+  it("keeps non-hero clips center-aligned even near the top of the page", () => {
+    const clip = buildFixedSectionClip(makeSection(0, 52, 1920, 1104, "feature"), {
+      width: 1920,
+      height: 6000,
+    });
+
+    expect(clip.width).toBe(FIXED_SECTION_CLIP_WIDTH);
+    expect(clip.height).toBe(FIXED_SECTION_CLIP_HEIGHT);
+    expect(clip.x).toBe(0);
+    expect(clip.y).toBe(64);
   });
 
   it("clamps to bottom edge when candidate center is near bottom", () => {

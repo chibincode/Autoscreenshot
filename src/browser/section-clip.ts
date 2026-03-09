@@ -2,6 +2,7 @@ import type { SectionResult } from "../types.js";
 
 export const FIXED_SECTION_CLIP_WIDTH = 1920;
 export const FIXED_SECTION_CLIP_HEIGHT = 1080;
+const HERO_TOP_ANCHOR_MAX_Y = 180;
 
 export interface ClipRect {
   x: number;
@@ -37,7 +38,17 @@ export function buildFixedSectionClipFromBbox(
 }
 
 export function buildFixedSectionClip(section: SectionResult, pageSize: PageSize): ClipRect {
-  return buildFixedSectionClipFromBbox(section.bbox, pageSize);
+  const clip = buildFixedSectionClipFromBbox(section.bbox, pageSize);
+
+  // Only top-of-page heroes should snap to the first viewport to preserve nav/chrome.
+  if (section.sectionType === "hero" && section.bbox.y <= HERO_TOP_ANCHOR_MAX_Y) {
+    return {
+      ...clip,
+      y: 0,
+    };
+  }
+
+  return clip;
 }
 
 export function calcClipIoU(a: ClipRect, b: ClipRect): number {
@@ -57,4 +68,3 @@ export function calcClipIoU(a: ClipRect, b: ClipRect): number {
   }
   return intersection / union;
 }
-
