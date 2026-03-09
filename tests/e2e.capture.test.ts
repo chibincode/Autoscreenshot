@@ -440,6 +440,7 @@ describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {
     expect(fullPageCount).toBe(1);
     expect(fullPageAsset?.pageTitle).toBeTruthy();
     expect(sectionAssets.length).toBeGreaterThanOrEqual(3);
+    expect(sectionAssets.every((asset) => Boolean(asset.pageTitle?.trim()))).toBe(true);
     for (const sectionAsset of sectionAssets) {
       const dim = await readJpegDimensions(sectionAsset.filePath);
       if (sectionAsset.dpr === 2) {

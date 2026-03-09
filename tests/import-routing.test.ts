@@ -89,6 +89,7 @@ describe("import routing", () => {
             label: "hero",
             filePath: heroPath,
             fileName: "hero.jpg",
+            pageTitle: "Pricing | Example",
             sourceUrl: "https://example.com/pricing",
             quality: 92,
             dpr: 2,
@@ -113,6 +114,7 @@ describe("import routing", () => {
             label: "faq",
             filePath: faqPath,
             fileName: "faq.jpg",
+            pageTitle: "Pricing | Example",
             sourceUrl: "https://example.com/pricing",
             quality: 92,
             dpr: 2,
@@ -178,9 +180,9 @@ describe("import routing", () => {
       expect(addCalls[0].body?.folderId).toBe("hero-folder-id");
       expect(addCalls[1].body?.folderId).toBe("page-pricing-id");
       expect(addCalls[2].body?.folderId).toBeUndefined();
-      expect(addCalls[0].body?.name).toBe("hero");
+      expect(addCalls[0].body?.name).toBe("Pricing | Example");
       expect(addCalls[1].body?.name).toBe("Pricing | Example");
-      expect(addCalls[2].body?.name).toBe("faq");
+      expect(addCalls[2].body?.name).toBe("Pricing | Example");
       expect(addCalls[0].body?.tags).toEqual(["imported by Autoscreenshot"]);
       expect(addCalls[1].body?.tags).toEqual(["imported by Autoscreenshot"]);
       expect(addCalls[2].body?.tags).toEqual(["imported by Autoscreenshot"]);

@@ -333,6 +333,7 @@ async function captureOnce(
           label,
           filePath: sectionPath,
           fileName: sectionName,
+          pageTitle,
           sourceUrl: task.url,
           quality: task.image.quality,
           dpr: forcedDpr,
