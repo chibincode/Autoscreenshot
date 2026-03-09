@@ -145,3 +145,32 @@ npm test
 ```bash
 RUN_E2E_CAPTURE=1 npm test
 ```
+
+## 排障
+
+### `npm run dev` / `npm run build` 启动时报 `esbuild` version mismatch
+
+如果你看到类似下面的错误：
+
+```text
+Cannot start service: Host version "0.25.12" does not match binary version "0.21.5"
+```
+
+通常不是业务代码问题，而是本地 `node_modules` 里的 `esbuild` 二进制损坏或串版本了。最稳妥的恢复方式是重建依赖树：
+
+```bash
+rm -rf node_modules
+npm ci
+```
+
+然后重新启动：
+
+```bash
+npm run dev
+```
+
+如果还需要跑截图相关测试，再补一次浏览器依赖：
+
+```bash
+npx playwright install chromium
+```
