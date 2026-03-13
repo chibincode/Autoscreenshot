@@ -160,6 +160,10 @@ describe("core-routes-service", () => {
         to: "domcontentloaded",
         errorMessage: "page.goto: Timeout 75000ms exceeded.",
       });
+      options.onRedirectResolved?.({
+        from: "https://example.io/redirect?n=pricing",
+        to: "https://example.com/pricing",
+      });
       return {
         entryUrl: "https://example.com",
         routes: [
@@ -202,6 +206,9 @@ describe("core-routes-service", () => {
     );
     expect(logs).toContain(
       "route_wait_fallback phase=discovery url=https://example.com/ from=networkidle to=domcontentloaded reason=page.goto: Timeout 75000ms exceeded.",
+    );
+    expect(logs).toContain(
+      "core_routes_redirect_resolved from=https://example.io/redirect?n=pricing to=https://example.com/pricing",
     );
     expect(logs).toContain(
       "route_wait_fallback phase=capture url=https://example.com/ from=networkidle to=domcontentloaded reason=page.goto: Timeout 60000ms exceeded.",

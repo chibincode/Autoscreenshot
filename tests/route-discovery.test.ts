@@ -20,7 +20,7 @@ describe("route-discovery", () => {
     expect(shouldExcludeRoute("/")).toBe(false);
   });
 
-  it("normalizes same-domain links and drops query/hash", () => {
+  it("normalizes query-bearing same-domain links instead of rejecting them", () => {
     const entry = new URL("https://example.com/");
     const helpers = __testables();
 
@@ -28,6 +28,13 @@ describe("route-discovery", () => {
     expect(normalized).toEqual({
       url: "https://example.com/pricing",
       path: "/pricing",
+      hostname: "example.com",
+    });
+
+    const relativeWithQuery = helpers.normalizeSameDomainUrl("/about-us?ref=hero", entry);
+    expect(relativeWithQuery).toEqual({
+      url: "https://example.com/about-us",
+      path: "/about-us",
       hostname: "example.com",
     });
 

@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { Agentation } from "agentation";
 import { App } from "./App";
 import "./styles.css";
 
@@ -10,6 +11,9 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <>
+      <App />
+      {import.meta.env.DEV ? <Agentation /> : null}
+    </>
   </StrictMode>,
 );

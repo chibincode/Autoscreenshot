@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { chromium, type APIRequestContext, type Page } from "playwright";
 import { DEFAULT_DESKTOP_VIEWPORT } from "./defaults.js";
 import { gotoWithFallback, type NavigationFallbackEvent } from "../browser/navigation.js";
 import type {
@@ -13,6 +13,7 @@ interface DiscoverCoreRoutesOptions {
   maxRoutes: number;
   waitUntil: WaitUntilState;
   onNavigationFallback?: (event: NavigationFallbackEvent) => void;
+  onRedirectResolved?: (event: { from: string; to: string }) => void;
 }
 
 interface RawLink {
@@ -32,6 +33,8 @@ const RESOURCE_EXT_RE = /\.(pdf|zip|png|jpe?g|gif|svg|webp|mp4|webm|mov|mp3|wav|
 const EXCLUDED_PREFIXES = ["/search", "/tag", "/tags", "/author", "/category"];
 const EXCLUDED_EXACT = new Set(["/privacy", "/privacy-policy", "/terms", "/terms-of-service", "/cookie", "/cookies"]);
 const PAGE_PAGINATION_RE = /^\/page\/\d+\/?$/i;
+const REDIRECT_RESOLVE_TIMEOUT_MS = 10_000;
+const REDIRECT_RESOLVE_MAX_REDIRECTS = 10;
 
 const PATH_PRIORITY_GROUPS: Array<{ paths: string[]; score: number }> = [
   { paths: ["/"], score: 10_000 },
@@ -63,6 +66,10 @@ function normalizePath(inputPath: string): string {
 
 function normalizeHostname(hostname: string): string {
   return hostname.replace(/^www\./i, "").trim().toLowerCase();
+}
+
+function primaryHostnameLabel(hostname: string): string {
+  return normalizeHostname(hostname).split(".").find(Boolean) ?? "";
 }
 
 function isDirectBrandSubdomain(hostname: string, entry: URL): boolean {
@@ -169,6 +176,105 @@ function normalizeSameDomainUrl(rawHref: string, entry: URL): NormalizedRouteCan
   };
 }
 
+function parseHttpUrl(rawHref: string, entry: URL): URL | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawHref, entry);
+  } catch {
+    return null;
+  }
+
+  if (!/^https?:$/.test(parsed.protocol)) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function shouldResolveRedirectCandidate(rawLink: RawLink, entry: URL): URL | null {
+  if (rawLink.depth > 1) {
+    return null;
+  }
+
+  const parsed = parseHttpUrl(rawLink.href, entry);
+  if (!parsed) {
+    return null;
+  }
+
+  if (isAllowedBrandHost(parsed.hostname, entry)) {
+    return null;
+  }
+
+  return primaryHostnameLabel(parsed.hostname) === primaryHostnameLabel(entry.hostname) ? parsed : null;
+}
+
+async function fetchResolvedUrl(
+  request: APIRequestContext,
+  candidateUrl: string,
+): Promise<string | null> {
+  try {
+    const response = await request.head(candidateUrl, {
+      failOnStatusCode: false,
+      maxRedirects: REDIRECT_RESOLVE_MAX_REDIRECTS,
+      timeout: REDIRECT_RESOLVE_TIMEOUT_MS,
+    });
+    return response.url();
+  } catch {
+    // Fall back to GET for redirectors or origins that do not support HEAD.
+  }
+
+  try {
+    const response = await request.get(candidateUrl, {
+      failOnStatusCode: false,
+      maxRedirects: REDIRECT_RESOLVE_MAX_REDIRECTS,
+      timeout: REDIRECT_RESOLVE_TIMEOUT_MS,
+    });
+    return response.url();
+  } catch {
+    return null;
+  }
+}
+
+async function resolveRedirectedRouteCandidate(params: {
+  rawLink: RawLink;
+  entry: URL;
+  request: APIRequestContext;
+  cache: Map<string, Promise<string | null>>;
+  onRedirectResolved?: (event: { from: string; to: string }) => void;
+}): Promise<NormalizedRouteCandidate | null> {
+  const redirectCandidate = shouldResolveRedirectCandidate(params.rawLink, params.entry);
+  if (!redirectCandidate) {
+    return null;
+  }
+
+  const cacheKey = redirectCandidate.toString();
+  const wasCached = params.cache.has(cacheKey);
+  let finalUrlPromise = params.cache.get(cacheKey);
+  if (!finalUrlPromise) {
+    finalUrlPromise = fetchResolvedUrl(params.request, cacheKey);
+    params.cache.set(cacheKey, finalUrlPromise);
+  }
+
+  const finalUrl = await finalUrlPromise;
+  if (!finalUrl) {
+    return null;
+  }
+
+  const normalized = normalizeSameDomainUrl(finalUrl, params.entry);
+  if (!normalized) {
+    return null;
+  }
+
+  if (!wasCached && normalized.url !== cacheKey) {
+    params.onRedirectResolved?.({
+      from: cacheKey,
+      to: normalized.url,
+    });
+  }
+
+  return normalized;
+}
+
 function scoreDiscoveredRoute(
   routeUrl: string,
   pathname: string,
@@ -198,10 +304,45 @@ function scoreDiscoveredRoute(
 }
 
 async function collectRawLinks(
+  page: Page,
   entryUrl: string,
   waitUntil: WaitUntilState,
   onNavigationFallback?: (event: NavigationFallbackEvent) => void,
 ): Promise<RawLink[]> {
+  await gotoWithFallback({
+    page,
+    url: entryUrl,
+    waitUntil,
+    timeoutMs: 75_000,
+    phase: "discovery",
+    fallbackWaitUntil: "domcontentloaded",
+    onFallback: onNavigationFallback,
+  });
+  const links = await page.evaluate(() => {
+    const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"));
+    return anchors.map((anchor) => {
+      const href = anchor.getAttribute("href") ?? "";
+      const absoluteHref = anchor.href || href;
+      const title =
+        anchor.textContent?.replace(/\s+/g, " ").trim().slice(0, 120) ||
+        anchor.getAttribute("aria-label") ||
+        "";
+      const inNav = Boolean(anchor.closest("header, nav"));
+      const inMain = Boolean(anchor.closest("main"));
+
+      return {
+        href: absoluteHref,
+        title,
+        source: inNav ? ("nav" as const) : ("link" as const),
+        depth: inNav ? 0 : inMain ? 1 : 2,
+      };
+    });
+  });
+  return links;
+}
+
+export async function discoverCoreRoutes(options: DiscoverCoreRoutesOptions): Promise<RouteDiscoveryResult> {
+  const entry = new URL(options.entryUrl);
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     viewport: {
@@ -213,96 +354,72 @@ async function collectRawLinks(
   const page = await context.newPage();
 
   try {
-    await gotoWithFallback({
-      page,
-      url: entryUrl,
-      waitUntil,
-      timeoutMs: 75_000,
-      phase: "discovery",
-      fallbackWaitUntil: "domcontentloaded",
-      onFallback: onNavigationFallback,
-    });
-    const links = await page.evaluate(() => {
-      const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"));
-      return anchors.map((anchor) => {
-        const href = anchor.getAttribute("href") ?? "";
-        const absoluteHref = anchor.href || href;
-        const title =
-          anchor.textContent?.replace(/\s+/g, " ").trim().slice(0, 120) ||
-          anchor.getAttribute("aria-label") ||
-          "";
-        const inNav = Boolean(anchor.closest("header, nav"));
-        const inMain = Boolean(anchor.closest("main"));
+    const rawLinks = await collectRawLinks(page, options.entryUrl, options.waitUntil, options.onNavigationFallback);
+    const redirectCache = new Map<string, Promise<string | null>>();
+    const dedup = new Map<string, RouteDiscoveryTarget>();
 
-        return {
-          href: absoluteHref,
-          title,
-          source: inNav ? ("nav" as const) : ("link" as const),
-          depth: inNav ? 0 : inMain ? 1 : 2,
-        };
-      });
+    const homeUrl = `${entry.protocol}//${entry.host}/`;
+    dedup.set(homeUrl, {
+      url: homeUrl,
+      path: "/",
+      title: "Home",
+      source: "nav",
+      depth: 0,
+      priorityScore: scoreCoreRoute("/", "nav", 0),
     });
-    return links;
+
+    for (const rawLink of rawLinks) {
+      if (!rawLink.href) {
+        continue;
+      }
+
+      const normalized =
+        normalizeSameDomainUrl(rawLink.href, entry) ??
+        (await resolveRedirectedRouteCandidate({
+          rawLink,
+          entry,
+          request: context.request,
+          cache: redirectCache,
+          onRedirectResolved: options.onRedirectResolved,
+        }));
+      if (!normalized) {
+        continue;
+      }
+
+      const route: RouteDiscoveryTarget = {
+        url: normalized.url,
+        path: normalized.path,
+        title: rawLink.title || undefined,
+        source: rawLink.source,
+        depth: rawLink.depth,
+        priorityScore: scoreDiscoveredRoute(normalized.url, normalized.path, rawLink.source, rawLink.depth, entry),
+      };
+
+      const existing = dedup.get(route.url);
+      if (!existing) {
+        dedup.set(route.url, route);
+        continue;
+      }
+
+      if (
+        route.priorityScore > existing.priorityScore ||
+        (route.priorityScore === existing.priorityScore && route.source === "nav" && existing.source !== "nav")
+      ) {
+        dedup.set(route.url, route);
+      }
+    }
+
+    const routes = [...dedup.values()]
+      .sort((a, b) => b.priorityScore - a.priorityScore || a.url.localeCompare(b.url));
+
+    return {
+      entryUrl: options.entryUrl,
+      routes,
+    };
   } finally {
     await context.close();
     await browser.close();
   }
-}
-
-export async function discoverCoreRoutes(options: DiscoverCoreRoutesOptions): Promise<RouteDiscoveryResult> {
-  const entry = new URL(options.entryUrl);
-  const rawLinks = await collectRawLinks(options.entryUrl, options.waitUntil, options.onNavigationFallback);
-
-  const dedup = new Map<string, RouteDiscoveryTarget>();
-
-  const homeUrl = `${entry.protocol}//${entry.host}/`;
-  dedup.set(homeUrl, {
-    url: homeUrl,
-    path: "/",
-    title: "Home",
-    source: "nav",
-    depth: 0,
-    priorityScore: scoreCoreRoute("/", "nav", 0),
-  });
-
-  for (const rawLink of rawLinks) {
-    if (!rawLink.href || rawLink.href.includes("?") || rawLink.href.includes("#")) {
-      continue;
-    }
-    const normalized = normalizeSameDomainUrl(rawLink.href, entry);
-    if (!normalized) {
-      continue;
-    }
-    const route: RouteDiscoveryTarget = {
-      url: normalized.url,
-      path: normalized.path,
-      title: rawLink.title || undefined,
-      source: rawLink.source,
-      depth: rawLink.depth,
-      priorityScore: scoreDiscoveredRoute(normalized.url, normalized.path, rawLink.source, rawLink.depth, entry),
-    };
-
-    const existing = dedup.get(route.url);
-    if (!existing) {
-      dedup.set(route.url, route);
-      continue;
-    }
-
-    if (
-      route.priorityScore > existing.priorityScore ||
-      (route.priorityScore === existing.priorityScore && route.source === "nav" && existing.source !== "nav")
-    ) {
-      dedup.set(route.url, route);
-    }
-  }
-
-  const routes = [...dedup.values()]
-    .sort((a, b) => b.priorityScore - a.priorityScore || a.url.localeCompare(b.url));
-
-  return {
-    entryUrl: options.entryUrl,
-    routes,
-  };
 }
 
 export function __testables() {

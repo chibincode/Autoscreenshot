@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   buildFeedbackContext,
   canFocusDebugAsset,
@@ -258,6 +258,38 @@ function formatDate(input: string | null): string {
     return "—";
   }
   return new Date(input).toLocaleString();
+}
+
+function areJobSummariesEqual(left: JobSummary[], right: JobSummary[]): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    const leftItem = left[index];
+    const rightItem = right[index];
+    if (
+      leftItem.id !== rightItem.id ||
+      leftItem.status !== rightItem.status ||
+      leftItem.instruction !== rightItem.instruction ||
+      leftItem.createdAt !== rightItem.createdAt ||
+      leftItem.startedAt !== rightItem.startedAt ||
+      leftItem.finishedAt !== rightItem.finishedAt ||
+      leftItem.error !== rightItem.error ||
+      leftItem.outputDir !== rightItem.outputDir ||
+      leftItem.assetCount !== rightItem.assetCount ||
+      leftItem.importSuccessCount !== rightItem.importSuccessCount ||
+      leftItem.importFailedCount !== rightItem.importFailedCount ||
+      leftItem.sourceUrl !== rightItem.sourceUrl
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -534,8 +566,14 @@ export function App() {
   const [focusMessage, setFocusMessage] = useState<string | null>(null);
   const [previewAssetId, setPreviewAssetId] = useState<number | null>(null);
   const [copyFeedbackState, setCopyFeedbackState] = useState<string | null>(null);
+  const sseRefreshTimerRef = useRef<number | null>(null);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(totalJobs / pageSize)), [pageSize, totalJobs]);
+  const runningJobId = config?.queue.runningJobId ?? null;
+  const selectedJobSummary = useMemo(
+    () => jobs.find((job) => job.id === selectedJobId) ?? null,
+    [jobs, selectedJobId],
+  );
   const selectedJobMode = useMemo(
     () => parseJobMode(selectedJobDetail?.job.optionsJson ?? null),
     [selectedJobDetail?.job.optionsJson],
@@ -548,8 +586,13 @@ export function App() {
     if (!selectedJobDetail) {
       return false;
     }
-    return config?.queue.runningJobId === selectedJobDetail.job.id || isActiveStatus(selectedJobDetail.job.status);
-  }, [config?.queue.runningJobId, selectedJobDetail]);
+    return runningJobId === selectedJobDetail.job.id || isActiveStatus(selectedJobDetail.job.status);
+  }, [runningJobId, selectedJobDetail]);
+  const shouldPausePolling = Boolean(
+    liveConnected &&
+      selectedJobSummary &&
+      (selectedJobSummary.id === runningJobId || isActiveStatus(selectedJobSummary.status)),
+  );
   const selectedJobStatusNote = useMemo(() => {
     if (!selectedJobDetail) {
       return null;
@@ -713,6 +756,34 @@ export function App() {
     }
     return "未找到对应候选（可能被过滤）。";
   }, [focusSectionType, sectionDebugRows.length, selectedAssetId]);
+  const jobCardList = useMemo(
+    () =>
+      jobs.map((job) => {
+        const jobIsLive = runningJobId === job.id || isActiveStatus(job.status);
+        return (
+          <button
+            key={job.id}
+            type="button"
+            className={cx("job-card", selectedJobId === job.id && "selected", jobIsLive && "job-card-live")}
+            onClick={() => setSelectedJobId(job.id)}
+          >
+            <div className="job-top">
+              <StatusBadge status={job.status} />
+              <span className="job-time">{formatDate(job.createdAt)}</span>
+            </div>
+            <div className="job-title">{job.sourceUrl ?? "未解析 URL"}</div>
+            <div className="job-instruction">{job.instruction}</div>
+            <div className="job-stats">
+              <span>资产 {job.assetCount}</span>
+              <span>导入成功 {job.importSuccessCount}</span>
+              <span>导入失败 {job.importFailedCount}</span>
+            </div>
+            {runningJobId === job.id ? <div className="job-live-note">队列执行中</div> : null}
+          </button>
+        );
+      }),
+    [jobs, runningJobId, selectedJobId],
+  );
 
   async function loadConfig(): Promise<void> {
     const result = await apiFetch<AppConfig>("/api/config");
@@ -740,8 +811,8 @@ export function App() {
       items: JobSummary[];
       total: number;
     }>(`/api/jobs?${params.toString()}`);
-    setJobs(result.items);
-    setTotalJobs(result.total);
+    setJobs((currentJobs) => (areJobSummariesEqual(currentJobs, result.items) ? currentJobs : result.items));
+    setTotalJobs((currentTotal) => (currentTotal === result.total ? currentTotal : result.total));
     setSelectedJobId((currentSelectedJobId) =>
       getNextSelectedJobId(preferredSelectedJobId ?? currentSelectedJobId, result.items),
     );
@@ -763,13 +834,16 @@ export function App() {
   }, [page, pageSize, statusFilter, keywordFilter]);
 
   useEffect(() => {
+    if (shouldPausePolling) {
+      return;
+    }
     const timer = setInterval(() => {
       void loadJobs().catch(() => {
         // no-op
       });
     }, 5000);
     return () => clearInterval(timer);
-  }, [page, pageSize, statusFilter, keywordFilter]);
+  }, [page, pageSize, shouldPausePolling, statusFilter, keywordFilter]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -815,14 +889,24 @@ export function App() {
       setLiveConnected(false);
     };
     eventSource.onmessage = () => {
-      void loadJobs().catch(() => {
-        // no-op
-      });
-      void loadJobDetail(selectedJobId).catch(() => {
-        // no-op
-      });
+      if (sseRefreshTimerRef.current !== null) {
+        return;
+      }
+      sseRefreshTimerRef.current = window.setTimeout(() => {
+        sseRefreshTimerRef.current = null;
+        void loadJobs().catch(() => {
+          // no-op
+        });
+        void loadJobDetail(selectedJobId).catch(() => {
+          // no-op
+        });
+      }, 180);
     };
     return () => {
+      if (sseRefreshTimerRef.current !== null) {
+        window.clearTimeout(sseRefreshTimerRef.current);
+        sseRefreshTimerRef.current = null;
+      }
       setLiveConnected(false);
       eventSource.close();
     };
@@ -1171,33 +1255,7 @@ export function App() {
 
         <div className="split">
           <section className="jobs-list">
-            {jobs.map((job) => (
-              <button
-                key={job.id}
-                type="button"
-                className={cx(
-                  "job-card",
-                  selectedJobId === job.id && "selected",
-                  (config?.queue.runningJobId === job.id || isActiveStatus(job.status)) && "job-card-live",
-                )}
-                onClick={() => setSelectedJobId(job.id)}
-              >
-                <div className="job-top">
-                  <StatusBadge status={job.status} />
-                  <span className="job-time">{formatDate(job.createdAt)}</span>
-                </div>
-                <div className="job-title">{job.sourceUrl ?? "未解析 URL"}</div>
-                <div className="job-instruction">{job.instruction}</div>
-                <div className="job-stats">
-                  <span>资产 {job.assetCount}</span>
-                  <span>导入成功 {job.importSuccessCount}</span>
-                  <span>导入失败 {job.importFailedCount}</span>
-                </div>
-                {config?.queue.runningJobId === job.id ? (
-                  <div className="job-live-note">队列执行中</div>
-                ) : null}
-              </button>
-            ))}
+            {jobCardList}
             {jobs.length === 0 ? <div className="empty-text">暂无任务</div> : null}
 
             <div className="pagination">

@@ -1,6 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { gotoMock, evaluateMock, closePageMock, closeContextMock, closeBrowserMock, newPageMock, newContextMock, launchMock } =
+const {
+  gotoMock,
+  evaluateMock,
+  closePageMock,
+  closeContextMock,
+  closeBrowserMock,
+  newPageMock,
+  newContextMock,
+  launchMock,
+  requestHeadMock,
+  requestGetMock,
+} =
   vi.hoisted(() => {
     const gotoMock = vi.fn();
     const evaluateMock = vi.fn();
@@ -10,6 +21,8 @@ const { gotoMock, evaluateMock, closePageMock, closeContextMock, closeBrowserMoc
     const newPageMock = vi.fn();
     const newContextMock = vi.fn();
     const launchMock = vi.fn();
+    const requestHeadMock = vi.fn();
+    const requestGetMock = vi.fn();
 
     return {
       gotoMock,
@@ -20,6 +33,8 @@ const { gotoMock, evaluateMock, closePageMock, closeContextMock, closeBrowserMoc
       newPageMock,
       newContextMock,
       launchMock,
+      requestHeadMock,
+      requestGetMock,
     };
   });
 
@@ -42,6 +57,10 @@ describe("route discovery navigation fallback", () => {
     };
     const context = {
       newPage: newPageMock.mockResolvedValue(page),
+      request: {
+        head: requestHeadMock,
+        get: requestGetMock,
+      },
       close: closeContextMock.mockResolvedValue(undefined),
     };
     const browser = {
@@ -53,6 +72,8 @@ describe("route discovery navigation fallback", () => {
     gotoMock
       .mockRejectedValueOnce(new Error('page.goto: Timeout 75000ms exceeded. waiting until "networkidle"'))
       .mockResolvedValueOnce(null);
+    requestHeadMock.mockReset();
+    requestGetMock.mockReset();
     evaluateMock.mockResolvedValue([
       {
         href: "https://example.com/pricing",
@@ -91,5 +112,54 @@ describe("route discovery navigation fallback", () => {
       }),
     );
     expect(result.routes.map((route) => route.path)).toEqual(["/", "/pricing", "/blog/post-1"]);
+    expect(requestHeadMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps same-domain query links and resolves brand redirectors into core routes", async () => {
+    evaluateMock.mockResolvedValue([
+      {
+        href: "https://example.com/pricing?plan=pro",
+        title: "Pricing",
+        source: "nav",
+        depth: 0,
+      },
+      {
+        href: "https://example.io/redirect?n=about-us",
+        title: "About",
+        source: "nav",
+        depth: 0,
+      },
+      {
+        href: "https://github.com/example/project",
+        title: "GitHub",
+        source: "nav",
+        depth: 0,
+      },
+    ]);
+    requestHeadMock.mockResolvedValueOnce({
+      url: () => "https://example.com/about-us?campaign=brand",
+    });
+
+    const onRedirectResolved = vi.fn();
+
+    const result = await discoverCoreRoutes({
+      entryUrl: "https://example.com/",
+      maxRoutes: 5,
+      waitUntil: "networkidle",
+      onRedirectResolved,
+    });
+
+    expect(result.routes.map((route) => route.path)).toEqual(["/", "/pricing", "/about-us"]);
+    expect(requestHeadMock).toHaveBeenCalledTimes(1);
+    expect(requestHeadMock).toHaveBeenCalledWith("https://example.io/redirect?n=about-us", {
+      failOnStatusCode: false,
+      maxRedirects: 10,
+      timeout: 10_000,
+    });
+    expect(requestGetMock).not.toHaveBeenCalled();
+    expect(onRedirectResolved).toHaveBeenCalledWith({
+      from: "https://example.io/redirect?n=about-us",
+      to: "https://example.com/about-us",
+    });
   });
 });

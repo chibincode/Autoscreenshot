@@ -628,6 +628,9 @@ export async function executeCoreRoutesInstruction(
         `route_wait_fallback phase=${event.phase} url=${event.url} from=${event.from} to=${event.to} reason=${event.errorMessage}`,
       );
     },
+    onRedirectResolved: (event) => {
+      emit(log, "info", `core_routes_redirect_resolved from=${event.from} to=${event.to}`);
+    },
   });
   emit(log, "info", `core_routes_discovered_raw count=${discovery.routes.length}`);
 
