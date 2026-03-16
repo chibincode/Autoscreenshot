@@ -35,7 +35,8 @@
 html,
 body,
 #root {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 100%;
 }
 
 body {
@@ -53,6 +54,7 @@ body {
     radial-gradient(circle at top left, rgba(255, 255, 255, 0.68), transparent 34%),
     radial-gradient(circle at top right, rgba(255, 255, 255, 0.4), transparent 30%),
     linear-gradient(180deg, #f7f8fa 0%, var(--canvas) 100%);
+  overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -91,12 +93,15 @@ summary:focus-visible {
 }
 
 .layout {
+  height: 100vh;
+  height: 100dvh;
   min-height: 100vh;
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   gap: 22px;
   padding: 22px;
-  align-items: start;
+  align-items: stretch;
+  overflow: hidden;
 }
 
 .panel {
@@ -110,6 +115,7 @@ summary:focus-visible {
 .panel-create,
 .panel-main {
   min-width: 0;
+  min-height: 0;
 }
 
 .panel-create {
@@ -117,6 +123,7 @@ summary:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  overflow: auto;
 }
 
 .panel-main {
@@ -127,6 +134,8 @@ summary:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  height: 100%;
+  overflow: hidden;
 }
 
 .panel-header {
@@ -395,13 +404,14 @@ summary:focus-visible {
   display: grid;
   grid-template-columns: minmax(300px, 0.38fr) minmax(480px, 1.12fr);
   gap: 22px;
-  align-items: start;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .jobs-list,
 .job-detail {
-  min-height: auto;
-  overflow: visible;
+  min-height: 0;
   background: rgba(252, 253, 255, 0.94);
   border-radius: 26px;
   padding: 18px;
@@ -410,10 +420,77 @@ summary:focus-visible {
     0 8px 18px rgba(15, 23, 42, 0.035);
 }
 
+.panel-create,
+.jobs-list,
+.job-detail,
+.asset-preview-image-wrap,
+.asset-preview-sidebar,
+.section-debug-table-wrap,
+.log-scroll,
+.manifest-box pre {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(17, 24, 39, 0.1) transparent;
+}
+
+.panel-create::-webkit-scrollbar,
+.jobs-list::-webkit-scrollbar,
+.job-detail::-webkit-scrollbar,
+.asset-preview-image-wrap::-webkit-scrollbar,
+.asset-preview-sidebar::-webkit-scrollbar,
+.section-debug-table-wrap::-webkit-scrollbar,
+.log-scroll::-webkit-scrollbar,
+.manifest-box pre::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.panel-create::-webkit-scrollbar-track,
+.jobs-list::-webkit-scrollbar-track,
+.job-detail::-webkit-scrollbar-track,
+.asset-preview-image-wrap::-webkit-scrollbar-track,
+.asset-preview-sidebar::-webkit-scrollbar-track,
+.section-debug-table-wrap::-webkit-scrollbar-track,
+.log-scroll::-webkit-scrollbar-track,
+.manifest-box pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.panel-create::-webkit-scrollbar-thumb,
+.jobs-list::-webkit-scrollbar-thumb,
+.job-detail::-webkit-scrollbar-thumb,
+.asset-preview-image-wrap::-webkit-scrollbar-thumb,
+.asset-preview-sidebar::-webkit-scrollbar-thumb,
+.section-debug-table-wrap::-webkit-scrollbar-thumb,
+.log-scroll::-webkit-scrollbar-thumb,
+.manifest-box pre::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: rgba(17, 24, 39, 0.1);
+}
+
+.panel-create::-webkit-scrollbar-thumb:hover,
+.jobs-list::-webkit-scrollbar-thumb:hover,
+.job-detail::-webkit-scrollbar-thumb:hover,
+.asset-preview-image-wrap::-webkit-scrollbar-thumb:hover,
+.asset-preview-sidebar::-webkit-scrollbar-thumb:hover,
+.section-debug-table-wrap::-webkit-scrollbar-thumb:hover,
+.log-scroll::-webkit-scrollbar-thumb:hover,
+.manifest-box pre::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(17, 24, 39, 0.22);
+}
+
 .jobs-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.jobs-list > * {
+  flex: 0 0 auto;
 }
 
 .job-card {
@@ -433,8 +510,6 @@ summary:focus-visible {
     box-shadow 180ms ease,
     background-color 180ms ease,
     opacity 180ms ease;
-  content-visibility: auto;
-  contain-intrinsic-size: 164px;
 }
 
 .job-card:hover {
@@ -624,6 +699,9 @@ summary:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .detail-header {
@@ -1340,16 +1418,41 @@ summary:focus-visible {
 }
 
 @media (max-width: 1180px) {
+  body {
+    overflow: auto;
+  }
+
   .layout {
+    height: auto;
+    min-height: 100vh;
     grid-template-columns: 1fr;
+    align-items: start;
+    overflow: visible;
   }
 
   .split {
     grid-template-columns: 1fr;
+    flex: 0 1 auto;
+    min-height: auto;
   }
 
   .field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .panel-create,
+  .panel-main {
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .panel-main {
+    height: auto;
+  }
+
+  .jobs-list,
+  .job-detail {
+    overflow: visible;
   }
 
   .toolbar {
