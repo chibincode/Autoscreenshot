@@ -254,6 +254,181 @@ function scrollScenePageTemplate(): string {
   `;
 }
 
+function consentBannerPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Consent Banner Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #ffffff;
+          }
+          main {
+            min-height: 2600px;
+            padding: 48px;
+            background: linear-gradient(180deg, #ffffff 0%, #f6f7fb 100%);
+          }
+          .osano-cm-dialog {
+            position: fixed;
+            left: 32px;
+            bottom: 32px;
+            width: 360px;
+            padding: 18px;
+            border-radius: 14px;
+            background: #15171c;
+            color: #ffffff;
+            box-shadow: 0 24px 50px rgba(0, 0, 0, 0.28);
+            z-index: 9999;
+          }
+          .osano-cm-dialog__actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 14px;
+          }
+          button {
+            border: 0;
+            padding: 8px 12px;
+            border-radius: 999px;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1>Consent banner fixture</h1>
+          <p>Used to verify cookie consent cleanup before capture.</p>
+        </main>
+        <div
+          role="dialog"
+          aria-label="Cookie Consent Banner"
+          class="osano-cm-window__dialog osano-cm-dialog"
+        >
+          <div>This website uses cookies to improve your experience.</div>
+          <div class="osano-cm-dialog__actions">
+            <button type="button" onclick="document.querySelector('.osano-cm-dialog').remove()">Accept All</button>
+            <button type="button" onclick="document.querySelector('.osano-cm-dialog').remove()">Reject All</button>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+}
+
+function promoModalPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Promo Modal Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #eff6ff;
+          }
+          main {
+            min-height: 2200px;
+            padding: 48px;
+          }
+          .promo-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.32);
+            z-index: 9998;
+          }
+          .newsletter-modal {
+            position: fixed;
+            top: 180px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 420px;
+            padding: 24px;
+            border-radius: 20px;
+            background: #111827;
+            color: white;
+            z-index: 9999;
+          }
+          .newsletter-modal button {
+            margin-top: 14px;
+            border: 0;
+            padding: 10px 14px;
+            border-radius: 999px;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1>Promo modal fixture</h1>
+          <p>Used to verify newsletter popup cleanup before capture.</p>
+        </main>
+        <div class="promo-backdrop"></div>
+        <div role="dialog" class="newsletter-modal popup">
+          <h2>Subscribe to our newsletter</h2>
+          <p>Get product updates and special offers.</p>
+          <button type="button" onclick="document.querySelector('.promo-backdrop').remove(); document.querySelector('.newsletter-modal').remove();">
+            No thanks
+          </button>
+        </div>
+      </body>
+    </html>
+  `;
+}
+
+function lateOverlayPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Late Overlay Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #ffffff;
+          }
+          main {
+            min-height: 2600px;
+            padding: 48px;
+            background: linear-gradient(180deg, #ffffff 0%, #eef2ff 100%);
+          }
+          .late-modal {
+            position: fixed;
+            right: 32px;
+            bottom: 32px;
+            width: 340px;
+            padding: 18px;
+            border-radius: 18px;
+            background: #101828;
+            color: white;
+            z-index: 9999;
+          }
+          .late-modal button {
+            margin-top: 12px;
+            border: 0;
+            padding: 8px 12px;
+            border-radius: 999px;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1>Late overlay fixture</h1>
+          <p>Used to verify the second cleanup pass for delayed popups.</p>
+        </main>
+        <script>
+          window.setTimeout(() => {
+            const modal = document.createElement('div');
+            modal.className = 'late-modal newsletter-modal';
+            modal.setAttribute('role', 'dialog');
+            modal.innerHTML = '<strong>Need help?</strong><p>Subscribe for updates.</p><button type="button">Dismiss</button>';
+            modal.querySelector('button').addEventListener('click', () => modal.remove());
+            document.body.appendChild(modal);
+          }, 3200);
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     const pathname = req.url ?? "/";
@@ -280,6 +455,21 @@ beforeAll(async () => {
     if (pathname.startsWith("/scroll-scene")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(scrollScenePageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/consent-banner")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(consentBannerPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/promo-modal")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(promoModalPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/late-overlay")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(lateOverlayPageTemplate());
       return;
     }
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -365,7 +555,7 @@ describe("fullPage stabilization", () => {
       await context.close();
       await browser.close();
     }
-  });
+  }, 15_000);
 });
 
 describe("scroll scene unfolding", () => {
@@ -413,6 +603,99 @@ describe("scroll scene unfolding", () => {
     const uniqueColors = new Set(samples.map((sample) => `${sample[0]}-${sample[1]}-${sample[2]}`));
     expect(uniqueColors.size).toBeGreaterThanOrEqual(Math.min(3, firstScene.distinctFrameCount));
   }, 20_000);
+});
+
+describe("overlay cleanup", () => {
+  it("removes Osano-style consent banners before full-page capture", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-consent-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/consent-banner`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    const sample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 90, top: 920, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(sample[0]).toBeGreaterThan(220);
+    expect(logs.some((message) => message.includes("overlay_detected type=consent vendor=osano"))).toBe(true);
+    expect(logs.some((message) => message.includes("overlay_cleanup_summary handled="))).toBe(true);
+  }, 20_000);
+
+  it("dismisses promo modals before full-page capture", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-promo-"));
+    const task: ParsedTask = {
+      url: `${baseUrl}/promo-modal`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    const sample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 280, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(sample[2]).toBeGreaterThan(sample[0]);
+  }, 20_000);
+
+  it("removes delayed overlays during the second cleanup pass", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-late-overlay-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/late-overlay`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    const sample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 1700, top: 940, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(sample[0]).toBeGreaterThan(220);
+    expect(logs.some((message) => message.includes("overlay_action action="))).toBe(true);
+  }, 30_000);
 });
 
 describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {

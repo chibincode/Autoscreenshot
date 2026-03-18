@@ -5,6 +5,7 @@ import sharp from "sharp";
 import { detectSections } from "./section-detector.js";
 import { buildFixedSectionClip } from "./section-clip.js";
 import { gotoWithFallback, type NavigationFallbackEvent } from "./navigation.js";
+import { cleanupCaptureOverlays } from "./overlay-cleanup.js";
 import {
   captureScrollSceneReplacements,
   detectScrollSceneCandidates,
@@ -226,6 +227,7 @@ async function captureOnce(
     });
     const hasFullPageCapture = task.captures.some((item) => item.mode === "fullPage");
     await page.waitForTimeout(hasFullPageCapture ? FULLPAGE_INITIAL_SETTLE_MS : 400);
+    await cleanupCaptureOverlays(page, { log: options.log });
     if (hasFullPageCapture) {
       const earlyScrollScenes = await detectScrollSceneCandidates(page);
       if (earlyScrollScenes.length === 0) {
@@ -238,6 +240,7 @@ async function captureOnce(
       await warmupLazyLoad(page);
       await page.waitForTimeout(400);
     }
+    await cleanupCaptureOverlays(page, { log: options.log });
 
     const pageTitle = (await page.title()).trim() || undefined;
 
