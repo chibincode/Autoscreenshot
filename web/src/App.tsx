@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import {
   buildFeedbackContext,
   canFocusDebugAsset,
@@ -223,6 +223,87 @@ const SECTION_TYPES: SectionType[] = [
   "footer",
   "unknown",
 ];
+
+const URL_PATTERN = /(https?:\/\/[^\s]+)/gi;
+
+function resolveLinkHref(value: string): string | null {
+  const trimmed = value.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("/")) {
+    return new URL(trimmed, window.location.origin).toString();
+  }
+  return null;
+}
+
+function stopLinkEventPropagation(event: MouseEvent<HTMLAnchorElement> | KeyboardEvent<HTMLAnchorElement>): void {
+  event.stopPropagation();
+}
+
+function ExternalLink({
+  href,
+  label,
+  className,
+  title,
+}: {
+  href: string;
+  label: string;
+  className?: string;
+  title?: string;
+}): JSX.Element {
+  const resolvedHref = resolveLinkHref(href);
+  if (!resolvedHref) {
+    return <span className={className}>{label}</span>;
+  }
+  return (
+    <a
+      className={cx("external-link", className)}
+      href={resolvedHref}
+      target="_blank"
+      rel="noreferrer noopener"
+      title={title ?? resolvedHref}
+      onClick={stopLinkEventPropagation}
+      onKeyDown={stopLinkEventPropagation}
+    >
+      {label}
+    </a>
+  );
+}
+
+function LinkifiedText({
+  text,
+  className,
+}: {
+  text: string;
+  className?: string;
+}): JSX.Element {
+  const matches = Array.from(text.matchAll(URL_PATTERN));
+  if (matches.length === 0) {
+    return <span className={className}>{text}</span>;
+  }
+
+  let cursor = 0;
+  return (
+    <span className={className}>
+      {matches.map((match, index) => {
+        const matchText = match[0];
+        const matchIndex = match.index ?? 0;
+        const leadingText = text.slice(cursor, matchIndex);
+        cursor = matchIndex + matchText.length;
+        const trailingText = index === matches.length - 1 ? text.slice(cursor) : "";
+
+        return (
+          <span key={`${matchText}-${matchIndex}`}>
+            {leadingText}
+            <ExternalLink href={matchText} label={matchText} />
+            {trailingText}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -761,25 +842,40 @@ export function App() {
       jobs.map((job) => {
         const jobIsLive = runningJobId === job.id || isActiveStatus(job.status);
         return (
-          <button
+          <article
             key={job.id}
-            type="button"
             className={cx("job-card", selectedJobId === job.id && "selected", jobIsLive && "job-card-live")}
+            role="button"
+            tabIndex={0}
+            aria-pressed={selectedJobId === job.id}
             onClick={() => setSelectedJobId(job.id)}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) {
+                return;
+              }
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setSelectedJobId(job.id);
+              }
+            }}
           >
             <div className="job-top">
               <StatusBadge status={job.status} />
               <span className="job-time">{formatDate(job.createdAt)}</span>
             </div>
-            <div className="job-title">{job.sourceUrl ?? "未解析 URL"}</div>
-            <div className="job-instruction">{job.instruction}</div>
+            <div className="job-title">
+              {job.sourceUrl ? <ExternalLink href={job.sourceUrl} label={job.sourceUrl} /> : "未解析 URL"}
+            </div>
+            <div className="job-instruction">
+              <LinkifiedText text={job.instruction} />
+            </div>
             <div className="job-stats">
               <span>资产 {job.assetCount}</span>
               <span>导入成功 {job.importSuccessCount}</span>
               <span>导入失败 {job.importFailedCount}</span>
             </div>
             {runningJobId === job.id ? <div className="job-live-note">队列执行中</div> : null}
-          </button>
+          </article>
         );
       }),
     [jobs, runningJobId, selectedJobId],
@@ -1283,7 +1379,9 @@ export function App() {
                 <div className="detail-header">
                   <div>
                     <h3>{selectedJobDetail.job.id}</h3>
-                    <p>{selectedJobDetail.job.instruction}</p>
+                    <p>
+                      <LinkifiedText text={selectedJobDetail.job.instruction} />
+                    </p>
                   </div>
                   <div className={cx("detail-status", selectedJobIsRunning && "detail-status-live")}>
                     <StatusBadge status={selectedJobDetail.job.status} emphasis />
@@ -1366,9 +1464,12 @@ export function App() {
                                 <div className="core-route-card-top">
                                   <StatusBadge status={route.status} />
                                 </div>
-                                <div className="core-route-card-path" title={route.url}>
-                                  {route.path}
-                                </div>
+                                <ExternalLink
+                                  href={route.url}
+                                  label={route.path}
+                                  className="core-route-card-path"
+                                  title={route.url}
+                                />
                                 <div className="core-route-card-actions">
                                   {asset && canFocusDebugAsset(asset, hasSectionDebug) ? (
                                     <button type="button" onClick={() => focusDebugFromAsset(asset)}>
@@ -1653,7 +1754,14 @@ export function App() {
                   </div>
                   <div>
                     <dt>Route</dt>
-                    <dd>{previewRoute ? `${previewRoute.path} · ${previewRoute.url}` : "—"}</dd>
+                    <dd>
+                      {previewRoute ? (
+                        <>
+                          <span>{previewRoute.path} · </span>
+                          <ExternalLink href={previewRoute.url} label={previewRoute.url} />
+                        </>
+                      ) : "—"}
+                    </dd>
                   </div>
                   {previewRoute ? (
                     <div>
@@ -1686,7 +1794,9 @@ export function App() {
                   </div>
                   <div>
                     <dt>Preview URL</dt>
-                    <dd>{previewAsset.previewUrl}</dd>
+                    <dd>
+                      <ExternalLink href={previewAsset.previewUrl} label={previewAsset.previewUrl} />
+                    </dd>
                   </div>
                   {previewRoute?.error ? (
                     <div>
