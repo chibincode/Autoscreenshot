@@ -4,6 +4,13 @@ import { parseInstruction } from "../ai/intent-parser.js";
 import { captureTask } from "../browser/capture.js";
 import { DEFAULT_JOB_OPTIONS } from "./defaults.js";
 import { EagleClient } from "../eagle/client.js";
+import {
+  createPendingImportResult,
+  normalizeImportResult,
+  shouldImportAsset,
+  summarizeManifestImports,
+  type ImportAttemptMode,
+} from "./import-state.js";
 import type {
   EagleImportResult,
   FullPageType,
@@ -98,17 +105,15 @@ function buildAssetTags(): string[] {
   return ["imported by Autoscreenshot"];
 }
 
-function importedCounts(manifest: RunManifest): { imported: number; failed: number } {
-  const imported = manifest.assets.filter((asset) => asset.import.ok).length;
-  const failed = manifest.assets.length - imported;
-  return { imported, failed };
-}
-
 export async function importManifestAssets(
   manifest: RunManifest,
   manifestPath: string,
   log?: LogHandler,
+  options: {
+    mode?: ImportAttemptMode;
+  } = {},
 ): Promise<RunManifest> {
+  const mode = options.mode ?? "selected_pending";
   emit(log, "info", "Checking Eagle API health");
   const eagle = new EagleClient(
     process.env.EAGLE_API_BASE_URL ?? "http://localhost:41595",
@@ -117,13 +122,16 @@ export async function importManifestAssets(
   const healthy = await eagle.healthCheck();
   if (!healthy) {
     emit(log, "warn", "Eagle API unavailable; keeping assets on disk for retry");
-    const failed: EagleImportResult = {
-      ok: false,
-      error: "Eagle API unavailable on localhost:41595",
-    };
     manifest.assets = manifest.assets.map((asset) => ({
       ...asset,
-      import: asset.import.ok ? asset.import : failed,
+      import: shouldImportAsset(asset.import, mode)
+        ? {
+            ...normalizeImportResult(asset.import),
+            ok: false,
+            status: "failed",
+            error: "Eagle API unavailable on localhost:41595",
+          }
+        : normalizeImportResult(asset.import),
     }));
     await writeManifestToPath(manifestPath, manifest);
     return manifest;
@@ -150,7 +158,8 @@ export async function importManifestAssets(
 
   for (let index = 0; index < manifest.assets.length; index += 1) {
     const asset = manifest.assets[index];
-    if (asset.import.ok) {
+    const normalizedImport = normalizeImportResult(asset.import);
+    if (!shouldImportAsset(normalizedImport, mode)) {
       continue;
     }
 
@@ -188,7 +197,12 @@ export async function importManifestAssets(
     });
     manifest.assets[index] = {
       ...asset,
-      import: importResult,
+      import: {
+        ...normalizedImport,
+        ...importResult,
+        selected: normalizedImport.selected,
+        status: importResult.ok ? "imported" : "failed",
+      },
     };
     if (!importResult.ok) {
       emit(log, "warn", `Failed importing ${asset.fileName}: ${importResult.error ?? "unknown error"}`);
@@ -196,7 +210,7 @@ export async function importManifestAssets(
   }
 
   await writeManifestToPath(manifestPath, manifest);
-  const counts = importedCounts(manifest);
+  const counts = summarizeManifestImports(manifest);
   emit(log, "info", `Import finished: ${counts.imported}/${manifest.assets.length} imported`);
   return manifest;
 }
@@ -276,16 +290,12 @@ export async function executeInstruction(
     scrollSceneDebug: captureResult.scrollSceneDebug,
     assets: captureResult.assets.map((asset) => ({
       ...asset,
-      import: {
-        ok: false,
-        error: "Pending import",
-      },
+      import: createPendingImportResult(),
     })),
   };
 
   const manifestPath = await writeManifest(outputDir, manifest);
   emit(log, "info", `Manifest written: ${manifestPath}`);
-  const updatedManifest = await importManifestAssets(manifest, manifestPath, log);
 
   if (captureResult.fallbackToDpr1) {
     emit(log, "warn", "Retina fallback applied: switched to dpr=1 after retryable error");
@@ -294,9 +304,22 @@ export async function executeInstruction(
   return {
     runId,
     manifestPath,
-    manifest: updatedManifest,
+    manifest,
     fallbackToDpr1: captureResult.fallbackToDpr1,
   };
+}
+
+export async function importSelectedByManifestPath(
+  manifestPathArg: string,
+  log?: LogHandler,
+): Promise<RunManifest> {
+  const manifestPath = path.resolve(process.cwd(), manifestPathArg);
+  if (!existsSync(manifestPath)) {
+    throw new Error(`Manifest not found: ${manifestPath}`);
+  }
+  emit(log, "info", `Importing selected assets for ${manifestPath}`);
+  const manifest = await readManifest(manifestPath);
+  return importManifestAssets(manifest, manifestPath, log, { mode: "selected_pending" });
 }
 
 export async function retryImportByManifestPath(
@@ -309,18 +332,14 @@ export async function retryImportByManifestPath(
   }
   emit(log, "info", `Retrying import for ${manifestPath}`);
   const manifest = await readManifest(manifestPath);
-  return importManifestAssets(manifest, manifestPath, log);
+  return importManifestAssets(manifest, manifestPath, log, { mode: "selected_failed" });
 }
 
 export function summarizeManifest(manifest: RunManifest): {
   total: number;
   imported: number;
   failed: number;
+  pendingConfirmation: number;
 } {
-  const imported = manifest.assets.filter((asset) => asset.import.ok).length;
-  return {
-    total: manifest.assets.length,
-    imported,
-    failed: manifest.assets.length - imported,
-  };
+  return summarizeManifestImports(manifest);
 }

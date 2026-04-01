@@ -2,7 +2,13 @@
 
 import path from "node:path";
 import { nanoid } from "nanoid";
-import { resolveJobOptions, executeInstruction, retryImportByManifestPath, summarizeManifest } from "./core/job-service.js";
+import {
+  executeInstruction,
+  importSelectedByManifestPath,
+  resolveJobOptions,
+  retryImportByManifestPath,
+  summarizeManifest,
+} from "./core/job-service.js";
 import { executeCoreRoutesInstruction } from "./core/core-routes-service.js";
 import { loadDotEnvFile } from "./core/env.js";
 import type { DprOption, JobExecutionOptions, JobMode, SectionScope } from "./types.js";
@@ -10,12 +16,14 @@ import type { DprOption, JobExecutionOptions, JobMode, SectionScope } from "./ty
 type ParsedArgs =
   | { command: "help" }
   | { command: "capture"; instruction: string; options: Partial<JobExecutionOptions> }
+  | { command: "import-selected"; manifestPath: string }
   | { command: "retry-import"; manifestPath: string };
 
 function printHelp(): void {
   process.stdout.write(
     `
 autosnap "<instruction>" [options]
+autosnap import-selected <manifestPath>
 autosnap retry-import <manifestPath>
 
 Options:
@@ -43,6 +51,14 @@ function parseCliArgs(argv: string[]): ParsedArgs {
       throw new Error("retry-import requires a manifest path");
     }
     return { command: "retry-import", manifestPath };
+  }
+
+  if (argv[0] === "import-selected") {
+    const manifestPath = argv[1];
+    if (!manifestPath) {
+      throw new Error("import-selected requires a manifest path");
+    }
+    return { command: "import-selected", manifestPath };
   }
 
   const options: Partial<JobExecutionOptions> = {};
@@ -168,10 +184,24 @@ async function runCapture(instruction: string, rawOptions: Partial<JobExecutionO
       `Run ID: ${result.runId}`,
       `Output: ${result.manifest.outputDir}`,
       `Manifest: ${result.manifestPath}`,
-      `Assets: ${summary.total} (imported: ${summary.imported}, failed: ${summary.failed})`,
+      `Assets: ${summary.total} (pending: ${summary.pendingConfirmation}, imported: ${summary.imported}, failed: ${summary.failed})`,
       ...(options.mode === "core-routes"
         ? [`Routes: ${Array.isArray(result.manifest.routes) ? result.manifest.routes.length : 0}`]
         : []),
+    ].join("\n") + "\n",
+  );
+}
+
+async function runImportSelected(manifestPath: string): Promise<void> {
+  const resolvedPath = path.resolve(process.cwd(), manifestPath);
+  const manifest = await importSelectedByManifestPath(resolvedPath, (level, message) => {
+    process.stdout.write(`[${level.toUpperCase()}] ${message}\n`);
+  });
+  const summary = summarizeManifest(manifest);
+  process.stdout.write(
+    [
+      `Manifest: ${resolvedPath}`,
+      `Assets: ${summary.total} (pending: ${summary.pendingConfirmation}, imported: ${summary.imported}, failed: ${summary.failed})`,
     ].join("\n") + "\n",
   );
 }
@@ -185,7 +215,7 @@ async function runRetryImport(manifestPath: string): Promise<void> {
   process.stdout.write(
     [
       `Manifest: ${resolvedPath}`,
-      `Assets: ${summary.total} (imported: ${summary.imported}, failed: ${summary.failed})`,
+      `Assets: ${summary.total} (pending: ${summary.pendingConfirmation}, imported: ${summary.imported}, failed: ${summary.failed})`,
     ].join("\n") + "\n",
   );
 }
@@ -200,6 +230,10 @@ async function main(): Promise<void> {
   }
   if (parsed.command === "retry-import") {
     await runRetryImport(parsed.manifestPath);
+    return;
+  }
+  if (parsed.command === "import-selected") {
+    await runImportSelected(parsed.manifestPath);
     return;
   }
 

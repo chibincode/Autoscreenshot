@@ -142,16 +142,22 @@ export class EagleClient {
       if (response.json?.status && response.json.status !== "success") {
         return {
           ok: false,
+          selected: true,
+          status: "failed",
           error: response.json.message ?? "Eagle rejected import request",
         };
       }
       return {
         ok: true,
+        selected: true,
+        status: "imported",
         eagleId: response.json?.data?.id,
       };
     } catch (error) {
       return {
         ok: false,
+        selected: true,
+        status: "failed",
         error: String(error instanceof Error ? error.message : error),
       };
     }

@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createPendingImportResult } from "../src/core/import-state.js";
 import { importManifestAssets } from "../src/core/job-service.js";
 import type { RunManifest } from "../src/types.js";
 
@@ -98,7 +99,7 @@ describe("import routing", () => {
             quality: 92,
             dpr: 2,
             capturedAt: new Date().toISOString(),
-            import: { ok: false, error: "Pending import" },
+            import: createPendingImportResult(),
           },
           {
             kind: "fullPage",
@@ -110,7 +111,7 @@ describe("import routing", () => {
             quality: 92,
             dpr: 2,
             capturedAt: new Date().toISOString(),
-            import: { ok: false, error: "Pending import" },
+            import: createPendingImportResult(),
           },
           {
             kind: "section",
@@ -123,7 +124,7 @@ describe("import routing", () => {
             quality: 92,
             dpr: 2,
             capturedAt: new Date().toISOString(),
-            import: { ok: false, error: "Pending import" },
+            import: createPendingImportResult(),
           },
           {
             kind: "section",
@@ -136,7 +137,7 @@ describe("import routing", () => {
             quality: 92,
             dpr: 2,
             capturedAt: new Date().toISOString(),
-            import: { ok: false, error: "Pending import" },
+            import: createPendingImportResult(),
           },
           {
             kind: "fullPage",
@@ -148,7 +149,7 @@ describe("import routing", () => {
             quality: 92,
             dpr: 2,
             capturedAt: new Date().toISOString(),
-            import: { ok: false, error: "Pending import" },
+            import: createPendingImportResult(),
           },
         ],
       };

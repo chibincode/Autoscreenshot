@@ -3,6 +3,7 @@ import {
   buildFeedbackContext,
   canFocusDebugAsset,
   findAssetForRoute,
+  findAssetsForRoute,
   getCoreRoutePreviewState,
 } from "./asset-feedback";
 import { ActionDialog, type ActionDialogTone } from "./ActionDialog";
@@ -14,6 +15,7 @@ import { canRetryRoute } from "./route-retry";
 type JobStatus =
   | "queued"
   | "running"
+  | "awaiting_confirmation"
   | "success"
   | "partial_success"
   | "failed"
@@ -35,6 +37,7 @@ type SectionType =
   | "footer"
   | "unknown";
 type SectionDebugPhase = "raw" | "merged" | "selected";
+type AssetImportStatus = "pending_confirmation" | "imported" | "failed";
 
 interface SectionScoreBreakdown {
   hero: number;
@@ -104,6 +107,7 @@ interface JobSummary {
   error: string | null;
   outputDir: string | null;
   assetCount: number;
+  pendingConfirmationCount: number;
   importSuccessCount: number;
   importFailedCount: number;
   sourceUrl: string | null;
@@ -120,6 +124,8 @@ interface JobAsset {
   quality: number;
   dpr: number;
   capturedAt: string;
+  selectedForImport: boolean;
+  importStatus: AssetImportStatus;
   importOk: boolean;
   importError: string | null;
   eagleId: string | null;
@@ -410,6 +416,7 @@ function areJobSummariesEqual(left: JobSummary[], right: JobSummary[]): boolean 
       leftItem.error !== rightItem.error ||
       leftItem.outputDir !== rightItem.outputDir ||
       leftItem.assetCount !== rightItem.assetCount ||
+      leftItem.pendingConfirmationCount !== rightItem.pendingConfirmationCount ||
       leftItem.importSuccessCount !== rightItem.importSuccessCount ||
       leftItem.importFailedCount !== rightItem.importFailedCount ||
       leftItem.sourceUrl !== rightItem.sourceUrl ||
@@ -645,6 +652,59 @@ function parseJobMode(optionsJson: string | null): JobMode {
   }
 }
 
+function formatAssetImportStatus(
+  status: AssetImportStatus,
+  error: string | null,
+): string {
+  if (status === "imported") {
+    return "Eagle 导入成功";
+  }
+  if (status === "pending_confirmation") {
+    return "待确认导入";
+  }
+  return `导入失败: ${error ?? "未知错误"}`;
+}
+
+function summarizeAssets(assets: JobAsset[]): {
+  pending: number;
+  imported: number;
+  failed: number;
+  selectedPending: number;
+  selectedFailed: number;
+} {
+  let pending = 0;
+  let imported = 0;
+  let failed = 0;
+  let selectedPending = 0;
+  let selectedFailed = 0;
+
+  for (const asset of assets) {
+    if (asset.importStatus === "imported") {
+      imported += 1;
+      continue;
+    }
+    if (asset.importStatus === "failed") {
+      failed += 1;
+      if (asset.selectedForImport) {
+        selectedFailed += 1;
+      }
+      continue;
+    }
+    pending += 1;
+    if (asset.selectedForImport) {
+      selectedPending += 1;
+    }
+  }
+
+  return {
+    pending,
+    imported,
+    failed,
+    selectedPending,
+    selectedFailed,
+  };
+}
+
 function StatusBadge({
   status,
   emphasis = false,
@@ -702,6 +762,9 @@ export function App() {
   const [actionDialog, setActionDialog] = useState<ActionDialogState | null>(null);
   const [actionDialogBusy, setActionDialogBusy] = useState(false);
   const [actionToast, setActionToast] = useState<ActionToastState | null>(null);
+  const [selectionSaving, setSelectionSaving] = useState(false);
+  const [importingSelected, setImportingSelected] = useState(false);
+  const [retryingFailedImport, setRetryingFailedImport] = useState(false);
   const sseRefreshTimerRef = useRef<number | null>(null);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(totalJobs / pageSize)), [pageSize, totalJobs]);
@@ -718,6 +781,10 @@ export function App() {
   const selectedJobMode = useMemo(
     () => parseJobMode(selectedJobDetail?.job.optionsJson ?? null),
     [selectedJobDetail?.job.optionsJson],
+  );
+  const assetImportSummary = useMemo(
+    () => summarizeAssets(selectedJobDetail?.assets ?? []),
+    [selectedJobDetail?.assets],
   );
   const routeProgress = useMemo(
     () => deriveRouteProgress(selectedJobDetail?.routes ?? []),
@@ -751,10 +818,21 @@ export function App() {
       return `核心路由进度 ${routeProgress.done} / ${routeProgress.total}`;
     }
     if (selectedJobIsRunning) {
-      return "实时执行中 · 正在采集页面与导入资源";
+      return "实时执行中 · 正在采集页面";
+    }
+    if (selectedJobDetail.job.status === "awaiting_confirmation") {
+      return `待确认导入 ${assetImportSummary.pending} 张`;
     }
     return null;
-  }, [routeProgress.currentRouteLabel, routeProgress.done, routeProgress.total, selectedJobDetail, selectedJobIsRunning, selectedJobMode]);
+  }, [
+    assetImportSummary.pending,
+    routeProgress.currentRouteLabel,
+    routeProgress.done,
+    routeProgress.total,
+    selectedJobDetail,
+    selectedJobIsRunning,
+    selectedJobMode,
+  ]);
   const canCancelSelectedJob = useMemo(() => {
     if (!selectedJobDetail) {
       return false;
@@ -784,9 +862,13 @@ export function App() {
       (selectedJobDetail?.routes ?? []).map((route) => ({
         route,
         asset: findAssetForRoute(route, selectedJobDetail?.assets ?? []),
+        assets: findAssetsForRoute(route, selectedJobDetail?.assets ?? []),
       })),
     [selectedJobDetail?.assets, selectedJobDetail?.routes],
   );
+  const assetActionsDisabled = selectionSaving || importingSelected || retryingFailedImport || selectedJobIsRunning;
+  const canImportSelected = !assetActionsDisabled && assetImportSummary.selectedPending > 0;
+  const canRetryFailedImport = !assetActionsDisabled && assetImportSummary.selectedFailed > 0;
   const focusedAsset = useMemo(
     () =>
       selectedAssetId !== null
@@ -947,6 +1029,7 @@ export function App() {
             </div>
             <div className="job-stats">
               <span>资产 {job.assetCount}</span>
+              <span>待确认 {job.pendingConfirmationCount}</span>
               <span>导入成功 {job.importSuccessCount}</span>
               <span>导入失败 {job.importFailedCount}</span>
             </div>
@@ -1218,6 +1301,7 @@ export function App() {
   }
 
   async function retryImport(jobId: string): Promise<void> {
+    setRetryingFailedImport(true);
     try {
       await apiFetch(`/api/jobs/${jobId}/retry-import`, {
         method: "POST",
@@ -1227,6 +1311,52 @@ export function App() {
       showToast("已重新尝试导入失败项", "info");
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "重试导入失败");
+    } finally {
+      setRetryingFailedImport(false);
+    }
+  }
+
+  async function saveAssetSelection(jobId: string, selectedAssetIds: number[]): Promise<void> {
+    setSelectionSaving(true);
+    try {
+      await apiFetch(`/api/jobs/${jobId}/assets/selection`, {
+        method: "PATCH",
+        body: JSON.stringify({ selectedAssetIds }),
+      });
+      await loadJobs();
+      await loadJobDetail(jobId);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "保存勾选状态失败");
+    } finally {
+      setSelectionSaving(false);
+    }
+  }
+
+  async function toggleAssetSelection(assetId: number, selected: boolean): Promise<void> {
+    if (!selectedJobDetail) {
+      return;
+    }
+    const selectedAssetIds = selectedJobDetail.assets
+      .filter((asset) => asset.id !== assetId && asset.selectedForImport)
+      .map((asset) => asset.id);
+    if (selected) {
+      selectedAssetIds.push(assetId);
+    }
+    await saveAssetSelection(selectedJobDetail.job.id, selectedAssetIds);
+  }
+
+  async function importSelected(jobId: string): Promise<void> {
+    setImportingSelected(true);
+    try {
+      await apiFetch(`/api/jobs/${jobId}/import-selected`, {
+        method: "POST",
+      });
+      await loadJobs();
+      await loadJobDetail(jobId);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "导入已勾选失败");
+    } finally {
+      setImportingSelected(false);
     }
   }
 
@@ -1603,6 +1733,7 @@ export function App() {
               <option value="">全部状态</option>
               <option value="queued">queued</option>
               <option value="running">running</option>
+              <option value="awaiting_confirmation">awaiting_confirmation</option>
               <option value="success">success</option>
               <option value="partial_success">partial_success</option>
               <option value="failed">failed</option>
@@ -1692,9 +1823,25 @@ export function App() {
                       {selectedJobDetail.job.archivedAt ? "取消归档" : "归档任务"}
                     </button>
                   ) : null}
-                  <button type="button" onClick={() => void retryImport(selectedJobDetail.job.id)}>
-                    重试导入失败项
+                  <button
+                    type="button"
+                    disabled={!canImportSelected}
+                    onClick={() => void importSelected(selectedJobDetail.job.id)}
+                  >
+                    {importingSelected ? "导入中..." : "导入已勾选"}
                   </button>
+                  {assetImportSummary.failed > 0 ? (
+                    <button
+                      type="button"
+                      disabled={!canRetryFailedImport}
+                      onClick={() => void retryImport(selectedJobDetail.job.id)}
+                    >
+                      {retryingFailedImport ? "重试中..." : "重试失败导入"}
+                    </button>
+                  ) : null}
+                  <span>待确认: {assetImportSummary.pending}</span>
+                  <span>导入成功: {assetImportSummary.imported}</span>
+                  <span>导入失败: {assetImportSummary.failed}</span>
                   <span>开始: {formatDate(selectedJobDetail.job.startedAt)}</span>
                   <span>完成: {formatDate(selectedJobDetail.job.finishedAt)}</span>
                   {selectedJobDetail.job.archivedAt ? (
@@ -1745,7 +1892,7 @@ export function App() {
                     <div className="route-list-panel">
                       <h4>核心路由卡片</h4>
                       <div className="core-route-card-list">
-                        {routeAssetEntries.map(({ route, asset }) => {
+                        {routeAssetEntries.map(({ route, asset, assets }) => {
                           const previewState = getCoreRoutePreviewState(route.status, asset);
                           return (
                             <article
@@ -1784,14 +1931,52 @@ export function App() {
                                 </div>
                               </div>
                               <div className="core-route-card-preview">
-                                {asset ? (
-                                  <button
-                                    type="button"
-                                    className="asset-preview-trigger core-route-preview-trigger"
-                                    onClick={() => openPreview(asset.id)}
-                                  >
-                                    <img src={asset.previewUrl} alt={asset.fileName} loading="lazy" />
-                                  </button>
+                                {assets.length > 0 ? (
+                                  <div className="route-asset-grid">
+                                    {assets.map((routeAsset) => (
+                                      <article
+                                        key={routeAsset.id}
+                                        className={cx(
+                                          "route-asset-card",
+                                          selectedAssetId === routeAsset.id && "route-asset-card-focused",
+                                        )}
+                                      >
+                                        <label className="asset-select-control">
+                                          <input
+                                            type="checkbox"
+                                            checked={routeAsset.selectedForImport}
+                                            disabled={assetActionsDisabled}
+                                            onChange={(event) =>
+                                              void toggleAssetSelection(routeAsset.id, event.target.checked)
+                                            }
+                                          />
+                                          <span>导入</span>
+                                        </label>
+                                        <button
+                                          type="button"
+                                          className="asset-preview-trigger core-route-preview-trigger"
+                                          onClick={() => openPreview(routeAsset.id)}
+                                        >
+                                          <img src={routeAsset.previewUrl} alt={routeAsset.fileName} loading="lazy" />
+                                        </button>
+                                        <div className="route-asset-meta">
+                                          <strong>{routeAsset.label}</strong>
+                                          <span>
+                                            {routeAsset.kind}
+                                            {routeAsset.sectionType ? ` · ${routeAsset.sectionType}` : ""}
+                                          </span>
+                                          <span>{formatAssetImportStatus(routeAsset.importStatus, routeAsset.importError)}</span>
+                                        </div>
+                                        <div className="route-asset-actions">
+                                          {canFocusDebugAsset(routeAsset, hasSectionDebug) ? (
+                                            <button type="button" onClick={() => focusDebugFromAsset(routeAsset)}>
+                                              Debug 聚焦
+                                            </button>
+                                          ) : null}
+                                        </div>
+                                      </article>
+                                    ))}
+                                  </div>
                                 ) : (
                                   <div className={cx("route-preview-placeholder", `route-preview-${previewState}`)}>
                                     <strong className="route-preview-title">
@@ -1824,6 +2009,15 @@ export function App() {
                         key={asset.id}
                         className={`asset-card ${selectedAssetId === asset.id ? "asset-card-focused" : ""}`}
                       >
+                        <label className="asset-select-control">
+                          <input
+                            type="checkbox"
+                            checked={asset.selectedForImport}
+                            disabled={assetActionsDisabled}
+                            onChange={(event) => void toggleAssetSelection(asset.id, event.target.checked)}
+                          />
+                          <span>导入</span>
+                        </label>
                         <button
                           type="button"
                           className="asset-preview-trigger"
@@ -1835,7 +2029,7 @@ export function App() {
                           <strong>{asset.label}</strong>
                           <span>{asset.kind}{asset.sectionType ? ` · ${asset.sectionType}` : ""}</span>
                           <span>q{asset.quality} · dpr{asset.dpr}</span>
-                          <span>{asset.importOk ? "Eagle 导入成功" : `导入失败: ${asset.importError ?? "未知错误"}`}</span>
+                          <span>{formatAssetImportStatus(asset.importStatus, asset.importError)}</span>
                         </div>
                         <div className="asset-card-actions">
                           <button type="button" onClick={() => openPreview(asset.id)}>
@@ -2008,6 +2202,15 @@ export function App() {
               </div>
               <aside className="asset-preview-sidebar">
                 <div className="asset-preview-actions">
+                  <label className="asset-select-control asset-select-control-inline">
+                    <input
+                      type="checkbox"
+                      checked={previewAsset.selectedForImport}
+                      disabled={assetActionsDisabled}
+                      onChange={(event) => void toggleAssetSelection(previewAsset.id, event.target.checked)}
+                    />
+                    <span>导入到 Eagle</span>
+                  </label>
                   <button type="button" onClick={() => void copyFeedbackContext()}>
                     Copy Feedback Context
                   </button>
@@ -2084,9 +2287,18 @@ export function App() {
                   <div>
                     <dt>Import</dt>
                     <dd>
-                      {previewAsset.importOk
-                        ? `成功${previewAsset.eagleId ? ` · Eagle ${previewAsset.eagleId}` : ""}`
-                        : `失败 · ${previewAsset.importError ?? "未知错误"}`}
+                      {formatAssetImportStatus(previewAsset.importStatus, previewAsset.importError)}
+                      {previewAsset.importStatus === "imported" && previewAsset.eagleId
+                        ? ` · Eagle ${previewAsset.eagleId}`
+                        : ""}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Source URL</dt>
+                    <dd>
+                      {previewAsset.sourceUrl ? (
+                        <ExternalLink href={previewAsset.sourceUrl} label={previewAsset.sourceUrl} />
+                      ) : "—"}
                     </dd>
                   </div>
                   <div>

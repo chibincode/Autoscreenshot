@@ -15,5 +15,5 @@ export const DEFAULT_DESKTOP_VIEWPORT = {
   height: 1080,
 } as const;
 
-export const DEFAULT_HOST = "127.0.0.1";
+export const DEFAULT_HOST = "0.0.0.0";
 export const DEFAULT_PORT = 8787;

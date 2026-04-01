@@ -13,8 +13,9 @@ import type {
 } from "../types.js";
 import { loadEagleFolderRules } from "./eagle-folder-rules.js";
 import { classifyFullPageType } from "./fullpage-classifier.js";
+import { createPendingImportResult } from "./import-state.js";
 import { discoverCoreRoutes } from "./route-discovery.js";
-import { importManifestAssets, resolveJobOptions } from "./job-service.js";
+import { resolveJobOptions } from "./job-service.js";
 import { ensureDir, readManifest, writeManifestToPath } from "../utils/manifest.js";
 
 const FORCED_VIEWPORT = { width: 1920, height: 1080 } as const;
@@ -490,10 +491,7 @@ async function captureRouteWithFallback(params: {
       assets: captureResult.assets.map((asset) => ({
         ...asset,
         sourceUrl: params.route.url,
-        import: {
-          ok: false,
-          error: "Pending import",
-        },
+        import: createPendingImportResult(),
       })),
       attemptCount: 1,
       fallbackToDpr1: false,
@@ -522,10 +520,7 @@ async function captureRouteWithFallback(params: {
         assets: captureResult.assets.map((asset) => ({
           ...asset,
           sourceUrl: params.route.url,
-          import: {
-            ok: false,
-            error: "Pending import",
-          },
+          import: createPendingImportResult(),
         })),
         attemptCount: 2,
         fallbackToDpr1: true,
@@ -798,14 +793,10 @@ export async function executeCoreRoutesInstruction(
   await writeManifestToPath(params.manifestPath, manifest);
   emit(log, "info", `Manifest written: ${params.manifestPath}`);
 
-  const importedManifest = await importManifestAssets(manifest, params.manifestPath, log);
-  importedManifest.routes = routeSummaries;
-  await writeManifestToPath(params.manifestPath, importedManifest);
-
   return {
     runId: params.runId,
     manifestPath: params.manifestPath,
-    manifest: importedManifest,
+    manifest,
     routes: routeSummaries,
     fallbackRoutes,
     cancelled,
@@ -861,9 +852,9 @@ export async function retryCoreRouteByManifest(
       .concat(routeSummary);
   }
 
-  const importedManifest = await importManifestAssets(manifestRaw, params.manifestPath, log);
+  await writeManifestToPath(params.manifestPath, manifestRaw);
   return {
-    manifest: importedManifest,
+    manifest: manifestRaw,
     route: routeSummary,
     fallbackToDpr1: captured.fallbackToDpr1,
   };

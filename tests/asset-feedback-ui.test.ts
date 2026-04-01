@@ -20,6 +20,8 @@ describe("asset feedback ui helpers", () => {
           quality: 92,
           dpr: 2,
           capturedAt: "2026-03-07T10:00:00.000Z",
+          selectedForImport: true,
+          importStatus: "imported",
           importOk: true,
           importError: null,
           eagleId: "abc",
@@ -35,6 +37,8 @@ describe("asset feedback ui helpers", () => {
           quality: 92,
           dpr: 2,
           capturedAt: "2026-03-07T10:01:00.000Z",
+          selectedForImport: true,
+          importStatus: "imported",
           importOk: true,
           importError: null,
           eagleId: "def",
@@ -77,6 +81,8 @@ describe("asset feedback ui helpers", () => {
         quality: 92,
         dpr: 2,
         capturedAt: "2026-03-07T10:01:00.000Z",
+        selectedForImport: true,
+        importStatus: "failed",
         importOk: false,
         importError: "upload failed",
         eagleId: null,
@@ -99,6 +105,8 @@ describe("asset feedback ui helpers", () => {
     expect(context).toContain("job_mode=core-routes");
     expect(context).toContain("asset_id=22");
     expect(context).toContain("asset_preview_url=http://127.0.0.1:5173/api/assets/22/file");
+    expect(context).toContain("asset_selected_for_import=yes");
+    expect(context).toContain("asset_import_status=failed");
     expect(context).toContain("route_path=/pricing");
     expect(context).toContain("route_error=timeout");
     expect(context).toContain("User feedback:");

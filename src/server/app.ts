@@ -3,6 +3,7 @@ import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { nanoid } from "nanoid";
+import { extractFirstHttpUrl } from "../ai/intent-parser.js";
 import { DEFAULT_JOB_OPTIONS } from "../core/defaults.js";
 import {
   EAGLE_FOLDER_RULES_RELATIVE_PATH,
@@ -16,12 +17,20 @@ import {
 import { classifyFullPageType } from "../core/fullpage-classifier.js";
 import {
   executeInstruction,
+  importSelectedByManifestPath,
   resolveJobOptions,
   retryImportByManifestPath,
-  summarizeManifest,
   type ExecuteInstructionParams,
   type ExecuteInstructionResult,
 } from "../core/job-service.js";
+import {
+  buildAssetFingerprint,
+  buildManifestAssetFingerprint,
+  deriveJobStatusFromImportSummary,
+  normalizeImportResult,
+  summarizeAssetRecords,
+  summarizeManifestImports,
+} from "../core/import-state.js";
 import {
   executeCoreRoutesInstruction,
   retryCoreRouteByManifest,
@@ -29,7 +38,7 @@ import {
   type ExecuteCoreRoutesResult,
 } from "../core/core-routes-service.js";
 import { EagleClient } from "../eagle/client.js";
-import { readManifest } from "../utils/manifest.js";
+import { readManifest, writeManifestToPath } from "../utils/manifest.js";
 import type {
   AssetRecord,
   CreateJobRequest,
@@ -56,6 +65,7 @@ export interface BuildServerOptions {
   executeInstructionFn?: (params: ExecuteInstructionParams) => Promise<ExecuteInstructionResult>;
   executeCoreRoutesInstructionFn?: (params: ExecuteCoreRoutesParams) => Promise<ExecuteCoreRoutesResult>;
   retryImportFn?: (manifestPath: string, log?: ExecuteInstructionParams["log"]) => Promise<RunManifest>;
+  importSelectedFn?: (manifestPath: string, log?: ExecuteInstructionParams["log"]) => Promise<RunManifest>;
   retryCoreRouteFn?: (params: Parameters<typeof retryCoreRouteByManifest>[0]) => ReturnType<typeof retryCoreRouteByManifest>;
 }
 
@@ -63,31 +73,7 @@ function statusFromManifest(manifest: RunManifest | null): JobStatus {
   if (!manifest) {
     return "failed";
   }
-  const summary = summarizeManifest(manifest);
-  if (summary.failed === 0) {
-    return "success";
-  }
-  if (summary.imported > 0 || summary.total > 0) {
-    return "partial_success";
-  }
-  return "failed";
-}
-
-function statusFromCoreRoutes(manifest: RunManifest | null): JobStatus {
-  if (!manifest || !Array.isArray(manifest.routes) || manifest.routes.length === 0) {
-    return "failed";
-  }
-  const successfulRoutes = manifest.routes.filter((route) => route.status === "success").length;
-  const failedRoutes = manifest.routes.filter((route) => route.status === "failed").length;
-  if (successfulRoutes === 0) {
-    return "failed";
-  }
-
-  const manifestStatus = statusFromManifest(manifest);
-  if (failedRoutes > 0) {
-    return "partial_success";
-  }
-  return manifestStatus;
+  return deriveJobStatusFromImportSummary(summarizeManifestImports(manifest));
 }
 
 function statusFromCoreRouteState(manifest: RunManifest | null, routes: RouteTargetSummary[]): JobStatus {
@@ -182,6 +168,52 @@ function findManifestAsset(
   );
 }
 
+function normalizeManifestImports(manifest: RunManifest): RunManifest {
+  return {
+    ...manifest,
+    assets: manifest.assets.map((asset) => ({
+      ...asset,
+      import: normalizeImportResult(asset.import),
+    })),
+  };
+}
+
+function syncManifestSelection(
+  manifest: RunManifest,
+  assets: AssetRecord[],
+  selectedAssetIds: Set<number>,
+): RunManifest {
+  const assetsByFingerprint = new Map<string, AssetRecord[]>();
+  for (const asset of assets) {
+    const fingerprint = buildAssetFingerprint(asset);
+    const matches = assetsByFingerprint.get(fingerprint) ?? [];
+    matches.push(asset);
+    assetsByFingerprint.set(fingerprint, matches);
+  }
+
+  return {
+    ...manifest,
+    assets: manifest.assets.map((asset) => {
+      const fingerprint = buildManifestAssetFingerprint(asset);
+      const matched = assetsByFingerprint.get(fingerprint)?.shift();
+      const normalizedImport = normalizeImportResult(asset.import);
+      if (!matched) {
+        return {
+          ...asset,
+          import: normalizedImport,
+        };
+      }
+      return {
+        ...asset,
+        import: {
+          ...normalizedImport,
+          selected: selectedAssetIds.has(matched.id),
+        },
+      };
+    }),
+  };
+}
+
 async function decorateAssetsForResponse(
   assets: AssetRecord[],
   manifest: RunManifest | null,
@@ -241,6 +273,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   const executeCoreRoutesInstructionFn =
     options.executeCoreRoutesInstructionFn ?? executeCoreRoutesInstruction;
   const retryImportFn = options.retryImportFn ?? retryImportByManifestPath;
+  const importSelectedFn = options.importSelectedFn ?? importSelectedByManifestPath;
   const retryCoreRouteFn = options.retryCoreRouteFn ?? retryCoreRouteByManifest;
 
   app.addHook("onClose", async () => {
@@ -363,11 +396,11 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
             manifestPath: result.manifestPath,
             outputDir: result.manifest.outputDir,
             error:
-              finalStatus === "success"
+              finalStatus === "success" || finalStatus === "awaiting_confirmation"
                 ? null
                 : finalStatus === "cancelled"
                   ? "Cancelled by user"
-                  : "Some assets failed to import into Eagle",
+                  : "Some assets still require attention",
           });
 
           emitToQueue(queue, {
@@ -384,9 +417,11 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           repo.addLog(jobId, "error", message);
+          const parsedUrl = extractFirstHttpUrl(instruction);
           repo.setJobResult({
             jobId,
             status: "failed",
+            taskJson: parsedUrl ? JSON.stringify({ url: parsedUrl }) : undefined,
             error: message,
           });
           emitToQueue(queue, {
@@ -576,7 +611,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     let manifest = null;
     if (detail.job.manifestPath) {
       try {
-        manifest = await readManifest(detail.job.manifestPath);
+        manifest = normalizeManifestImports(await readManifest(detail.job.manifestPath));
       } catch {
         manifest = null;
       }
@@ -606,6 +641,179 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     return reply.send(createReadStream(asset.filePath));
   });
 
+  app.patch<{
+    Params: { jobId: string };
+    Body: { selectedAssetIds?: number[] };
+  }>("/api/jobs/:jobId/assets/selection", async (request, reply) => {
+    const job = repo.getJob(request.params.jobId);
+    if (!job) {
+      reply.code(404);
+      return { error: "Job not found" };
+    }
+    if (job.status === "running") {
+      reply.code(400);
+      return { error: "Asset selection is not available while the job is running" };
+    }
+    if (!job.manifestPath) {
+      reply.code(400);
+      return { error: "No manifest for this job" };
+    }
+    if (!Array.isArray(request.body?.selectedAssetIds)) {
+      reply.code(400);
+      return { error: "selectedAssetIds must be an array" };
+    }
+
+    const selectedAssetIds = request.body.selectedAssetIds.map((value) => Number(value));
+    if (selectedAssetIds.some((value) => !Number.isFinite(value))) {
+      reply.code(400);
+      return { error: "selectedAssetIds must contain valid asset ids" };
+    }
+
+    const assets = repo.getAssets(job.id);
+    const assetIds = new Set(assets.map((asset) => asset.id));
+    if (selectedAssetIds.some((assetId) => !assetIds.has(assetId))) {
+      reply.code(400);
+      return { error: "Asset selection contains invalid ids" };
+    }
+
+    let manifest: RunManifest;
+    try {
+      manifest = normalizeManifestImports(await readManifest(job.manifestPath));
+    } catch {
+      reply.code(500);
+      return { error: "Failed to read manifest for this job" };
+    }
+
+    const updatedManifest = syncManifestSelection(manifest, assets, new Set(selectedAssetIds));
+    await writeManifestToPath(job.manifestPath, updatedManifest);
+    repo.replaceAssets(job.id, updatedManifest);
+
+    const finalStatus =
+      parseJobMode(job.optionsJson) === "core-routes"
+        ? statusFromCoreRouteState(updatedManifest, repo.listRouteTargets(job.id))
+        : statusFromManifest(updatedManifest);
+    repo.setJobResult({
+      jobId: job.id,
+      status: finalStatus,
+      taskJson: JSON.stringify(updatedManifest.task),
+      manifestPath: job.manifestPath,
+      outputDir: updatedManifest.outputDir,
+      error:
+        finalStatus === "success" || finalStatus === "awaiting_confirmation"
+          ? null
+          : "Some assets still require attention",
+    });
+
+    emitToQueue(queue, {
+      type: "assets_updated",
+      jobId: job.id,
+      at: new Date().toISOString(),
+    });
+    emitToQueue(queue, {
+      type: "status",
+      jobId: job.id,
+      status: finalStatus,
+      at: new Date().toISOString(),
+    });
+
+    return {
+      jobId: job.id,
+      status: finalStatus,
+      selectedAssetIds,
+    };
+  });
+
+  app.post<{ Params: { jobId: string } }>("/api/jobs/:jobId/import-selected", async (request, reply) => {
+    const job = repo.getJob(request.params.jobId);
+    if (!job) {
+      reply.code(404);
+      return { error: "Job not found" };
+    }
+    if (!job.manifestPath) {
+      reply.code(400);
+      return { error: "No manifest for this job" };
+    }
+    if (job.status === "running") {
+      reply.code(400);
+      return { error: "Job is already running" };
+    }
+
+    const summary = summarizeAssetRecords(repo.getAssets(job.id));
+    if (summary.selectedPending === 0) {
+      reply.code(400);
+      return { error: "No selected pending assets to import" };
+    }
+
+    queue.enqueue(job.id, async () => {
+      repo.setJobRunning(job.id);
+      repo.addLog(job.id, "info", "Import selected started");
+      emitToQueue(queue, {
+        type: "status",
+        jobId: job.id,
+        status: "running",
+        at: new Date().toISOString(),
+      });
+      try {
+        const manifest = await importSelectedFn(job.manifestPath!, (level, message) => {
+          repo.addLog(job.id, level, message);
+          emitToQueue(queue, {
+            type: "log",
+            jobId: job.id,
+            level,
+            message,
+            at: new Date().toISOString(),
+          });
+        });
+        repo.replaceAssets(job.id, manifest);
+        const mode = parseJobMode(job.optionsJson);
+        const finalStatus =
+          mode === "core-routes"
+            ? statusFromCoreRouteState(manifest, repo.listRouteTargets(job.id))
+            : statusFromManifest(manifest);
+        repo.setJobResult({
+          jobId: job.id,
+          status: finalStatus,
+          taskJson: JSON.stringify(manifest.task),
+          manifestPath: job.manifestPath,
+          outputDir: manifest.outputDir,
+          error:
+            finalStatus === "success" || finalStatus === "awaiting_confirmation"
+              ? null
+              : "Some assets still require attention",
+        });
+        emitToQueue(queue, {
+          type: "assets_updated",
+          jobId: job.id,
+          at: new Date().toISOString(),
+        });
+        emitToQueue(queue, {
+          type: "status",
+          jobId: job.id,
+          status: finalStatus,
+          at: new Date().toISOString(),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        repo.addLog(job.id, "error", message);
+        repo.setJobResult({
+          jobId: job.id,
+          status: "failed",
+          error: message,
+        });
+        emitToQueue(queue, {
+          type: "status",
+          jobId: job.id,
+          status: "failed",
+          at: new Date().toISOString(),
+          message,
+        });
+      }
+    });
+
+    reply.code(202);
+    return { jobId: job.id, status: "queued" };
+  });
+
   app.post<{ Params: { jobId: string } }>("/api/jobs/:jobId/retry-import", async (request, reply) => {
     const job = repo.getJob(request.params.jobId);
     if (!job) {
@@ -615,6 +823,15 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     if (!job.manifestPath) {
       reply.code(400);
       return { error: "No manifest for this job" };
+    }
+    if (job.status === "running") {
+      reply.code(400);
+      return { error: "Job is already running" };
+    }
+    const summary = summarizeAssetRecords(repo.getAssets(job.id));
+    if (summary.selectedFailed === 0) {
+      reply.code(400);
+      return { error: "No selected failed assets to retry" };
     }
 
     queue.enqueue(job.id, async () => {
@@ -649,7 +866,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           taskJson: JSON.stringify(manifest!.task),
           manifestPath: job.manifestPath,
           outputDir: manifest!.outputDir,
-          error: finalStatus === "success" ? null : "Some assets still failed to import",
+          error:
+            finalStatus === "success" || finalStatus === "awaiting_confirmation"
+              ? null
+              : "Some assets still require attention",
         });
         emitToQueue(queue, {
           type: "assets_updated",
@@ -782,7 +1002,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           taskJson: JSON.stringify(retried.manifest.task),
           manifestPath: job.manifestPath,
           outputDir: retried.manifest.outputDir,
-          error: finalStatus === "success" ? null : "Some routes or assets are still failing",
+          error:
+            finalStatus === "success" || finalStatus === "awaiting_confirmation"
+              ? null
+              : "Some routes or assets are still failing",
         });
 
         emitToQueue(queue, {

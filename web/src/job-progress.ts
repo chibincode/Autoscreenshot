@@ -1,6 +1,7 @@
 export type ActivityStatus =
   | "queued"
   | "running"
+  | "awaiting_confirmation"
   | "success"
   | "partial_success"
   | "failed"

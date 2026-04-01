@@ -2,6 +2,7 @@ export type JobMode = "single" | "core-routes";
 export type JobStatus =
   | "queued"
   | "running"
+  | "awaiting_confirmation"
   | "success"
   | "partial_success"
   | "failed"
@@ -24,6 +25,8 @@ export interface AssetFeedbackAsset {
   quality: number;
   dpr: number;
   capturedAt: string;
+  selectedForImport: boolean;
+  importStatus: "pending_confirmation" | "imported" | "failed";
   importOk: boolean;
   importError: string | null;
   eagleId: string | null;
@@ -47,9 +50,20 @@ export function findAssetForRoute(
   route: Pick<AssetFeedbackRoute, "url">,
   assets: AssetFeedbackAsset[],
 ): AssetFeedbackAsset | null {
-  const matches = assets.filter((asset) => asset.sourceUrl === route.url);
+  const matches = findAssetsForRoute(route, assets);
   if (matches.length === 0) {
     return null;
+  }
+  return matches[0];
+}
+
+export function findAssetsForRoute(
+  route: Pick<AssetFeedbackRoute, "url">,
+  assets: AssetFeedbackAsset[],
+): AssetFeedbackAsset[] {
+  const matches = assets.filter((asset) => asset.sourceUrl === route.url);
+  if (matches.length === 0) {
+    return [];
   }
   return [...matches].sort((left, right) => {
     if (left.kind !== right.kind) {
@@ -60,7 +74,7 @@ export function findAssetForRoute(
       return byCapturedAt;
     }
     return right.id - left.id;
-  })[0];
+  });
 }
 
 export function getCoreRoutePreviewState(
@@ -112,7 +126,8 @@ export function buildFeedbackContext(params: {
     `asset_quality=${asset.quality}`,
     `asset_dpr=${asset.dpr}`,
     `asset_captured_at=${asset.capturedAt}`,
-    `asset_import_status=${asset.importOk ? "success" : "failed"}`,
+    `asset_selected_for_import=${asset.selectedForImport ? "yes" : "no"}`,
+    `asset_import_status=${asset.importStatus}`,
     `asset_import_error=${asset.importError ?? "-"}`,
     `asset_eagle_id=${asset.eagleId ?? "-"}`,
   ];

@@ -1,8 +1,15 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import {
+  buildAssetFingerprint,
+  buildManifestAssetFingerprint,
+  LEGACY_PENDING_IMPORT_ERROR,
+  normalizeImportResult,
+} from "../core/import-state.js";
 import type {
   AssetRecord,
+  AssetImportStatus,
   JobDetail,
   JobExecutionOptions,
   JobLogRecord,
@@ -42,6 +49,7 @@ interface JobRow {
 
 interface JobSummaryRow extends JobRow {
   asset_count: number;
+  pending_confirmation_count: number;
   import_success_count: number;
   import_failed_count: number;
 }
@@ -58,6 +66,8 @@ interface AssetRow {
   quality: number;
   dpr: number;
   captured_at: string;
+  selected_for_import: number;
+  import_status: AssetImportStatus;
   import_ok: number;
   import_error: string | null;
   eagle_id: string | null;
@@ -124,7 +134,9 @@ function toAssetRecord(row: AssetRow): AssetRecord {
     quality: row.quality,
     dpr: row.dpr,
     capturedAt: row.captured_at,
-    importOk: row.import_ok === 1,
+    selectedForImport: row.selected_for_import === 1,
+    importStatus: row.import_status,
+    importOk: row.import_status === "imported",
     importError: row.import_error,
     eagleId: row.eagle_id,
   };
@@ -188,6 +200,7 @@ export class JobsRepository {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.createSchema();
+    this.migrateAssetImportState();
   }
 
   close(): void {
@@ -224,6 +237,8 @@ export class JobsRepository {
         quality INTEGER NOT NULL,
         dpr INTEGER NOT NULL,
         captured_at TEXT NOT NULL,
+        selected_for_import INTEGER NOT NULL DEFAULT 1,
+        import_status TEXT NOT NULL DEFAULT 'pending_confirmation',
         import_ok INTEGER NOT NULL DEFAULT 0,
         import_error TEXT,
         eagle_id TEXT,
@@ -271,6 +286,39 @@ export class JobsRepository {
       this.db.exec("ALTER TABLE jobs ADD COLUMN archived_at TEXT;");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_archived_created_at ON jobs(archived_at, created_at DESC);");
+  }
+
+  private migrateAssetImportState(): void {
+    const columns = this.db
+      .prepare("PRAGMA table_info(assets)")
+      .all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map((column) => column.name));
+
+    if (!columnNames.has("selected_for_import")) {
+      this.db.exec("ALTER TABLE assets ADD COLUMN selected_for_import INTEGER NOT NULL DEFAULT 1");
+    }
+    if (!columnNames.has("import_status")) {
+      this.db.exec(
+        "ALTER TABLE assets ADD COLUMN import_status TEXT NOT NULL DEFAULT 'pending_confirmation'",
+      );
+    }
+
+    this.db.exec(`
+      UPDATE assets
+      SET selected_for_import = 1
+      WHERE selected_for_import IS NULL;
+
+      UPDATE assets
+      SET import_status = CASE
+        WHEN import_ok = 1 THEN 'imported'
+        WHEN import_ok = 0
+          AND import_error IS NOT NULL
+          AND TRIM(import_error) != ''
+          AND import_error != '${LEGACY_PENDING_IMPORT_ERROR}'
+        THEN 'failed'
+        ELSE 'pending_confirmation'
+      END;
+    `);
   }
 
   createJob(params: {
@@ -333,7 +381,7 @@ export class JobsRepository {
           output_dir = COALESCE(@outputDir, output_dir),
           error = @error,
           finished_at = CASE
-            WHEN @status IN ('success', 'partial_success', 'failed', 'cancelled') THEN @now
+            WHEN @status IN ('awaiting_confirmation', 'success', 'partial_success', 'failed', 'cancelled') THEN @now
             ELSE finished_at
           END,
           updated_at = @now
@@ -494,17 +542,75 @@ export class JobsRepository {
 
   replaceAssets(jobId: string, manifest: RunManifest): void {
     const tx = this.db.transaction((id: string, currentManifest: RunManifest) => {
-      this.db.prepare("DELETE FROM assets WHERE job_id = ?").run(id);
-      const stmt = this.db.prepare(`
+      const existingRows = this.db
+        .prepare("SELECT * FROM assets WHERE job_id = ? ORDER BY id ASC")
+        .all(id) as AssetRow[];
+      const existingByFingerprint = new Map<string, AssetRow[]>();
+      for (const row of existingRows) {
+        const fingerprint = buildAssetFingerprint(toAssetRecord(row));
+        const rows = existingByFingerprint.get(fingerprint) ?? [];
+        rows.push(row);
+        existingByFingerprint.set(fingerprint, rows);
+      }
+
+      const update = this.db.prepare(`
+        UPDATE assets
+        SET kind = @kind,
+            section_type = @sectionType,
+            label = @label,
+            file_path = @filePath,
+            file_name = @fileName,
+            source_url = @sourceUrl,
+            quality = @quality,
+            dpr = @dpr,
+            captured_at = @capturedAt,
+            selected_for_import = @selectedForImport,
+            import_status = @importStatus,
+            import_ok = @importOk,
+            import_error = @importError,
+            eagle_id = @eagleId
+        WHERE id = @id
+      `);
+      const insert = this.db.prepare(`
         INSERT INTO assets (
-          job_id, kind, section_type, label, file_path, file_name, source_url, quality, dpr, captured_at, import_ok, import_error, eagle_id
+          job_id,
+          kind,
+          section_type,
+          label,
+          file_path,
+          file_name,
+          source_url,
+          quality,
+          dpr,
+          captured_at,
+          selected_for_import,
+          import_status,
+          import_ok,
+          import_error,
+          eagle_id
         ) VALUES (
-          @jobId, @kind, @sectionType, @label, @filePath, @fileName, @sourceUrl, @quality, @dpr, @capturedAt, @importOk, @importError, @eagleId
+          @jobId,
+          @kind,
+          @sectionType,
+          @label,
+          @filePath,
+          @fileName,
+          @sourceUrl,
+          @quality,
+          @dpr,
+          @capturedAt,
+          @selectedForImport,
+          @importStatus,
+          @importOk,
+          @importError,
+          @eagleId
         )
       `);
+      const seenIds = new Set<number>();
+
       for (const asset of currentManifest.assets) {
-        stmt.run({
-          jobId: id,
+        const importState = normalizeImportResult(asset.import);
+        const record = {
           kind: asset.kind,
           sectionType: asset.sectionType ?? null,
           label: asset.label,
@@ -514,10 +620,33 @@ export class JobsRepository {
           quality: asset.quality,
           dpr: asset.dpr,
           capturedAt: asset.capturedAt,
-          importOk: asset.import.ok ? 1 : 0,
-          importError: asset.import.error ?? null,
-          eagleId: asset.import.eagleId ?? null,
+          selectedForImport: importState.selected ? 1 : 0,
+          importStatus: importState.status,
+          importOk: importState.status === "imported" ? 1 : 0,
+          importError: importState.error ?? null,
+          eagleId: importState.eagleId ?? null,
+        };
+        const fingerprint = buildManifestAssetFingerprint(asset);
+        const matched = existingByFingerprint.get(fingerprint)?.shift();
+        if (matched) {
+          seenIds.add(matched.id);
+          update.run({
+            id: matched.id,
+            ...record,
+          });
+          continue;
+        }
+
+        insert.run({
+          jobId: id,
+          ...record,
         });
+      }
+
+      for (const row of existingRows) {
+        if (!seenIds.has(row.id)) {
+          this.db.prepare("DELETE FROM assets WHERE id = ?").run(row.id);
+        }
       }
     });
     tx(jobId, manifest);
@@ -592,8 +721,9 @@ export class JobsRepository {
       SELECT
         j.*,
         COUNT(a.id) AS asset_count,
-        SUM(CASE WHEN a.import_ok = 1 THEN 1 ELSE 0 END) AS import_success_count,
-        SUM(CASE WHEN a.import_ok = 0 THEN 1 ELSE 0 END) AS import_failed_count
+        SUM(CASE WHEN a.import_status = 'pending_confirmation' THEN 1 ELSE 0 END) AS pending_confirmation_count,
+        SUM(CASE WHEN a.import_status = 'imported' THEN 1 ELSE 0 END) AS import_success_count,
+        SUM(CASE WHEN a.import_status = 'failed' THEN 1 ELSE 0 END) AS import_failed_count
       FROM jobs j
       LEFT JOIN assets a ON a.job_id = j.id
       ${whereSql}
@@ -624,6 +754,7 @@ export class JobsRepository {
       error: row.error,
       outputDir: row.output_dir,
       assetCount: Number(row.asset_count) || 0,
+      pendingConfirmationCount: Number(row.pending_confirmation_count) || 0,
       importSuccessCount: Number(row.import_success_count) || 0,
       importFailedCount: Number(row.import_failed_count) || 0,
       sourceUrl: extractSourceUrl(row.task_json),

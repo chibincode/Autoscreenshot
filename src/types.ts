@@ -44,6 +44,7 @@ export type JobMode = "single" | "core-routes";
 export type JobStatus =
   | "queued"
   | "running"
+  | "awaiting_confirmation"
   | "success"
   | "partial_success"
   | "failed"
@@ -239,9 +240,13 @@ export interface FolderResolveResult {
 
 export interface EagleImportResult {
   ok: boolean;
+  selected: boolean;
+  status: AssetImportStatus;
   eagleId?: string;
   error?: string;
 }
+
+export type AssetImportStatus = "pending_confirmation" | "imported" | "failed";
 
 export interface RunManifest {
   runId: string;
@@ -362,6 +367,8 @@ export interface AssetRecord {
   quality: number;
   dpr: number;
   capturedAt: string;
+  selectedForImport: boolean;
+  importStatus: AssetImportStatus;
   importOk: boolean;
   importError: string | null;
   eagleId: string | null;
@@ -390,6 +397,7 @@ export interface JobSummary {
   error: string | null;
   outputDir: string | null;
   assetCount: number;
+  pendingConfirmationCount: number;
   importSuccessCount: number;
   importFailedCount: number;
   sourceUrl: string | null;

@@ -3,6 +3,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildServer } from "../src/server/app.js";
+import { createPendingImportResult, normalizeImportResult } from "../src/core/import-state.js";
 import { JobsRepository } from "../src/server/db.js";
 import { JobQueue } from "../src/server/queue.js";
 import type { ExecuteInstructionParams, ExecuteInstructionResult } from "../src/core/job-service.js";
@@ -30,6 +31,43 @@ async function waitForTerminalStatus(
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("Job did not finish in expected time");
+}
+
+async function waitForNextTerminalStatus(
+  app: Awaited<ReturnType<typeof buildServer>>,
+  jobId: string,
+  previousStatus: string,
+): Promise<string> {
+  let sawExecutionRestart = false;
+
+  for (let i = 0; i < 60; i += 1) {
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const data = response.json() as {
+      job: {
+        status: string;
+      };
+    };
+    const status = data.job.status;
+
+    if (status === "queued" || status === "running") {
+      sawExecutionRestart = true;
+    }
+
+    if (sawExecutionRestart && !["queued", "running"].includes(status)) {
+      return status;
+    }
+
+    if (!sawExecutionRestart && status !== previousStatus && !["queued", "running"].includes(status)) {
+      return status;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  throw new Error("Job did not restart and finish in expected time");
 }
 
 async function createManualCoreRoutesJob(
@@ -109,6 +147,7 @@ describe("server api", () => {
   let queue: JobQueue;
   let playwrightRuntimeState: PlaywrightRuntimeState;
   let repairCalls: number;
+  let manifestMap: Map<string, RunManifest>;
 
   beforeAll(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-api-"));
@@ -116,7 +155,7 @@ describe("server api", () => {
     repo = new JobsRepository(dbPath);
     queue = new JobQueue();
     repairCalls = 0;
-    const manifestMap = new Map<string, RunManifest>();
+    manifestMap = new Map<string, RunManifest>();
 
     const executeInstructionFn = async (
       params: ExecuteInstructionParams,
@@ -181,10 +220,7 @@ describe("server api", () => {
             quality: 92,
             dpr: 2,
             capturedAt: new Date().toISOString(),
-            import: {
-              ok: true,
-              eagleId: "eagle-item-1",
-            },
+            import: createPendingImportResult(),
           },
         ],
       };
@@ -200,6 +236,32 @@ describe("server api", () => {
       };
     };
 
+    const importSelectedFn = async (manifestPath: string): Promise<RunManifest> => {
+      const existing = manifestMap.get(manifestPath);
+      if (!existing) {
+        throw new Error("manifest not found");
+      }
+      const updated: RunManifest = {
+        ...existing,
+        assets: existing.assets.map((asset) => ({
+          ...asset,
+          import:
+            normalizeImportResult(asset.import).selected &&
+            normalizeImportResult(asset.import).status === "pending_confirmation"
+              ? {
+                  ok: true,
+                  selected: true,
+                  status: "imported",
+                  eagleId: asset.import.eagleId ?? "eagle-item-import-selected",
+                }
+              : normalizeImportResult(asset.import),
+        })),
+      };
+      await fs.writeFile(manifestPath, JSON.stringify(updated, null, 2), "utf8");
+      manifestMap.set(manifestPath, updated);
+      return updated;
+    };
+
     const retryImportFn = async (manifestPath: string): Promise<RunManifest> => {
       const existing = manifestMap.get(manifestPath);
       if (!existing) {
@@ -209,10 +271,16 @@ describe("server api", () => {
         ...existing,
         assets: existing.assets.map((asset) => ({
           ...asset,
-          import: {
-            ok: true,
-            eagleId: asset.import.eagleId ?? "eagle-item-retry",
-          },
+          import:
+            normalizeImportResult(asset.import).selected &&
+            normalizeImportResult(asset.import).status === "failed"
+              ? {
+                  ok: true,
+                  selected: true,
+                  status: "imported",
+                  eagleId: asset.import.eagleId ?? "eagle-item-retry",
+                }
+              : normalizeImportResult(asset.import),
         })),
       };
       await fs.writeFile(manifestPath, JSON.stringify(updated, null, 2), "utf8");
@@ -333,10 +401,7 @@ describe("server api", () => {
             quality: 92,
             dpr: 2,
             capturedAt: new Date().toISOString(),
-            import: {
-              ok: true,
-              eagleId: "eagle-core-1",
-            },
+            import: createPendingImportResult(),
           },
         ],
       };
@@ -370,7 +435,7 @@ describe("server api", () => {
         throw new Error("manifest not found");
       }
 
-      const routeImage = path.join(existing.outputDir, `retry-${params.routePath.replace(/\\W+/g, "_")}.jpg`);
+      const routeImage = path.join(existing.outputDir, `retry-${params.routePath.replace(/\W+/g, "_")}.jpg`);
       await fs.writeFile(routeImage, "fake");
       const next: RunManifest = {
         ...existing,
@@ -385,10 +450,7 @@ describe("server api", () => {
             quality: 92,
             dpr: 2,
             capturedAt: new Date().toISOString(),
-            import: {
-              ok: true,
-              eagleId: "eagle-core-retry",
-            },
+            import: createPendingImportResult(),
           },
         ],
       };
@@ -453,6 +515,7 @@ describe("server api", () => {
       playwrightRuntimeService,
       executeInstructionFn,
       executeCoreRoutesInstructionFn,
+      importSelectedFn,
       retryImportFn,
       retryCoreRouteFn,
     });
@@ -590,15 +653,20 @@ describe("server api", () => {
     expect(createData.jobId).toBeTruthy();
 
     const finalStatus = await waitForTerminalStatus(app, createData.jobId);
-    expect(["success", "partial_success"]).toContain(finalStatus);
+    expect(finalStatus).toBe("awaiting_confirmation");
 
     const listResponse = await app.inject({
       method: "GET",
       url: "/api/jobs?page=1&pageSize=10",
     });
     expect(listResponse.statusCode).toBe(200);
-    const listData = listResponse.json() as { items: Array<{ id: string }> };
-    expect(listData.items.some((job) => job.id === createData.jobId)).toBe(true);
+    const listData = listResponse.json() as {
+      items: Array<{ id: string; pendingConfirmationCount: number; importSuccessCount: number }>;
+    };
+    const listedJob = listData.items.find((job) => job.id === createData.jobId);
+    expect(listedJob).toBeDefined();
+    expect(listedJob?.pendingConfirmationCount).toBe(1);
+    expect(listedJob?.importSuccessCount).toBe(0);
 
     const detailResponse = await app.inject({
       method: "GET",
@@ -611,6 +679,8 @@ describe("server api", () => {
         eagleFolderId: string | null;
         eagleFolderPath: string | null;
         pageTitle?: string;
+        selectedForImport: boolean;
+        importStatus: string;
       }>;
       logs: Array<{ message: string }>;
       manifest: {
@@ -623,8 +693,67 @@ describe("server api", () => {
     expect(detailData.assets[0].previewUrl).toContain("/api/assets/");
     expect(detailData.assets[0].eagleFolderId).toBe("JZR6J2FS0KW4W");
     expect(detailData.assets[0].eagleFolderPath).toBe("Pages/Page_Home");
+    expect(detailData.assets[0].selectedForImport).toBe(true);
+    expect(detailData.assets[0].importStatus).toBe("pending_confirmation");
     expect(detailData.logs.length).toBeGreaterThan(0);
     expect(detailData.manifest.sectionDebug?.rawCandidates.length).toBe(1);
+  });
+
+  it("keeps the parsed URL visible in job list when capture fails before assets are saved", async () => {
+    const isolatedTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-api-failed-url-"));
+    const isolatedDbPath = path.join(isolatedTmpDir, "jobs.db");
+    const isolatedRepo = new JobsRepository(isolatedDbPath);
+    const isolatedQueue = new JobQueue();
+    const failingApp = await buildServer({
+      repo: isolatedRepo,
+      queue: isolatedQueue,
+      webDistDir: path.join(isolatedTmpDir, "no-ui"),
+      executeInstructionFn: async () => {
+        throw new Error('page.goto: Timeout 60000ms exceeded. waiting until "networkidle"');
+      },
+      executeCoreRoutesInstructionFn: async () => {
+        throw new Error("core-routes should not run in this test");
+      },
+      importSelectedFn: async () => {
+        throw new Error("import-selected should not run in this test");
+      },
+      retryImportFn: async () => {
+        throw new Error("retry-import should not run in this test");
+      },
+      retryCoreRouteFn: async () => {
+        throw new Error("retry-route should not run in this test");
+      },
+    });
+    await failingApp.ready();
+
+    try {
+      const createResponse = await failingApp.inject({
+        method: "POST",
+        url: "/api/jobs",
+        payload: {
+          instruction: "https://www.soci.ai/",
+        },
+      });
+
+      expect(createResponse.statusCode).toBe(202);
+      const createData = createResponse.json() as { jobId: string };
+      const finalStatus = await waitForTerminalStatus(failingApp, createData.jobId);
+      expect(finalStatus).toBe("failed");
+
+      const listResponse = await failingApp.inject({
+        method: "GET",
+        url: "/api/jobs?page=1&pageSize=10",
+      });
+      expect(listResponse.statusCode).toBe(200);
+      const listData = listResponse.json() as {
+        items: Array<{ id: string; sourceUrl: string | null }>;
+      };
+      expect(listData.items.find((job) => job.id === createData.jobId)?.sourceUrl).toBe("https://www.soci.ai/");
+    } finally {
+      await failingApp.close();
+      isolatedRepo.close();
+      await fs.rm(isolatedTmpDir, { recursive: true, force: true });
+    }
   });
 
   it("creates a core-routes job and retries one route", async () => {
@@ -664,8 +793,8 @@ describe("server api", () => {
     });
     expect(retryResponse.statusCode).toBe(202);
 
-    const retriedStatus = await waitForTerminalStatus(app, createData.jobId);
-    expect(["success", "partial_success"]).toContain(retriedStatus);
+    const retriedStatus = await waitForNextTerminalStatus(app, createData.jobId, finalStatus);
+    expect(retriedStatus).toBe("awaiting_confirmation");
   });
 
   it("shows general Eagle folders for unmatched page and unknown section assets", async () => {
@@ -742,6 +871,8 @@ describe("server api", () => {
           capturedAt: new Date().toISOString(),
           import: {
             ok: true,
+            selected: true,
+            status: "imported",
             eagleId: "eagle-general-page",
           },
         },
@@ -757,6 +888,8 @@ describe("server api", () => {
           capturedAt: new Date().toISOString(),
           import: {
             ok: true,
+            selected: true,
+            status: "imported",
             eagleId: "eagle-general-section",
           },
         },
@@ -1110,7 +1243,7 @@ describe("server api", () => {
     expect(route?.error).toBe("Cancelled by user");
   });
 
-  it("queues retry import", async () => {
+  it("saves full asset selection and updates job summary counts", async () => {
     const createResponse = await app.inject({
       method: "POST",
       url: "/api/jobs",
@@ -1121,13 +1254,137 @@ describe("server api", () => {
     const jobId = (createResponse.json() as { jobId: string }).jobId;
     await waitForTerminalStatus(app, jobId);
 
+    const detailBefore = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const detailBeforeData = detailBefore.json() as {
+      assets: Array<{ id: number; selectedForImport: boolean }>;
+    };
+    expect(detailBeforeData.assets).toHaveLength(1);
+    expect(detailBeforeData.assets[0].selectedForImport).toBe(true);
+
+    const selectionResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/jobs/${jobId}/assets/selection`,
+      payload: {
+        selectedAssetIds: [],
+      },
+    });
+    expect(selectionResponse.statusCode).toBe(200);
+
+    const detailAfter = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const detailAfterData = detailAfter.json() as {
+      job: { status: string };
+      assets: Array<{ selectedForImport: boolean; importStatus: string }>;
+    };
+    expect(detailAfterData.job.status).toBe("awaiting_confirmation");
+    expect(detailAfterData.assets[0].selectedForImport).toBe(false);
+    expect(detailAfterData.assets[0].importStatus).toBe("pending_confirmation");
+
+    const listAfter = await app.inject({
+      method: "GET",
+      url: "/api/jobs?page=1&pageSize=20",
+    });
+    const listAfterData = listAfter.json() as {
+      items: Array<{ id: string; pendingConfirmationCount: number }>;
+    };
+    const updatedJob = listAfterData.items.find((job) => job.id === jobId);
+    expect(updatedJob?.pendingConfirmationCount).toBe(1);
+  });
+
+  it("imports only selected pending assets", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and capture",
+      },
+    });
+    const jobId = (createResponse.json() as { jobId: string }).jobId;
+    await waitForTerminalStatus(app, jobId);
+
+    const importResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/import-selected`,
+    });
+    expect(importResponse.statusCode).toBe(202);
+
+    const finalStatus = await waitForNextTerminalStatus(app, jobId, "awaiting_confirmation");
+    expect(finalStatus).toBe("success");
+
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const detailData = detailResponse.json() as {
+      assets: Array<{ importStatus: string; eagleId: string | null }>;
+    };
+    expect(detailData.assets[0].importStatus).toBe("imported");
+    expect(detailData.assets[0].eagleId).toBe("eagle-item-import-selected");
+  });
+
+  it("retries only selected failed assets", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and capture",
+      },
+    });
+    const jobId = (createResponse.json() as { jobId: string }).jobId;
+    await waitForTerminalStatus(app, jobId);
+
+    const job = repo.getJob(jobId);
+    if (!job?.manifestPath) {
+      throw new Error("Expected manifest path for seeded job");
+    }
+
+    const manifest = JSON.parse(await fs.readFile(job.manifestPath, "utf8")) as RunManifest;
+    const failedManifest: RunManifest = {
+      ...manifest,
+      assets: manifest.assets.map((asset) => ({
+        ...asset,
+        import: {
+          ok: false,
+          selected: true,
+          status: "failed",
+          error: "seeded failure",
+        },
+      })),
+    };
+    await fs.writeFile(job.manifestPath, JSON.stringify(failedManifest, null, 2), "utf8");
+    manifestMap.set(job.manifestPath, failedManifest);
+    repo.replaceAssets(jobId, failedManifest);
+    repo.setJobResult({
+      jobId,
+      status: "partial_success",
+      taskJson: JSON.stringify(failedManifest.task),
+      manifestPath: job.manifestPath,
+      outputDir: failedManifest.outputDir,
+      error: "Some assets still require attention",
+    });
+
     const retryResponse = await app.inject({
       method: "POST",
       url: `/api/jobs/${jobId}/retry-import`,
     });
     expect(retryResponse.statusCode).toBe(202);
 
-    const finalStatus = await waitForTerminalStatus(app, jobId);
-    expect(["success", "partial_success"]).toContain(finalStatus);
+    const finalStatus = await waitForNextTerminalStatus(app, jobId, "partial_success");
+    expect(finalStatus).toBe("success");
+
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const detailData = detailResponse.json() as {
+      assets: Array<{ importStatus: string; eagleId: string | null }>;
+    };
+    expect(detailData.assets[0].importStatus).toBe("imported");
+    expect(detailData.assets[0].eagleId).toBe("eagle-item-retry");
   });
 });

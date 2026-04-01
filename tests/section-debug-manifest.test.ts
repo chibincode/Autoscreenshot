@@ -197,10 +197,22 @@ describe("section debug manifest wiring", () => {
     };
 
     parseInstructionMock.mockResolvedValue(task);
-    captureTaskMock.mockImplementation(async (_receivedTask: ParsedTask, options: any) => {
+    captureTaskMock.mockImplementation(async (_receivedTask: ParsedTask, options: {
+      navigationFallback?: {
+        fallbackWaitUntil: string;
+        onFallback?: (event: {
+          phase: string;
+          url: string;
+          from: string;
+          to: string;
+          errorMessage: string;
+        }) => void;
+      };
+    }) => {
+      expect(options.navigationFallback?.fallbackWaitUntil).toBe("domcontentloaded");
       options.navigationFallback?.onFallback?.({
-        phase: "capture",
-        url: "https://example.com",
+        phase: "probe",
+        url: task.url,
         from: "networkidle",
         to: "domcontentloaded",
         errorMessage: 'page.goto: Timeout 60000ms exceeded. waiting until "networkidle"',
@@ -209,7 +221,7 @@ describe("section debug manifest wiring", () => {
         assets: [],
         usedDpr: 2,
         fallbackToDpr1: false,
-        viewport: { width: 1920, height: 1080 },
+        viewport: task.viewport,
         fullPageSize: { width: 1920, height: 3600 },
       } satisfies CaptureRunResult;
     });
@@ -224,17 +236,8 @@ describe("section debug manifest wiring", () => {
         log: (_level, message) => logs.push(message),
       });
 
-      expect(captureTaskMock).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          navigationFallback: expect.objectContaining({
-            fallbackWaitUntil: "domcontentloaded",
-            onFallback: expect.any(Function),
-          }),
-        }),
-      );
       expect(logs).toContain(
-        'capture_wait_fallback phase=capture url=https://example.com from=networkidle to=domcontentloaded reason=page.goto: Timeout 60000ms exceeded. waiting until "networkidle"',
+        'capture_wait_fallback phase=probe url=https://example.com from=networkidle to=domcontentloaded reason=page.goto: Timeout 60000ms exceeded. waiting until "networkidle"',
       );
     } finally {
       await fs.rm(cwd, { recursive: true, force: true });

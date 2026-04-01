@@ -85,7 +85,7 @@ function parseViewport(instruction: string): ParsedTask["viewport"] {
   return { ...DEFAULT_DESKTOP_VIEWPORT };
 }
 
-function parseUrl(instruction: string): string | null {
+export function extractFirstHttpUrl(instruction: string): string | null {
   const match = instruction.match(/https?:\/\/[^\s"'，,]+/i);
   return match?.[0] ?? null;
 }
@@ -168,7 +168,7 @@ function buildRuleBasedTask(
   instruction: string,
   overrides: ParserOverrides,
 ): ParsedTask {
-  const url = parseUrl(instruction);
+  const url = extractFirstHttpUrl(instruction);
   if (!url) {
     throw new Error("No URL found in the instruction. Please include a full http(s) URL.");
   }
