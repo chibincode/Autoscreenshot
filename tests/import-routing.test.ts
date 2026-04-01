@@ -56,9 +56,13 @@ describe("import routing", () => {
       const heroPath = path.join(outputDir, "hero.jpg");
       const fullPath = path.join(outputDir, "full.jpg");
       const faqPath = path.join(outputDir, "faq.jpg");
+      const unknownSectionPath = path.join(outputDir, "unknown-section.jpg");
+      const unmatchedFullPath = path.join(outputDir, "unmatched-full.jpg");
       await fs.writeFile(heroPath, "hero");
       await fs.writeFile(fullPath, "full");
       await fs.writeFile(faqPath, "faq");
+      await fs.writeFile(unknownSectionPath, "unknown-section");
+      await fs.writeFile(unmatchedFullPath, "unmatched-full");
 
       const manifest: RunManifest = {
         runId: "job-1",
@@ -121,6 +125,31 @@ describe("import routing", () => {
             capturedAt: new Date().toISOString(),
             import: { ok: false, error: "Pending import" },
           },
+          {
+            kind: "section",
+            sectionType: "unknown",
+            label: "section",
+            filePath: unknownSectionPath,
+            fileName: "unknown-section.jpg",
+            pageTitle: "Unknown Layout | Example",
+            sourceUrl: "https://example.com/unknown-layout",
+            quality: 92,
+            dpr: 2,
+            capturedAt: new Date().toISOString(),
+            import: { ok: false, error: "Pending import" },
+          },
+          {
+            kind: "fullPage",
+            label: "full_page",
+            filePath: unmatchedFullPath,
+            fileName: "unmatched-full.jpg",
+            pageTitle: "Unknown Layout | Example",
+            sourceUrl: "https://example.com/platform/edge-ai",
+            quality: 92,
+            dpr: 2,
+            capturedAt: new Date().toISOString(),
+            import: { ok: false, error: "Pending import" },
+          },
         ],
       };
 
@@ -150,6 +179,8 @@ describe("import routing", () => {
               data: [
                 { id: "hero-folder-id", name: "Section_Hero", children: [] },
                 { id: "page-pricing-id", name: "Page_Pricing", children: [] },
+                { id: "section-general-id", name: "Section_Gerneral", children: [] },
+                { id: "page-general-id", name: "Page_Gerneral", children: [] },
               ],
             }),
             {
@@ -176,19 +207,27 @@ describe("import routing", () => {
       expect(createFolderCalls.length).toBe(0);
 
       const addCalls = requests.filter((request) => request.url.endsWith("/api/item/addFromPath"));
-      expect(addCalls.length).toBe(3);
+      expect(addCalls.length).toBe(5);
       expect(addCalls[0].body?.folderId).toBe("hero-folder-id");
       expect(addCalls[1].body?.folderId).toBe("page-pricing-id");
       expect(addCalls[2].body?.folderId).toBeUndefined();
+      expect(addCalls[3].body?.folderId).toBe("section-general-id");
+      expect(addCalls[4].body?.folderId).toBe("page-general-id");
       expect(addCalls[0].body?.name).toBe("Pricing | Example");
       expect(addCalls[1].body?.name).toBe("Pricing | Example");
       expect(addCalls[2].body?.name).toBe("Pricing | Example");
+      expect(addCalls[3].body?.name).toBe("Unknown Layout | Example");
+      expect(addCalls[4].body?.name).toBe("Unknown Layout | Example");
       expect(addCalls[0].body?.tags).toEqual(["imported by Autoscreenshot"]);
       expect(addCalls[1].body?.tags).toEqual(["imported by Autoscreenshot"]);
       expect(addCalls[2].body?.tags).toEqual(["imported by Autoscreenshot"]);
+      expect(addCalls[3].body?.tags).toEqual(["imported by Autoscreenshot"]);
+      expect(addCalls[4].body?.tags).toEqual(["imported by Autoscreenshot"]);
       expect(addCalls[0].body).not.toHaveProperty("annotation");
       expect(addCalls[1].body).not.toHaveProperty("annotation");
       expect(addCalls[2].body).not.toHaveProperty("annotation");
+      expect(addCalls[3].body).not.toHaveProperty("annotation");
+      expect(addCalls[4].body).not.toHaveProperty("annotation");
 
       expect(result.assets.every((asset) => asset.import.ok)).toBe(true);
     } finally {

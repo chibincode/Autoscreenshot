@@ -7,6 +7,7 @@ import { JobsRepository } from "../src/server/db.js";
 import { JobQueue } from "../src/server/queue.js";
 import type { ExecuteInstructionParams, ExecuteInstructionResult } from "../src/core/job-service.js";
 import type { ExecuteCoreRoutesParams, ExecuteCoreRoutesResult } from "../src/core/core-routes-service.js";
+import type { PlaywrightRuntimeService, PlaywrightRuntimeState } from "../src/server/playwright-runtime.js";
 import type { RunManifest } from "../src/types.js";
 
 async function waitForTerminalStatus(
@@ -106,12 +107,15 @@ describe("server api", () => {
   let dbPath: string;
   let repo: JobsRepository;
   let queue: JobQueue;
+  let playwrightRuntimeState: PlaywrightRuntimeState;
+  let repairCalls: number;
 
   beforeAll(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-api-"));
     dbPath = path.join(tmpDir, "jobs.db");
     repo = new JobsRepository(dbPath);
     queue = new JobQueue();
+    repairCalls = 0;
     const manifestMap = new Map<string, RunManifest>();
 
     const executeInstructionFn = async (
@@ -413,10 +417,40 @@ describe("server api", () => {
       };
     };
 
+    playwrightRuntimeState = {
+      healthy: true,
+      needsRepair: false,
+      repairing: false,
+      status: "healthy",
+      target: "chromium",
+      message: "Chromium 截图运行环境正常",
+      lastCheckedAt: new Date().toISOString(),
+    };
+
+    const playwrightRuntimeService: PlaywrightRuntimeService = {
+      async check() {
+        return playwrightRuntimeState;
+      },
+      async repair() {
+        repairCalls += 1;
+        playwrightRuntimeState = {
+          healthy: true,
+          needsRepair: false,
+          repairing: false,
+          status: "healthy",
+          target: "chromium",
+          message: "Chromium 截图运行环境正常",
+          lastCheckedAt: new Date().toISOString(),
+        };
+        return playwrightRuntimeState;
+      },
+    };
+
     app = await buildServer({
       repo,
       queue,
       webDistDir: path.join(tmpDir, "no-ui"),
+      playwrightRuntimeService,
       executeInstructionFn,
       executeCoreRoutesInstructionFn,
       retryImportFn,
@@ -459,6 +493,58 @@ describe("server api", () => {
     expect(data.eagleImportPolicy?.allowCreateFolder).toBe(false);
     expect(data.eagleImportPolicy?.mappingSource).toContain("data/eagle-folder-rules.json");
     expect(data.eagleImportPolicy?.fallback).toBe("root");
+  });
+
+  it("returns playwright runtime health", async () => {
+    playwrightRuntimeState = {
+      healthy: false,
+      needsRepair: true,
+      repairing: false,
+      status: "needs_repair",
+      target: "chromium",
+      message: "Chromium 截图浏览器缺失，已提交任务会直接失败，请先修复。",
+      detail: "headless shell missing",
+      lastCheckedAt: new Date().toISOString(),
+    };
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/runtime/playwright",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      healthy: false,
+      needsRepair: true,
+      target: "chromium",
+      detail: "headless shell missing",
+    });
+  });
+
+  it("repairs playwright runtime through api", async () => {
+    repairCalls = 0;
+    playwrightRuntimeState = {
+      healthy: false,
+      needsRepair: true,
+      repairing: false,
+      status: "needs_repair",
+      target: "chromium",
+      message: "Chromium 截图浏览器缺失，已提交任务会直接失败，请先修复。",
+      lastCheckedAt: new Date().toISOString(),
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/runtime/playwright/repair",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(repairCalls).toBe(1);
+    expect(response.json()).toMatchObject({
+      healthy: true,
+      needsRepair: false,
+      target: "chromium",
+    });
   });
 
   it("creates a job and returns detail", async () => {
@@ -580,6 +666,274 @@ describe("server api", () => {
 
     const retriedStatus = await waitForTerminalStatus(app, createData.jobId);
     expect(["success", "partial_success"]).toContain(retriedStatus);
+  });
+
+  it("shows general Eagle folders for unmatched page and unknown section assets", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/folder/list")) {
+        return new Response(
+          JSON.stringify({
+            status: "success",
+            data: [
+              {
+                id: "pages-root",
+                name: "Pages",
+                children: [
+                  {
+                    id: "page-general-id",
+                    name: "Page_Gerneral",
+                  },
+                ],
+              },
+              {
+                id: "sections-root",
+                name: "Sections",
+                children: [
+                  {
+                    id: "section-general-id",
+                    name: "Section_Gerneral",
+                  },
+                ],
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const jobId = "general-folder-job";
+    const outputDir = path.join(tmpDir, jobId);
+    await fs.mkdir(outputDir, { recursive: true });
+    const unmatchedFullPath = path.join(outputDir, "unmatched-full.jpg");
+    const unknownSectionPath = path.join(outputDir, "unknown-section.jpg");
+    await fs.writeFile(unmatchedFullPath, "fake");
+    await fs.writeFile(unknownSectionPath, "fake");
+
+    const manifest: RunManifest = {
+      runId: jobId,
+      instruction: "manual general fallback test",
+      createdAt: new Date().toISOString(),
+      task: {
+        url: "https://example.com/platform/edge-ai",
+        waitUntil: "networkidle",
+        captures: [{ mode: "fullPage" }, { mode: "section" }],
+        image: { format: "jpg", quality: 92, dpr: 2 },
+        viewport: { width: 1920, height: 1080 },
+        tags: [],
+        eagle: {},
+      },
+      sectionScope: "classic",
+      outputDir,
+      assets: [
+        {
+          kind: "fullPage",
+          label: "full_page",
+          filePath: unmatchedFullPath,
+          fileName: "unmatched-full.jpg",
+          sourceUrl: "https://example.com/platform/edge-ai",
+          quality: 92,
+          dpr: 2,
+          capturedAt: new Date().toISOString(),
+          import: {
+            ok: true,
+            eagleId: "eagle-general-page",
+          },
+        },
+        {
+          kind: "section",
+          sectionType: "unknown",
+          label: "section",
+          filePath: unknownSectionPath,
+          fileName: "unknown-section.jpg",
+          sourceUrl: "https://example.com/platform/edge-ai",
+          quality: 92,
+          dpr: 2,
+          capturedAt: new Date().toISOString(),
+          import: {
+            ok: true,
+            eagleId: "eagle-general-section",
+          },
+        },
+      ],
+    };
+    const manifestPath = path.join(outputDir, "manifest.json");
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+
+    repo.createJob({
+      id: jobId,
+      instruction: manifest.instruction,
+      options: {
+        quality: 92,
+        dpr: 2,
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir,
+      },
+    });
+    repo.setJobResult({
+      jobId,
+      status: "success",
+      manifestPath,
+      outputDir,
+      taskJson: JSON.stringify(manifest.task),
+    });
+    repo.replaceAssets(jobId, manifest);
+
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+
+    expect(detailResponse.statusCode).toBe(200);
+    const detailData = detailResponse.json() as {
+      assets: Array<{
+        kind: "fullPage" | "section";
+        eagleFolderId: string | null;
+        eagleFolderPath: string | null;
+      }>;
+    };
+    const fullPageAsset = detailData.assets.find((asset) => asset.kind === "fullPage");
+    const sectionAsset = detailData.assets.find((asset) => asset.kind === "section");
+
+    expect(fullPageAsset?.eagleFolderId).toBe("page-general-id");
+    expect(fullPageAsset?.eagleFolderPath).toBe("Pages/Page_Gerneral");
+    expect(sectionAsset?.eagleFolderId).toBe("section-general-id");
+    expect(sectionAsset?.eagleFolderPath).toBe("Sections/Section_Gerneral");
+  });
+
+  it("archives finished jobs and hides them from the default queue list", async () => {
+    const jobId = "archivable-job";
+    const activeJobId = "still-visible-job";
+    const outputDir = path.join(tmpDir, jobId);
+    await fs.mkdir(outputDir, { recursive: true });
+    const manifestPath = path.join(outputDir, "manifest.json");
+    await fs.writeFile(manifestPath, JSON.stringify({ runId: jobId, assets: [] }), "utf8");
+
+    repo.createJob({
+      id: jobId,
+      instruction: "archive me",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir,
+      },
+    });
+    repo.setJobResult({
+      jobId,
+      status: "success",
+      manifestPath,
+      outputDir,
+      taskJson: JSON.stringify({
+        url: "https://example.com",
+        waitUntil: "networkidle",
+        captures: [{ mode: "fullPage" }],
+        image: { format: "jpg", quality: 92, dpr: 2 },
+        viewport: { width: 1920, height: 1080 },
+        tags: [],
+        eagle: {},
+      }),
+    });
+    repo.createJob({
+      id: activeJobId,
+      instruction: "still visible",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir: path.join(tmpDir, activeJobId),
+      },
+    });
+
+    const archiveResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/archive`,
+      payload: {
+        archived: true,
+      },
+    });
+
+    expect(archiveResponse.statusCode).toBe(200);
+    const archiveData = archiveResponse.json() as { archivedAt: string | null };
+    expect(archiveData.archivedAt).toBeTruthy();
+
+    const listResponse = await app.inject({
+      method: "GET",
+      url: "/api/jobs?page=1&pageSize=20",
+    });
+    const listData = listResponse.json() as { items: Array<{ id: string }> };
+    expect(listData.items.some((job) => job.id === jobId)).toBe(false);
+
+    const archivedListResponse = await app.inject({
+      method: "GET",
+      url: "/api/jobs?page=1&pageSize=20&archivedOnly=true",
+    });
+    const archivedListData = archivedListResponse.json() as {
+      items: Array<{ id: string; archivedAt: string | null }>;
+    };
+    expect(archivedListData.items.find((job) => job.id === jobId)?.archivedAt).toBeTruthy();
+    expect(archivedListData.items.some((job) => job.id === activeJobId)).toBe(false);
+
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const detailData = detailResponse.json() as { job: { archivedAt: string | null } };
+    expect(detailData.job.archivedAt).toBeTruthy();
+
+    const unarchiveResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/archive`,
+      payload: {
+        archived: false,
+      },
+    });
+    expect(unarchiveResponse.statusCode).toBe(200);
+    expect(repo.getJob(jobId)?.archivedAt).toBeNull();
+  });
+
+  it("rejects archiving running jobs", async () => {
+    repo.createJob({
+      id: "running-archive-job",
+      instruction: "running job",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir: path.join(tmpDir, "running-archive-job"),
+      },
+    });
+    repo.setJobRunning("running-archive-job");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/jobs/running-archive-job/archive",
+      payload: {
+        archived: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: "archive is only available for finished jobs",
+    });
   });
 
   it("rejects retry-route while the core-routes job is still running", async () => {

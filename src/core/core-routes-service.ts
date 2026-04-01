@@ -464,6 +464,13 @@ async function captureRouteWithFallback(params: {
         sectionScope: params.sectionScope,
         classicMaxSections: params.classicMaxSections,
         log: params.log,
+        onRecoverableNavigationRetry: (event) => {
+          emit(
+            params.log,
+            "warn",
+            `route_retry_navigation path=${params.route.path} url=${event.url} reason=${event.reason}`,
+          );
+        },
         navigationFallback: {
           fallbackWaitUntil: "domcontentloaded",
           onFallback: (event) => {

@@ -24,6 +24,13 @@ export function isNavigationTimeoutError(error: unknown): boolean {
   return /Timeout \d+ms exceeded|timeout/i.test(message);
 }
 
+export function isRecoverableNavigationError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error ?? "");
+  return /net::ERR_CONNECTION_CLOSED|net::ERR_CONNECTION_RESET|net::ERR_HTTP2_PROTOCOL_ERROR/i.test(
+    message,
+  );
+}
+
 export async function gotoWithFallback(options: GotoWithFallbackOptions): Promise<WaitUntilState> {
   const { page, url, waitUntil, timeoutMs, phase, fallbackWaitUntil, onFallback } = options;
 
@@ -35,7 +42,7 @@ export async function gotoWithFallback(options: GotoWithFallbackOptions): Promis
       waitUntil !== "networkidle" ||
       !fallbackWaitUntil ||
       fallbackWaitUntil === waitUntil ||
-      !isNavigationTimeoutError(error)
+      (!isNavigationTimeoutError(error) && !isRecoverableNavigationError(error))
     ) {
       throw error;
     }

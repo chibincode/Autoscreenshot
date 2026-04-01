@@ -5,6 +5,8 @@ import {
   findAssetForRoute,
   getCoreRoutePreviewState,
 } from "./asset-feedback";
+import { ActionDialog, type ActionDialogTone } from "./ActionDialog";
+import { ActionToast, type ActionToastTone } from "./ActionToast";
 import { deriveRouteProgress, isActiveStatus } from "./job-progress";
 import { getNextSelectedJobId } from "./job-selection";
 import { canRetryRoute } from "./route-retry";
@@ -105,6 +107,7 @@ interface JobSummary {
   importSuccessCount: number;
   importFailedCount: number;
   sourceUrl: string | null;
+  archivedAt: string | null;
 }
 
 interface JobAsset {
@@ -142,6 +145,7 @@ interface JobDetail {
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
+    archivedAt: string | null;
     error: string | null;
     outputDir: string | null;
   };
@@ -169,6 +173,20 @@ interface RouteTargetSummary {
   lastExecutedAt: string | null;
 }
 
+interface ActionDialogState {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  cancelLabel?: string;
+  tone?: ActionDialogTone;
+  onConfirm: () => Promise<void>;
+}
+
+interface ActionToastState {
+  message: string;
+  tone?: ActionToastTone;
+}
+
 interface AppConfig {
   defaults: {
     quality: number;
@@ -188,6 +206,16 @@ interface AppConfig {
     mappingSource: string;
     fallback: "root";
   };
+}
+
+interface PlaywrightRuntimeState {
+  healthy: boolean;
+  needsRepair: boolean;
+  repairing: boolean;
+  target: "chromium";
+  message: string;
+  detail?: string;
+  lastCheckedAt: string;
 }
 
 interface CreateJobRequest {
@@ -305,6 +333,8 @@ function LinkifiedText({
   );
 }
 
+const PLAYWRIGHT_RUNTIME_POLL_MS = 30_000;
+
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   const hasBody = init?.body !== undefined && init.body !== null;
@@ -326,8 +356,26 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+function isRepairablePlaywrightMessage(text: string | null | undefined): boolean {
+  if (!text) {
+    return false;
+  }
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("executable doesn't exist") ||
+    normalized.includes("playwright install chromium") ||
+    normalized.includes("chromium_headless_shell") ||
+    normalized.includes("chrome-headless-shell") ||
+    normalized.includes("ms-playwright/chromium")
+  );
+}
+
 function statusClass(status: string): string {
   return `status status-${status}`;
+}
+
+function canQuickArchiveJob(job: JobSummary): boolean {
+  return !isActiveStatus(job.status) && job.status !== "queued";
 }
 
 function cx(...classes: Array<string | false | null | undefined>): string {
@@ -364,7 +412,8 @@ function areJobSummariesEqual(left: JobSummary[], right: JobSummary[]): boolean 
       leftItem.assetCount !== rightItem.assetCount ||
       leftItem.importSuccessCount !== rightItem.importSuccessCount ||
       leftItem.importFailedCount !== rightItem.importFailedCount ||
-      leftItem.sourceUrl !== rightItem.sourceUrl
+      leftItem.sourceUrl !== rightItem.sourceUrl ||
+      leftItem.archivedAt !== rightItem.archivedAt
     ) {
       return false;
     }
@@ -634,9 +683,12 @@ export function App() {
   const [selectedJobDetail, setSelectedJobDetail] = useState<JobDetail | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [keywordFilter, setKeywordFilter] = useState("");
+  const [archivedOnly, setArchivedOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
   const [submitting, setSubmitting] = useState(false);
+  const [playwrightRuntime, setPlaywrightRuntime] = useState<PlaywrightRuntimeState | null>(null);
+  const [playwrightRepairPending, setPlaywrightRepairPending] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [liveConnected, setLiveConnected] = useState(false);
   const [debugPhaseFilter, setDebugPhaseFilter] = useState<"all" | SectionDebugPhase>("selected");
@@ -647,10 +699,18 @@ export function App() {
   const [focusMessage, setFocusMessage] = useState<string | null>(null);
   const [previewAssetId, setPreviewAssetId] = useState<number | null>(null);
   const [copyFeedbackState, setCopyFeedbackState] = useState<string | null>(null);
+  const [actionDialog, setActionDialog] = useState<ActionDialogState | null>(null);
+  const [actionDialogBusy, setActionDialogBusy] = useState(false);
+  const [actionToast, setActionToast] = useState<ActionToastState | null>(null);
   const sseRefreshTimerRef = useRef<number | null>(null);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(totalJobs / pageSize)), [pageSize, totalJobs]);
   const runningJobId = config?.queue.runningJobId ?? null;
+  const playwrightNeedsRepair = Boolean(playwrightRuntime?.needsRepair);
+  const browserActionsDisabled = playwrightNeedsRepair || playwrightRuntime?.repairing || playwrightRepairPending;
+  const showPlaywrightBanner = Boolean(
+    playwrightRuntime && (playwrightRuntime.needsRepair || playwrightRuntime.repairing),
+  );
   const selectedJobSummary = useMemo(
     () => jobs.find((job) => job.id === selectedJobId) ?? null,
     [jobs, selectedJobId],
@@ -704,6 +764,12 @@ export function App() {
     }
     return selectedJobDetail.job.status === "running" && selectedJobMode === "core-routes";
   }, [selectedJobDetail, selectedJobMode]);
+  const canArchiveSelectedJob = useMemo(() => {
+    if (!selectedJobDetail) {
+      return false;
+    }
+    return !isActiveStatus(selectedJobDetail.job.status) && selectedJobDetail.job.status !== "queued";
+  }, [selectedJobDetail]);
   const sectionDebug = useMemo(
     () => readSectionDebug(selectedJobDetail?.manifest ?? null),
     [selectedJobDetail],
@@ -841,10 +907,17 @@ export function App() {
     () =>
       jobs.map((job) => {
         const jobIsLive = runningJobId === job.id || isActiveStatus(job.status);
+        const showQuickArchive = canQuickArchiveJob(job);
+        const nextArchivedState = !Boolean(job.archivedAt);
         return (
           <article
             key={job.id}
-            className={cx("job-card", selectedJobId === job.id && "selected", jobIsLive && "job-card-live")}
+            className={cx(
+              "job-card",
+              selectedJobId === job.id && "selected",
+              jobIsLive && "job-card-live",
+              showQuickArchive && "job-card-has-action",
+            )}
             role="button"
             tabIndex={0}
             aria-pressed={selectedJobId === job.id}
@@ -860,7 +933,10 @@ export function App() {
             }}
           >
             <div className="job-top">
-              <StatusBadge status={job.status} />
+              <div className="job-top-left">
+                <StatusBadge status={job.status} />
+                {job.archivedAt ? <span className="job-archived-pill">archived</span> : null}
+              </div>
               <span className="job-time">{formatDate(job.createdAt)}</span>
             </div>
             <div className="job-title">
@@ -875,11 +951,33 @@ export function App() {
               <span>导入失败 {job.importFailedCount}</span>
             </div>
             {runningJobId === job.id ? <div className="job-live-note">队列执行中</div> : null}
+            {job.archivedAt ? <div className="job-archived-note">已归档 · {formatDate(job.archivedAt)}</div> : null}
+            {showQuickArchive ? (
+              <button
+                type="button"
+                className="job-card-quick-action"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  archiveJob(job.id, nextArchivedState);
+                }}
+                aria-label={nextArchivedState ? "归档任务" : "取消归档"}
+              >
+                {nextArchivedState ? "归档" : "取消归档"}
+              </button>
+            ) : null}
           </article>
         );
       }),
-    [jobs, runningJobId, selectedJobId],
+    [archiveJob, jobs, runningJobId, selectedJobId],
   );
+
+  async function loadPlaywrightRuntime(): Promise<void> {
+    const result = await apiFetch<PlaywrightRuntimeState>("/api/runtime/playwright");
+    setPlaywrightRuntime(result);
+    if (result.healthy) {
+      setErrorText((current) => (isRepairablePlaywrightMessage(current) ? null : current));
+    }
+  }
 
   async function loadConfig(): Promise<void> {
     const result = await apiFetch<AppConfig>("/api/config");
@@ -893,6 +991,32 @@ export function App() {
     setOutputDir(result.defaults.outputDir);
   }
 
+  async function repairPlaywrightRuntime(): Promise<void> {
+    if (playwrightRepairPending) {
+      return;
+    }
+    setPlaywrightRepairPending(true);
+    try {
+      const result = await apiFetch<PlaywrightRuntimeState>("/api/runtime/playwright/repair", {
+        method: "POST",
+      });
+      setPlaywrightRuntime(result);
+      if (result.healthy) {
+        setErrorText((current) => (isRepairablePlaywrightMessage(current) ? null : current));
+        showToast("Chromium 已修复，可以继续提交任务。");
+        return;
+      }
+      setErrorText(null);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "修复 Chromium 失败");
+    } finally {
+      setPlaywrightRepairPending(false);
+      void loadPlaywrightRuntime().catch(() => {
+        // no-op
+      });
+    }
+  }
+
   async function loadJobs(preferredSelectedJobId?: string | null): Promise<void> {
     const params = new URLSearchParams();
     if (statusFilter) {
@@ -900,6 +1024,9 @@ export function App() {
     }
     if (keywordFilter.trim()) {
       params.set("q", keywordFilter.trim());
+    }
+    if (archivedOnly) {
+      params.set("archivedOnly", "true");
     }
     params.set("page", String(page));
     params.set("pageSize", String(pageSize));
@@ -921,13 +1048,25 @@ export function App() {
 
   useEffect(() => {
     void loadConfig();
+    void loadPlaywrightRuntime().catch((error: unknown) => {
+      setErrorText(error instanceof Error ? error.message : "Failed loading runtime status");
+    });
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void loadPlaywrightRuntime().catch(() => {
+        // no-op
+      });
+    }, PLAYWRIGHT_RUNTIME_POLL_MS);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
     void loadJobs().catch((error: unknown) => {
       setErrorText(error instanceof Error ? error.message : "Failed loading jobs");
     });
-  }, [page, pageSize, statusFilter, keywordFilter]);
+  }, [archivedOnly, keywordFilter, page, pageSize, statusFilter]);
 
   useEffect(() => {
     if (shouldPausePolling) {
@@ -939,7 +1078,7 @@ export function App() {
       });
     }, 5000);
     return () => clearInterval(timer);
-  }, [page, pageSize, shouldPausePolling, statusFilter, keywordFilter]);
+  }, [archivedOnly, keywordFilter, page, pageSize, shouldPausePolling, statusFilter]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -1006,7 +1145,7 @@ export function App() {
       setLiveConnected(false);
       eventSource.close();
     };
-  }, [selectedJobId, page, pageSize, statusFilter, keywordFilter]);
+  }, [archivedOnly, keywordFilter, page, pageSize, selectedJobId, statusFilter]);
 
   useEffect(() => {
     if (!focusAnchorDomId) {
@@ -1019,9 +1158,29 @@ export function App() {
     element.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [focusAnchorDomId]);
 
+  useEffect(() => {
+    if (!actionToast) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      setActionToast(null);
+    }, 2600);
+
+    return () => window.clearTimeout(timer);
+  }, [actionToast]);
+
+  function showToast(message: string, tone: ActionToastTone = "success"): void {
+    setActionToast({ message, tone });
+  }
+
   async function submitJob(): Promise<void> {
     if (!instruction.trim()) {
       setErrorText("请输入截图指令");
+      return;
+    }
+    if (browserActionsDisabled) {
+      setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
       return;
     }
     setSubmitting(true);
@@ -1046,7 +1205,13 @@ export function App() {
       await loadJobs(result.jobId);
       await loadJobDetail(result.jobId);
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "提交任务失败");
+      const message = error instanceof Error ? error.message : "提交任务失败";
+      setErrorText(message);
+      if (isRepairablePlaywrightMessage(message)) {
+        void loadPlaywrightRuntime().catch(() => {
+          // no-op
+        });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1059,12 +1224,17 @@ export function App() {
       });
       await loadJobs();
       await loadJobDetail(jobId);
+      showToast("已重新尝试导入失败项", "info");
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "重试导入失败");
     }
   }
 
   async function retryRoute(jobId: string, routeId: number): Promise<void> {
+    if (browserActionsDisabled) {
+      setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
+      return;
+    }
     try {
       await apiFetch(`/api/jobs/${jobId}/retry-route`, {
         method: "POST",
@@ -1072,34 +1242,98 @@ export function App() {
       });
       await loadJobs();
       await loadJobDetail(jobId);
+      showToast("已重新加入该路由", "info");
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "重试路由失败");
+      const message = error instanceof Error ? error.message : "重试路由失败";
+      setErrorText(message);
+      if (isRepairablePlaywrightMessage(message)) {
+        void loadPlaywrightRuntime().catch(() => {
+          // no-op
+        });
+      }
     }
   }
 
-  async function cancelJob(jobId: string): Promise<void> {
-    const firstConfirm = window.confirm("确定要取消这个任务吗？");
-    if (!firstConfirm) {
-      return;
-    }
-    const secondConfirm = window.confirm("再次确认：取消后当前任务不会继续执行。");
-    if (!secondConfirm) {
-      return;
-    }
-
+  async function executeCancelJob(jobId: string): Promise<void> {
     try {
       const result = await apiFetch<{ cancellationRequested?: boolean }>(`/api/jobs/${jobId}/cancel`, {
         method: "POST",
       });
       await loadJobs();
       await loadJobDetail(jobId);
-      setErrorText(
+      setErrorText(null);
+      showToast(
         result.cancellationRequested
           ? "已请求取消，当前路由结束后会停止。"
-          : null,
+          : "任务已取消",
+        "info",
       );
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "取消任务失败");
+    }
+  }
+
+  function cancelJob(jobId: string): void {
+    setActionDialog({
+      title: "取消任务",
+      description: "取消后当前任务不会继续执行。正在处理中的当前路由结束后会停止。",
+      confirmLabel: "确认取消",
+      cancelLabel: "保留任务",
+      tone: "danger",
+      onConfirm: () => executeCancelJob(jobId),
+    });
+  }
+
+  async function executeArchiveJob(jobId: string, archived: boolean): Promise<void> {
+    try {
+      await apiFetch<{ archivedAt: string | null }>(`/api/jobs/${jobId}/archive`, {
+        method: "POST",
+        body: JSON.stringify({ archived }),
+      });
+      const selectedJobWasArchived = selectedJobId === jobId;
+      const hiddenByCurrentFilter = archived ? !archivedOnly : archivedOnly;
+      await loadJobs(selectedJobWasArchived && !hiddenByCurrentFilter ? jobId : null);
+      if (selectedJobWasArchived && hiddenByCurrentFilter) {
+        setSelectedJobDetail(null);
+      } else if (selectedJobWasArchived) {
+        await loadJobDetail(jobId);
+      }
+      setErrorText(null);
+      showToast(archived ? "任务已归档" : "任务已取消归档");
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : archived ? "归档任务失败" : "取消归档失败");
+    }
+  }
+
+  function archiveJob(jobId: string, archived: boolean): void {
+    setActionDialog({
+      title: archived ? "归档任务" : "取消归档",
+      description: archived
+        ? "归档后默认不会出现在任务队列里，但任务记录和截图仍会保留。"
+        : "取消归档后，这个任务会重新显示在主队列中。",
+      confirmLabel: archived ? "确认归档" : "确认取消归档",
+      cancelLabel: archived ? "暂不归档" : "保留归档",
+      onConfirm: () => executeArchiveJob(jobId, archived),
+    });
+  }
+
+  function closeActionDialog(): void {
+    if (actionDialogBusy) {
+      return;
+    }
+    setActionDialog(null);
+  }
+
+  async function submitActionDialog(): Promise<void> {
+    if (!actionDialog || actionDialogBusy) {
+      return;
+    }
+    setActionDialogBusy(true);
+    try {
+      await actionDialog.onConfirm();
+      setActionDialog(null);
+    } finally {
+      setActionDialogBusy(false);
     }
   }
 
@@ -1197,6 +1431,36 @@ export function App() {
 
   return (
     <div className="layout">
+      {showPlaywrightBanner ? (
+        <div className="runtime-banner" role="status" aria-live="polite">
+          <div className="runtime-banner-copy">
+            <strong className="runtime-banner-title">
+              {playwrightRuntime?.repairing || playwrightRepairPending
+                ? "正在修复本机 Chromium 截图运行环境"
+                : "当前 Chromium 截图浏览器缺失"}
+            </strong>
+            <span className="runtime-banner-text">
+              {playwrightRuntime?.repairing || playwrightRepairPending
+                ? "请稍候，修复完成后这里会自动恢复。"
+                : "这不是网站失败，新的截图任务会直接失败。"}
+            </span>
+            {playwrightRuntime?.detail ? (
+              <span className="runtime-banner-detail">{playwrightRuntime.detail}</span>
+            ) : null}
+          </div>
+          <div className="runtime-banner-actions">
+            <button
+              type="button"
+              className="runtime-banner-button"
+              onClick={() => void repairPlaywrightRuntime()}
+              disabled={playwrightRuntime?.repairing || playwrightRepairPending}
+            >
+              {playwrightRuntime?.repairing || playwrightRepairPending ? "修复中..." : "修复 Chromium"}
+            </button>
+            <span className="runtime-banner-meta">目标：{playwrightRuntime?.target ?? "chromium"}</span>
+          </div>
+        </div>
+      ) : null}
       <aside className="panel panel-create">
         <div className="panel-header">
           <h1>Autoscreenshot</h1>
@@ -1304,7 +1568,12 @@ export function App() {
           <input value={outputDir} onChange={(event) => setOutputDir(event.target.value)} />
         </label>
 
-        <button className="submit-btn" type="button" onClick={() => void submitJob()} disabled={submitting || !config}>
+        <button
+          className="submit-btn"
+          type="button"
+          onClick={() => void submitJob()}
+          disabled={submitting || !config || browserActionsDisabled}
+        >
           {submitting ? "提交中..." : "提交任务"}
         </button>
 
@@ -1346,6 +1615,17 @@ export function App() {
                 setPage(1);
               }}
             />
+            <label className={cx("filter-toggle", archivedOnly && "active")}>
+              <input
+                type="checkbox"
+                checked={archivedOnly}
+                onChange={(event) => {
+                  setArchivedOnly(event.target.checked);
+                  setPage(1);
+                }}
+              />
+              <span>归档</span>
+            </label>
           </div>
         </div>
 
@@ -1394,9 +1674,22 @@ export function App() {
                     <button
                       type="button"
                       className="danger-button"
-                      onClick={() => void cancelJob(selectedJobDetail.job.id)}
+                      onClick={() => cancelJob(selectedJobDetail.job.id)}
                     >
                       取消任务
+                    </button>
+                  ) : null}
+                  {canArchiveSelectedJob ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        archiveJob(
+                          selectedJobDetail.job.id,
+                          !Boolean(selectedJobDetail.job.archivedAt),
+                        )
+                      }
+                    >
+                      {selectedJobDetail.job.archivedAt ? "取消归档" : "归档任务"}
                     </button>
                   ) : null}
                   <button type="button" onClick={() => void retryImport(selectedJobDetail.job.id)}>
@@ -1404,6 +1697,9 @@ export function App() {
                   </button>
                   <span>开始: {formatDate(selectedJobDetail.job.startedAt)}</span>
                   <span>完成: {formatDate(selectedJobDetail.job.finishedAt)}</span>
+                  {selectedJobDetail.job.archivedAt ? (
+                    <span>归档于: {formatDate(selectedJobDetail.job.archivedAt)}</span>
+                  ) : null}
                 </div>
 
                 {selectedJobMode === "core-routes" ? (
@@ -1479,6 +1775,7 @@ export function App() {
                                   {canRetryRoute(selectedJobDetail.job.status, route.status) ? (
                                     <button
                                       type="button"
+                                      disabled={browserActionsDisabled}
                                       onClick={() => void retryRoute(selectedJobDetail.job.id, route.id)}
                                     >
                                       重试该路由
@@ -1810,6 +2107,22 @@ export function App() {
           </div>
         </div>
       ) : null}
+      <ActionDialog
+        open={Boolean(actionDialog)}
+        title={actionDialog?.title ?? ""}
+        description={actionDialog?.description ?? ""}
+        confirmLabel={actionDialog?.confirmLabel ?? ""}
+        cancelLabel={actionDialog?.cancelLabel}
+        tone={actionDialog?.tone}
+        pending={actionDialogBusy}
+        onCancel={closeActionDialog}
+        onConfirm={() => void submitActionDialog()}
+      />
+      <ActionToast
+        open={Boolean(actionToast)}
+        message={actionToast?.message ?? ""}
+        tone={actionToast?.tone}
+      />
     </div>
   );
 }

@@ -80,4 +80,49 @@ describe("folder resolver", () => {
       reason: "type_unmatched",
     });
   });
+
+  it("routes unknown sections to Section_Gerneral when present", () => {
+    const rules = normalizeEagleFolderRules({});
+    const folderIndex = buildFolderIndex([
+      { id: "section-general-id", name: "Section_Gerneral", path: "Sections/Section_Gerneral" },
+    ]);
+    const result = resolveSectionFolder("unknown", rules, folderIndex);
+    expect(result).toEqual({
+      folderId: "section-general-id",
+      resolvedBy: "generic_fallback",
+      reason: "default_general",
+    });
+  });
+
+  it("routes unmatched full pages to Page_Gerneral when present", () => {
+    const rules = normalizeEagleFolderRules({});
+    const folderIndex = buildFolderIndex([
+      { id: "page-general-id", name: "Page_Gerneral", path: "Pages/Page_Gerneral" },
+    ]);
+    const result = resolveFullPageFolder("unmatched", rules, folderIndex);
+    expect(result).toEqual({
+      folderId: "page-general-id",
+      resolvedBy: "generic_fallback",
+      reason: "default_general",
+    });
+  });
+
+  it("does not send classified sections to general when explicit mapping is broken", () => {
+    const rules = normalizeEagleFolderRules({
+      sections: {
+        hero: {
+          folderId: "missing-hero-id",
+        },
+      },
+    });
+    const folderIndex = buildFolderIndex([
+      { id: "section-general-id", name: "Section_Gerneral", path: "Sections/Section_Gerneral" },
+    ]);
+    const result = resolveSectionFolder("hero", rules, folderIndex);
+    expect(result).toEqual({
+      folderId: undefined,
+      resolvedBy: "root",
+      reason: "missing_id",
+    });
+  });
 });

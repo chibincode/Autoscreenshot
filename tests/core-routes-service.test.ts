@@ -129,6 +129,10 @@ describe("core-routes-service", () => {
     const logs: string[] = [];
 
     captureTaskMock.mockImplementation(async (_task: unknown, options: any) => {
+      options.onRecoverableNavigationRetry?.({
+        url: "https://example.com/",
+        reason: "page.goto: net::ERR_CONNECTION_CLOSED",
+      });
       options.navigationFallback?.onFallback?.({
         phase: "capture",
         url: "https://example.com/",
@@ -198,6 +202,7 @@ describe("core-routes-service", () => {
     expect(captureTaskMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
+        onRecoverableNavigationRetry: expect.any(Function),
         navigationFallback: expect.objectContaining({
           fallbackWaitUntil: "domcontentloaded",
           onFallback: expect.any(Function),
@@ -212,6 +217,9 @@ describe("core-routes-service", () => {
     );
     expect(logs).toContain(
       "route_wait_fallback phase=capture url=https://example.com/ from=networkidle to=domcontentloaded reason=page.goto: Timeout 60000ms exceeded.",
+    );
+    expect(logs).toContain(
+      "route_retry_navigation path=/ url=https://example.com/ reason=page.goto: net::ERR_CONNECTION_CLOSED",
     );
     expect(result.routes[0]?.status).toBe("success");
 

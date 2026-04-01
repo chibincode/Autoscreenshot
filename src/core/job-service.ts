@@ -242,6 +242,16 @@ export async function executeInstruction(
     sectionScope: options.sectionScope,
     classicMaxSections: options.classicMaxSections,
     log,
+    navigationFallback: {
+      fallbackWaitUntil: "domcontentloaded",
+      onFallback: (event) => {
+        emit(
+          log,
+          "warn",
+          `capture_wait_fallback phase=${event.phase} url=${event.url} from=${event.from} to=${event.to} reason=${event.errorMessage}`,
+        );
+      },
+    },
   });
 
   const manifest: RunManifest = {

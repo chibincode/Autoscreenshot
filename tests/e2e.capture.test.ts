@@ -533,7 +533,9 @@ describe("fullPage stabilization", () => {
     try {
       await page.goto(`${baseUrl}/smooth`, { waitUntil: "domcontentloaded" });
       await page.evaluate(() => window.scrollTo(0, 1400));
-      await page.waitForTimeout(120);
+      await page.waitForFunction(() => window.scrollY > 0, undefined, {
+        timeout: 1500,
+      });
 
       const before = await page.evaluate(() => window.scrollY);
       expect(before).toBeGreaterThan(0);

@@ -42,12 +42,17 @@ import type {
   RunManifest,
 } from "../types.js";
 import { JobsRepository } from "./db.js";
+import {
+  buildPlaywrightRuntimeService,
+  type PlaywrightRuntimeService,
+} from "./playwright-runtime.js";
 import { JobQueue } from "./queue.js";
 
 export interface BuildServerOptions {
   repo?: JobsRepository;
   queue?: JobQueue;
   webDistDir?: string;
+  playwrightRuntimeService?: PlaywrightRuntimeService;
   executeInstructionFn?: (params: ExecuteInstructionParams) => Promise<ExecuteInstructionResult>;
   executeCoreRoutesInstructionFn?: (params: ExecuteCoreRoutesParams) => Promise<ExecuteCoreRoutesResult>;
   retryImportFn?: (manifestPath: string, log?: ExecuteInstructionParams["log"]) => Promise<RunManifest>;
@@ -230,6 +235,8 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   const repo = options.repo ?? new JobsRepository();
   const queue = options.queue ?? new JobQueue();
   const webDistDir = options.webDistDir ?? path.resolve(process.cwd(), "web/dist");
+  const playwrightRuntimeService =
+    options.playwrightRuntimeService ?? buildPlaywrightRuntimeService({ cwd: process.cwd() });
   const executeInstructionFn = options.executeInstructionFn ?? executeInstruction;
   const executeCoreRoutesInstructionFn =
     options.executeCoreRoutesInstructionFn ?? executeCoreRoutesInstruction;
@@ -253,6 +260,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
         fallback: rulesState.rules.policy.missingFolderBehavior,
       },
     };
+  });
+
+  app.get("/api/runtime/playwright", async () => {
+    return playwrightRuntimeService.check();
+  });
+
+  app.post("/api/runtime/playwright/repair", async () => {
+    return playwrightRuntimeService.repair();
   });
 
   app.post<{ Body: CreateJobRequest }>("/api/jobs", async (request, reply) => {
@@ -489,6 +504,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     Querystring: {
       status?: JobStatus;
       q?: string;
+      archivedOnly?: string;
       page?: string;
       pageSize?: string;
     };
@@ -498,6 +514,8 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     const result = repo.listJobs({
       status: request.query.status,
       q: request.query.q,
+      archivedOnly:
+        request.query.archivedOnly === "true" || request.query.archivedOnly === "1",
       page: Number.isFinite(page) ? page : 1,
       pageSize: Number.isFinite(pageSize) ? pageSize : 20,
     });
@@ -506,6 +524,45 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       total: result.total,
       page: Number.isFinite(page) ? page : 1,
       pageSize: Number.isFinite(pageSize) ? pageSize : 20,
+    };
+  });
+
+  app.post<{
+    Params: { jobId: string };
+    Body: { archived?: boolean };
+  }>("/api/jobs/:jobId/archive", async (request, reply) => {
+    const job = repo.getJob(request.params.jobId);
+    if (!job) {
+      reply.code(404);
+      return { error: "Job not found" };
+    }
+    if (!isTerminalJobStatus(job.status)) {
+      reply.code(400);
+      return { error: "archive is only available for finished jobs" };
+    }
+
+    const shouldArchive = request.body?.archived ?? true;
+    repo.setJobArchived(job.id, shouldArchive);
+    const updatedJob = repo.getJob(job.id);
+    if (!updatedJob) {
+      reply.code(500);
+      return { error: "Job update failed" };
+    }
+
+    const logMessage = shouldArchive ? "Job archived" : "Job unarchived";
+    const logEntry = repo.addLog(job.id, "info", logMessage);
+    emitToQueue(queue, {
+      type: "log",
+      jobId: job.id,
+      level: logEntry.level,
+      message: logEntry.message,
+      at: logEntry.ts,
+    });
+
+    return {
+      jobId: updatedJob.id,
+      status: updatedJob.status,
+      archivedAt: updatedJob.archivedAt,
     };
   });
 

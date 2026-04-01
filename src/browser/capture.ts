@@ -4,7 +4,11 @@ import { chromium } from "playwright";
 import sharp from "sharp";
 import { detectSections } from "./section-detector.js";
 import { buildFixedSectionClip } from "./section-clip.js";
-import { gotoWithFallback, type NavigationFallbackEvent } from "./navigation.js";
+import {
+  gotoWithFallback,
+  isRecoverableNavigationError,
+  type NavigationFallbackEvent,
+} from "./navigation.js";
 import { cleanupCaptureOverlays } from "./overlay-cleanup.js";
 import {
   captureScrollSceneReplacements,
@@ -28,6 +32,7 @@ interface CaptureTaskOptions {
   sectionScope: SectionScope;
   classicMaxSections: number;
   log?: (level: "info" | "warn", message: string) => void;
+  onRecoverableNavigationRetry?: (event: { url: string; reason: string }) => void;
   navigationFallback?: {
     fallbackWaitUntil: "domcontentloaded";
     onFallback?: (event: NavigationFallbackEvent) => void;
@@ -395,8 +400,25 @@ export async function captureTask(
   try {
     return await captureOnce(task, options, resolvedDpr);
   } catch (error) {
-    if (task.image.dpr !== "auto" || resolvedDpr === 1 || !isRetryableCaptureError(error)) {
-      throw error;
+    let finalError = error;
+
+    if (isRecoverableNavigationError(error)) {
+      const reason = error instanceof Error ? error.message : String(error);
+      emitLog(options.log, "warn", `capture_retry_navigation url=${task.url} reason=${reason}`);
+      options.onRecoverableNavigationRetry?.({
+        url: task.url,
+        reason,
+      });
+
+      try {
+        return await captureOnce(task, options, resolvedDpr);
+      } catch (retryError) {
+        finalError = retryError;
+      }
+    }
+
+    if (task.image.dpr !== "auto" || resolvedDpr === 1 || !isRetryableCaptureError(finalError)) {
+      throw finalError;
     }
 
     const retried = await captureOnce(task, options, 1);

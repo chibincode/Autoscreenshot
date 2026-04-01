@@ -10,3 +10,6 @@ playwright-report
 test-results
 .codex/
 .playwright-cli/
+.superdesign/
+jobs.db
+output-*

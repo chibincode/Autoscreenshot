@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { gotoWithFallback, isNavigationTimeoutError } from "../src/browser/navigation.js";
+import {
+  gotoWithFallback,
+  isNavigationTimeoutError,
+  isRecoverableNavigationError,
+} from "../src/browser/navigation.js";
 
 describe("navigation fallback", () => {
   it("retries with domcontentloaded after networkidle timeout", async () => {
@@ -52,9 +56,43 @@ describe("navigation fallback", () => {
     expect(goto).toHaveBeenCalledTimes(1);
   });
 
+  it("retries with domcontentloaded after recoverable connection errors", async () => {
+    const goto = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("page.goto: net::ERR_CONNECTION_CLOSED at https://example.com"))
+      .mockResolvedValueOnce(null);
+    const page = { goto } as unknown as Parameters<typeof gotoWithFallback>[0]["page"];
+
+    const waitUntil = await gotoWithFallback({
+      page,
+      url: "https://example.com/blog",
+      waitUntil: "networkidle",
+      timeoutMs: 60_000,
+      phase: "capture",
+      fallbackWaitUntil: "domcontentloaded",
+    });
+
+    expect(waitUntil).toBe("domcontentloaded");
+    expect(goto).toHaveBeenCalledTimes(2);
+    expect(goto.mock.calls[1][1]).toMatchObject({ waitUntil: "domcontentloaded", timeout: 60_000 });
+  });
+
   it("identifies page.goto timeout errors", () => {
     expect(isNavigationTimeoutError(new Error("page.goto: Timeout 15000ms exceeded."))).toBe(true);
     expect(isNavigationTimeoutError(new Error("navigation timeout"))).toBe(true);
     expect(isNavigationTimeoutError(new Error("Target crashed"))).toBe(false);
+  });
+
+  it("identifies recoverable page.goto connection errors", () => {
+    expect(isRecoverableNavigationError(new Error("page.goto: net::ERR_CONNECTION_CLOSED"))).toBe(
+      true,
+    );
+    expect(isRecoverableNavigationError(new Error("page.goto: net::ERR_CONNECTION_RESET"))).toBe(
+      true,
+    );
+    expect(
+      isRecoverableNavigationError(new Error("page.goto: net::ERR_HTTP2_PROTOCOL_ERROR")),
+    ).toBe(true);
+    expect(isRecoverableNavigationError(new Error("page.goto: net::ERR_ABORTED"))).toBe(false);
   });
 });

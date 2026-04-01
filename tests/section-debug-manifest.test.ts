@@ -181,4 +181,63 @@ describe("section debug manifest wiring", () => {
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it("passes single-mode navigation fallback into capture logging", async () => {
+    vi.resetModules();
+    const { executeInstruction } = await import("../src/core/job-service.js");
+
+    const task: ParsedTask = {
+      url: "https://example.com",
+      waitUntil: "networkidle",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: "auto" },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    parseInstructionMock.mockResolvedValue(task);
+    captureTaskMock.mockImplementation(async (_receivedTask: ParsedTask, options: any) => {
+      options.navigationFallback?.onFallback?.({
+        phase: "capture",
+        url: "https://example.com",
+        from: "networkidle",
+        to: "domcontentloaded",
+        errorMessage: 'page.goto: Timeout 60000ms exceeded. waiting until "networkidle"',
+      });
+      return {
+        assets: [],
+        usedDpr: 2,
+        fallbackToDpr1: false,
+        viewport: { width: 1920, height: 1080 },
+        fullPageSize: { width: 1920, height: 3600 },
+      } satisfies CaptureRunResult;
+    });
+
+    const logs: string[] = [];
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-single-fallback-"));
+    try {
+      await executeInstruction({
+        instruction: "open https://example.com",
+        cwd,
+        runId: "job-single-fallback",
+        log: (_level, message) => logs.push(message),
+      });
+
+      expect(captureTaskMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          navigationFallback: expect.objectContaining({
+            fallbackWaitUntil: "domcontentloaded",
+            onFallback: expect.any(Function),
+          }),
+        }),
+      );
+      expect(logs).toContain(
+        'capture_wait_fallback phase=capture url=https://example.com from=networkidle to=domcontentloaded reason=page.goto: Timeout 60000ms exceeded. waiting until "networkidle"',
+      );
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

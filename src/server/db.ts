@@ -19,6 +19,7 @@ import type {
 interface ListJobsParams {
   status?: JobStatus;
   q?: string;
+  archivedOnly?: boolean;
   page?: number;
   pageSize?: number;
 }
@@ -35,6 +36,7 @@ interface JobRow {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  archived_at: string | null;
   updated_at: string;
 }
 
@@ -104,6 +106,7 @@ function toJobRecord(row: JobRow): JobRecord {
     createdAt: row.created_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+    archivedAt: row.archived_at,
     updatedAt: row.updated_at,
   };
 }
@@ -205,6 +208,7 @@ export class JobsRepository {
         created_at TEXT NOT NULL,
         started_at TEXT,
         finished_at TEXT,
+        archived_at TEXT,
         updated_at TEXT NOT NULL
       );
 
@@ -261,6 +265,12 @@ export class JobsRepository {
       CREATE INDEX IF NOT EXISTS idx_route_targets_job_id ON route_targets(job_id);
       CREATE INDEX IF NOT EXISTS idx_route_targets_status ON route_targets(status);
     `);
+
+    const columns = this.db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "archived_at")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN archived_at TEXT;");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_archived_created_at ON jobs(archived_at, created_at DESC);");
   }
 
   createJob(params: {
@@ -337,6 +347,24 @@ export class JobsRepository {
         manifestPath: params.manifestPath ?? null,
         outputDir: params.outputDir ?? null,
         error: params.error ?? null,
+        now,
+      });
+  }
+
+  setJobArchived(jobId: string, archived: boolean): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `
+      UPDATE jobs
+      SET archived_at = @archivedAt,
+          updated_at = @now
+      WHERE id = @jobId
+    `,
+      )
+      .run({
+        jobId,
+        archivedAt: archived ? now : null,
         now,
       });
   }
@@ -543,6 +571,11 @@ export class JobsRepository {
     const whereParts: string[] = [];
     const whereValues: Array<string> = [];
 
+    if (params.archivedOnly) {
+      whereParts.push("j.archived_at IS NOT NULL");
+    } else {
+      whereParts.push("j.archived_at IS NULL");
+    }
     if (params.status) {
       whereParts.push("j.status = ?");
       whereValues.push(params.status);
@@ -594,6 +627,7 @@ export class JobsRepository {
       importSuccessCount: Number(row.import_success_count) || 0,
       importFailedCount: Number(row.import_failed_count) || 0,
       sourceUrl: extractSourceUrl(row.task_json),
+      archivedAt: row.archived_at,
     }));
 
     return {

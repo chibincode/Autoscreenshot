@@ -229,12 +229,12 @@ export interface EagleFolderRules {
   fullPage: Partial<Record<Exclude<FullPageType, "unmatched">, EagleFullPageFolderRule>>;
 }
 
-export type FolderResolvedBy = "explicit" | "name_fallback" | "root";
+export type FolderResolvedBy = "explicit" | "name_fallback" | "generic_fallback" | "root";
 
 export interface FolderResolveResult {
   folderId?: string;
   resolvedBy: FolderResolvedBy;
-  reason: "mapped" | "missing_id" | "ambiguous_name" | "type_unmatched";
+  reason: "mapped" | "missing_id" | "ambiguous_name" | "type_unmatched" | "default_general";
 }
 
 export interface EagleImportResult {
@@ -346,6 +346,7 @@ export interface JobRecord {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  archivedAt: string | null;
   updatedAt: string;
 }
 
@@ -392,6 +393,7 @@ export interface JobSummary {
   importSuccessCount: number;
   importFailedCount: number;
   sourceUrl: string | null;
+  archivedAt: string | null;
 }
 
 export interface JobDetail {

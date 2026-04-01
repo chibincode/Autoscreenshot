@@ -6,6 +6,9 @@ import type {
   SectionType,
 } from "../types.js";
 
+const DEFAULT_PAGE_GENERAL_FOLDER = "Page_Gerneral";
+const DEFAULT_SECTION_GENERAL_FOLDER = "Section_Gerneral";
+
 function normalizeFolderName(name: string): string {
   return name
     .trim()
@@ -18,6 +21,43 @@ function root(reason: FolderResolveResult["reason"]): FolderResolveResult {
     folderId: undefined,
     resolvedBy: "root",
     reason,
+  };
+}
+
+function findExactFolderByName(
+  folderName: string,
+  folderIndex: ReturnType<typeof buildFolderIndex>,
+): EagleFlatFolder | "ambiguous" | undefined {
+  const normalizedTarget = normalizeFolderName(folderName);
+  const matches = folderIndex.normalized
+    .filter(({ normalizedName }) => normalizedName === normalizedTarget)
+    .map(({ folder }) => folder);
+  const uniqueMatches = [...new Map(matches.map((item) => [item.id, item])).values()];
+
+  if (uniqueMatches.length === 1) {
+    return uniqueMatches[0];
+  }
+  if (uniqueMatches.length > 1) {
+    return "ambiguous";
+  }
+  return undefined;
+}
+
+function resolveGeneralFolder(
+  folderName: string,
+  folderIndex: ReturnType<typeof buildFolderIndex>,
+): FolderResolveResult {
+  const matched = findExactFolderByName(folderName, folderIndex);
+  if (matched === "ambiguous") {
+    return root("ambiguous_name");
+  }
+  if (!matched) {
+    return root("type_unmatched");
+  }
+  return {
+    folderId: matched.id,
+    resolvedBy: "generic_fallback",
+    reason: "default_general",
   };
 }
 
@@ -45,7 +85,7 @@ export function resolveSectionFolder(
   folderIndex: ReturnType<typeof buildFolderIndex>,
 ): FolderResolveResult {
   if (!sectionType || sectionType === "unknown") {
-    return root("type_unmatched");
+    return resolveGeneralFolder(DEFAULT_SECTION_GENERAL_FOLDER, folderIndex);
   }
 
   const rule = rules.sections[sectionType];
@@ -99,7 +139,7 @@ export function resolveFullPageFolder(
   folderIndex: ReturnType<typeof buildFolderIndex>,
 ): FolderResolveResult {
   if (fullPageType === "unmatched") {
-    return root("type_unmatched");
+    return resolveGeneralFolder(DEFAULT_PAGE_GENERAL_FOLDER, folderIndex);
   }
 
   const rule = rules.fullPage[fullPageType];
