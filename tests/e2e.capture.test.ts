@@ -429,6 +429,175 @@ function lateOverlayPageTemplate(): string {
   `;
 }
 
+function veryTallPageTemplate(): string {
+  const sections = Array.from(
+    { length: 18 },
+    (_value, index) => `
+      <section class="panel panel-${index % 3}">
+        <h2>Panel ${index + 1}</h2>
+        <p>Used to verify tiled full-page capture keeps the real bottom of a very tall page.</p>
+      </section>
+    `,
+  ).join("");
+
+  return `
+    <html>
+      <head>
+        <title>Very Tall Capture Fixture</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #f8fafc;
+            color: #0f172a;
+          }
+          .panel {
+            min-height: 980px;
+            padding: 48px;
+            box-sizing: border-box;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+          }
+          .panel-0 {
+            background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+          }
+          .panel-1 {
+            background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+          }
+          .panel-2 {
+            background: linear-gradient(180deg, #ecfeff 0%, #cffafe 100%);
+          }
+          footer {
+            min-height: 640px;
+            padding: 48px;
+            box-sizing: border-box;
+            background: #0f172a;
+            color: #f8fafc;
+          }
+        </style>
+      </head>
+      <body>
+        <main>${sections}</main>
+        <footer>
+          <h2>Footer</h2>
+          <p>This dark footer must still exist at the final pixels of the captured image.</p>
+        </footer>
+      </body>
+    </html>
+  `;
+}
+
+function splitScrollScenePageTemplate(): string {
+  const blocks = [
+    ["Overview", "#ef4444"],
+    ["Operations", "#22c55e"],
+    ["Finance", "#3b82f6"],
+    ["Rollout", "#f97316"],
+  ]
+    .map(
+      ([label, color]) => `
+        <article class="split-scene-content-block" style="background:${color}">
+          <h3>${label}</h3>
+        </article>
+      `,
+    )
+    .join("");
+
+  return `
+    <html>
+      <head>
+        <title>Split Scroll Scene Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #ffffff;
+            color: #0f172a;
+          }
+          .intro,
+          .outro {
+            min-height: 680px;
+            padding: 48px;
+            box-sizing: border-box;
+            background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+          }
+          .split-scene {
+            padding: 0 48px 96px;
+            background: #ffffff;
+          }
+          .split-scene-container {
+            position: relative;
+            display: flex;
+            width: min(100%, 1180px);
+            margin: 0 auto;
+            min-height: 3120px;
+            background: #ffffff;
+          }
+          .split-scene-sidebar {
+            position: sticky;
+            top: 0;
+            align-self: flex-start;
+            width: 360px;
+            height: 1080px;
+            padding: 32px;
+            box-sizing: border-box;
+          }
+          .split-scene-sidebar-card {
+            height: 240px;
+            border-radius: 24px;
+            padding: 28px;
+            box-sizing: border-box;
+            background: #111827;
+            color: #f8fafc;
+            box-shadow: 0 24px 50px rgba(15, 23, 42, 0.18);
+          }
+          .split-scene-divider {
+            width: 1px;
+            min-height: 3120px;
+            background: #d1d5db;
+          }
+          .split-scene-content {
+            flex: 1;
+            min-height: 3120px;
+            background: #ffffff;
+          }
+          .split-scene-content-block {
+            height: 780px;
+            padding: 48px;
+            box-sizing: border-box;
+            color: white;
+          }
+          .split-scene-content-block h3 {
+            margin: 0;
+            font-size: 40px;
+          }
+        </style>
+      </head>
+      <body>
+        <section class="intro">
+          <h1>Customer story intro</h1>
+          <p>Used to verify split scroll-scene preservation for sticky sidebars and long-form content.</p>
+        </section>
+        <section class="split-scene">
+          <div class="split-scene-container">
+            <aside class="split-scene-sidebar">
+              <div class="split-scene-sidebar-card">
+                <strong>Sticky Summary</strong>
+                <p>Keep this once.</p>
+              </div>
+            </aside>
+            <div class="split-scene-divider"></div>
+            <div class="split-scene-content">${blocks}</div>
+          </div>
+        </section>
+        <section class="outro">
+          <h2>Footer</h2>
+          <p>Closing content after the split scene.</p>
+        </section>
+      </body>
+    </html>
+  `;
+}
+
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     const pathname = req.url ?? "/";
@@ -470,6 +639,16 @@ beforeAll(async () => {
     if (pathname.startsWith("/late-overlay")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(lateOverlayPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/very-tall")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(veryTallPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/split-scroll-scene")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(splitScrollScenePageTemplate());
       return;
     }
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -560,6 +739,123 @@ describe("fullPage stabilization", () => {
   }, 15_000);
 });
 
+describe("fullPage tiled capture", () => {
+  it("stitches tall pages so the final footer remains in the output", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-tiled-fullpage-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/very-tall`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(result.fullPageSize.height).toBeGreaterThan(16_000);
+    expect(logs.some((message) => message.includes("fullpage_capture_mode=tiled"))).toBe(true);
+
+    const metadata = await sharp(fullPageAsset!.filePath).metadata();
+    expect(metadata.width).toBe(1920);
+    expect(metadata.height).toBe(result.fullPageSize.height);
+
+    const sample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 80, top: metadata.height! - 80, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(sample[0]).toBeLessThan(30);
+    expect(sample[1]).toBeLessThan(40);
+    expect(sample[2]).toBeLessThan(60);
+  }, 20_000);
+});
+
+describe("split scroll scene preservation", () => {
+  it("keeps the right content column while preserving the sticky sidebar once", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-split-scroll-scene-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/split-scroll-scene`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    const firstScene = result.scrollSceneDebug?.[0];
+    expect(fullPageAsset).toBeTruthy();
+    expect(firstScene).toBeTruthy();
+    expect(firstScene?.layoutMode).toBe("split_content_preserve");
+    expect(firstScene?.replacementHeight).toBe(firstScene?.outerHeight);
+    expect(logs.some((message) => message.includes("layoutMode=split_content_preserve"))).toBe(true);
+
+    const metadata = await sharp(fullPageAsset!.filePath).metadata();
+    expect(metadata.height).toBe(result.fullPageSize.height);
+
+    const contentSamples = await Promise.all([
+      sharp(fullPageAsset!.filePath)
+        .extract({ left: 1120, top: firstScene!.outerTop + 360, width: 1, height: 1 })
+        .raw()
+        .toBuffer(),
+      sharp(fullPageAsset!.filePath)
+        .extract({ left: 1120, top: firstScene!.outerTop + 1140, width: 1, height: 1 })
+        .raw()
+        .toBuffer(),
+      sharp(fullPageAsset!.filePath)
+        .extract({ left: 1120, top: firstScene!.outerTop + 1920, width: 1, height: 1 })
+        .raw()
+        .toBuffer(),
+      sharp(fullPageAsset!.filePath)
+        .extract({ left: 1120, top: firstScene!.outerTop + 2700, width: 1, height: 1 })
+        .raw()
+        .toBuffer(),
+    ]);
+
+    expect(contentSamples[0][0]).toBeGreaterThan(contentSamples[0][1]);
+    expect(contentSamples[0][0]).toBeGreaterThan(contentSamples[0][2]);
+    expect(contentSamples[1][1]).toBeGreaterThan(contentSamples[1][0]);
+    expect(contentSamples[1][1]).toBeGreaterThan(contentSamples[1][2]);
+    expect(contentSamples[2][2]).toBeGreaterThan(contentSamples[2][0]);
+    expect(contentSamples[2][2]).toBeGreaterThan(contentSamples[2][1]);
+    expect(contentSamples[3][0]).toBeGreaterThan(contentSamples[3][1]);
+    expect(contentSamples[3][1]).toBeGreaterThan(contentSamples[3][2]);
+
+    const stickyCardTop = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 500, top: firstScene!.outerTop + 120, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const repeatedStickyCard = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 500, top: firstScene!.outerTop + firstScene!.stickyHeight + 24 + 120, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(stickyCardTop[2]).toBeLessThan(80);
+    expect(repeatedStickyCard[0]).toBeGreaterThan(200);
+    expect(repeatedStickyCard[1]).toBeGreaterThan(200);
+    expect(repeatedStickyCard[2]).toBeGreaterThan(200);
+  }, 20_000);
+});
+
 describe("scroll scene unfolding", () => {
   it("shrinks tall sticky scenes into a stitched multi-frame full-page section", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-scroll-scene-"));
@@ -582,6 +878,7 @@ describe("scroll scene unfolding", () => {
     const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
     expect(fullPageAsset).toBeTruthy();
     expect(result.scrollSceneDebug).toBeTruthy();
+    expect(result.scrollSceneDebug?.[0]?.layoutMode).toBe("sticky_only_unfold");
     expect(result.scrollSceneDebug?.[0]?.distinctFrameCount).toBeGreaterThanOrEqual(2);
 
     const metadata = await sharp(fullPageAsset!.filePath).metadata();

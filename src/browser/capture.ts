@@ -26,6 +26,8 @@ import { ensureDir, slugify, timestampForFile } from "../utils/manifest.js";
 const JPG_EXTENSION = "jpg";
 export const DPR_PIXEL_THRESHOLD = 120_000_000;
 const FULLPAGE_INITIAL_SETTLE_MS = 2500;
+const FULLPAGE_SINGLE_CAPTURE_MAX_HEIGHT_PX = 16_000;
+const FULLPAGE_TILE_CSS_HEIGHT = 4_000;
 
 interface CaptureTaskOptions {
   outputDir: string;
@@ -96,6 +98,104 @@ async function getPageDimensions(page: import("playwright").Page): Promise<{
     );
     return { width, height };
   });
+}
+
+async function captureFullPageByTiles(params: {
+  page: import("playwright").Page;
+  pageWidth: number;
+  pageHeight: number;
+  dpr: number;
+  log?: CaptureTaskOptions["log"];
+}): Promise<Buffer> {
+  const client = await params.page.context().newCDPSession(params.page);
+  const tileHeight = Math.max(1, Math.min(FULLPAGE_TILE_CSS_HEIGHT, Math.round(params.pageHeight)));
+  const outputWidth = Math.max(1, Math.round(params.pageWidth * params.dpr));
+  const outputHeight = Math.max(1, Math.round(params.pageHeight * params.dpr));
+  const tiles: Array<{ buffer: Buffer; top: number }> = [];
+
+  try {
+    let sliceCount = 0;
+    for (let top = 0; top < params.pageHeight; top += tileHeight) {
+      const height = Math.max(1, Math.min(tileHeight, Math.round(params.pageHeight - top)));
+      const screenshot = await client.send("Page.captureScreenshot", {
+        format: "png",
+        captureBeyondViewport: true,
+        clip: {
+          x: 0,
+          y: top,
+          width: Math.max(1, Math.round(params.pageWidth)),
+          height,
+          scale: params.dpr,
+        },
+      });
+      tiles.push({
+        buffer: Buffer.from(screenshot.data, "base64"),
+        top: Math.round(top * params.dpr),
+      });
+      sliceCount += 1;
+    }
+
+    emitLog(
+      params.log,
+      "info",
+      `fullpage_capture_mode=tiled pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} tileCssHeight=${tileHeight} slices=${sliceCount}`,
+    );
+  } finally {
+    await client.detach().catch(() => undefined);
+  }
+
+  return sharp({
+    create: {
+      width: outputWidth,
+      height: outputHeight,
+      channels: 4,
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    },
+  })
+    .composite(
+      tiles.map((tile) => ({
+        input: tile.buffer,
+        left: 0,
+        top: tile.top,
+      })),
+    )
+    .png()
+    .toBuffer();
+}
+
+async function captureFullPageImage(params: {
+  page: import("playwright").Page;
+  pageWidth: number;
+  pageHeight: number;
+  dpr: number;
+  log?: CaptureTaskOptions["log"];
+}): Promise<Buffer> {
+  const physicalHeight = Math.max(1, Math.round(params.pageHeight * params.dpr));
+  if (physicalHeight <= FULLPAGE_SINGLE_CAPTURE_MAX_HEIGHT_PX) {
+    emitLog(
+      params.log,
+      "info",
+      `fullpage_capture_mode=single pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} physicalHeight=${physicalHeight}`,
+    );
+    return params.page.screenshot({
+      type: "png",
+      fullPage: true,
+    });
+  }
+
+  try {
+    return await captureFullPageByTiles(params);
+  } catch (error) {
+    emitLog(
+      params.log,
+      "warn",
+      `fullpage_capture_tiled_failed pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} reason=${error instanceof Error ? error.message : String(error)}`,
+    );
+    return params.page.screenshot({
+      type: "png",
+      fullPage: true,
+    });
+  }
 }
 
 export function resolveDpr(
@@ -267,11 +367,15 @@ async function captureOnce(
         forcedDpr,
       );
       const fullPath = path.join(options.outputDir, fullName);
-      const rawFullPageBuffer = await page.screenshot({
-        type: "png",
-        fullPage: true,
+      const rawFullPageBuffer = await captureFullPageImage({
+        page,
+        pageWidth: pageSize.width,
+        pageHeight: pageSize.height,
+        dpr: forcedDpr,
+        log: options.log,
       });
       const scrollSceneResult = await captureScrollSceneReplacements({
+        baseImage: rawFullPageBuffer,
         page,
         pageWidth: pageSize.width,
         documentHeight: pageSize.height,

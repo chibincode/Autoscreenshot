@@ -166,8 +166,11 @@ export interface CaptureRunResult {
   scrollSceneDebug?: ScrollSceneReplacementDebug[];
 }
 
+export type ScrollSceneLayoutMode = "sticky_only_unfold" | "split_content_preserve";
+
 export interface ScrollSceneReplacementDebug {
   sceneId: string;
+  layoutMode: ScrollSceneLayoutMode;
   outerTop: number;
   outerHeight: number;
   stickyHeight: number;
@@ -247,6 +250,12 @@ export interface EagleImportResult {
 }
 
 export type AssetImportStatus = "pending_confirmation" | "imported" | "failed";
+export type FolderSelectionSource = "auto" | "manual" | "missing";
+
+export interface ManifestAsset extends CapturedAsset {
+  import: EagleImportResult;
+  folderOverrideId?: string | null;
+}
 
 export interface RunManifest {
   runId: string;
@@ -258,11 +267,7 @@ export interface RunManifest {
   sectionDebug?: SectionDetectionDebug;
   scrollSceneDebug?: ScrollSceneReplacementDebug[];
   routes?: RouteTargetSummary[];
-  assets: Array<
-    CapturedAsset & {
-      import: EagleImportResult;
-    }
-  >;
+  assets: ManifestAsset[];
 }
 
 export interface JobExecutionOptions {
@@ -372,6 +377,7 @@ export interface AssetRecord {
   importOk: boolean;
   importError: string | null;
   eagleId: string | null;
+  folderOverrideId: string | null;
 }
 
 export interface JobLogRecord {
@@ -410,6 +416,25 @@ export interface JobDetail {
   logs: JobLogRecord[];
   routes: RouteTargetSummary[];
   manifest: RunManifest | null;
+}
+
+export interface AssetPreviewRecord extends AssetRecord {
+  pageTitle?: string;
+  resolvedEagleFolderId: string | null;
+  resolvedEagleFolderPath: string | null;
+  targetEagleFolderId: string | null;
+  targetEagleFolderPath: string | null;
+  folderSelectionSource: FolderSelectionSource;
+  eagleFolderId: string | null;
+  eagleFolderPath: string | null;
+  previewUrl: string;
+  thumbnailUrl: string;
+  thumbnailWidth: number;
+  thumbnailHeight: number;
+}
+
+export interface JobDetailResponse extends Omit<JobDetail, "assets"> {
+  assets: AssetPreviewRecord[];
 }
 
 export type JobEvent =
