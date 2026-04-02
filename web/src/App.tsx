@@ -1,13 +1,33 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import {
   buildFeedbackContext,
+  buildAssetLookupIndex,
   canFocusDebugAsset,
-  findAssetForRoute,
-  findAssetsForRoute,
+  findAssetForRouteFromIndex,
+  findAssetsForRouteFromIndex,
   getCoreRoutePreviewState,
 } from "./asset-feedback";
 import { ActionDialog, type ActionDialogTone } from "./ActionDialog";
 import { ActionToast, type ActionToastTone } from "./ActionToast";
+import { FolderPickerDialog } from "./FolderPickerDialog";
+import {
+  filterAndRankFolders,
+  formatFolderPathForCard,
+  type EagleFolderOption,
+  type RankedEagleFolderOption,
+} from "./folder-picker";
 import { deriveRouteProgress, isActiveStatus } from "./job-progress";
 import { getNextSelectedJobId } from "./job-selection";
 import { canRetryRoute } from "./route-retry";
@@ -38,6 +58,7 @@ type SectionType =
   | "unknown";
 type SectionDebugPhase = "raw" | "merged" | "selected";
 type AssetImportStatus = "pending_confirmation" | "imported" | "failed";
+type FolderSelectionSource = "auto" | "manual" | "missing";
 
 interface SectionScoreBreakdown {
   hero: number;
@@ -129,9 +150,18 @@ interface JobAsset {
   importOk: boolean;
   importError: string | null;
   eagleId: string | null;
+  folderOverrideId?: string | null;
+  resolvedEagleFolderId: string | null;
+  resolvedEagleFolderPath: string | null;
+  targetEagleFolderId: string | null;
+  targetEagleFolderPath: string | null;
+  folderSelectionSource: FolderSelectionSource;
   eagleFolderId?: string | null;
   eagleFolderPath?: string | null;
   previewUrl: string;
+  thumbnailUrl: string;
+  thumbnailWidth: number;
+  thumbnailHeight: number;
   sourceUrl: string | null;
 }
 
@@ -154,6 +184,7 @@ interface JobDetail {
     archivedAt: string | null;
     error: string | null;
     outputDir: string | null;
+    updatedAt: string;
   };
   assets: JobAsset[];
   logs: JobLog[];
@@ -186,6 +217,12 @@ interface ActionDialogState {
   cancelLabel?: string;
   tone?: ActionDialogTone;
   onConfirm: () => Promise<void>;
+}
+
+interface FolderPickerState {
+  assetId: number;
+  query: string;
+  activeIndex: number;
 }
 
 interface ActionToastState {
@@ -340,6 +377,13 @@ function LinkifiedText({
 }
 
 const PLAYWRIGHT_RUNTIME_POLL_MS = 30_000;
+const LOG_VIRTUALIZE_THRESHOLD = 80;
+const LOG_ROW_HEIGHT = 42;
+const ASSET_VIRTUALIZE_THRESHOLD = 36;
+const ASSET_GRID_MIN_COLUMN_WIDTH = 188;
+const ASSET_GRID_GAP = 12;
+const ASSET_GRID_ROW_HEIGHT = 336;
+const ASSET_GRID_OVERSCAN_ROWS = 2;
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -378,6 +422,17 @@ function isRepairablePlaywrightMessage(text: string | null | undefined): boolean
 
 function statusClass(status: string): string {
   return `status status-${status}`;
+}
+
+function formatStatusLabel(status: JobStatus | RouteTargetSummary["status"]): string {
+  switch (status) {
+    case "awaiting_confirmation":
+      return "Awaiting confirmation";
+    case "partial_success":
+      return "Partial success";
+    default:
+      return status;
+  }
 }
 
 function canQuickArchiveJob(job: JobSummary): boolean {
@@ -427,6 +482,10 @@ function areJobSummariesEqual(left: JobSummary[], right: JobSummary[]): boolean 
   }
 
   return true;
+}
+
+function isSameJobDetailVersion(left: JobDetail | null, right: JobDetail): boolean {
+  return Boolean(left && left.job.id === right.job.id && left.job.updatedAt === right.job.updatedAt);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -609,8 +668,8 @@ function resolvePreviewEaglePath(asset: JobAsset | null, eagleName: string | nul
   if (!asset || !eagleName) {
     return null;
   }
-  const folderPath = asset.eagleFolderPath?.trim();
-  return folderPath ? `${folderPath}/${eagleName}` : eagleName;
+  const folderPath = asset.targetEagleFolderPath?.trim();
+  return folderPath ? `${folderPath}/${eagleName}` : null;
 }
 
 function pickTopTwoScores(scores: SectionScoreBreakdown): {
@@ -671,12 +730,16 @@ function summarizeAssets(assets: JobAsset[]): {
   failed: number;
   selectedPending: number;
   selectedFailed: number;
+  selectedPendingMissingFolderCount: number;
+  selectedFailedMissingFolderCount: number;
 } {
   let pending = 0;
   let imported = 0;
   let failed = 0;
   let selectedPending = 0;
   let selectedFailed = 0;
+  let selectedPendingMissingFolderCount = 0;
+  let selectedFailedMissingFolderCount = 0;
 
   for (const asset of assets) {
     if (asset.importStatus === "imported") {
@@ -687,12 +750,18 @@ function summarizeAssets(assets: JobAsset[]): {
       failed += 1;
       if (asset.selectedForImport) {
         selectedFailed += 1;
+        if (asset.folderSelectionSource === "missing") {
+          selectedFailedMissingFolderCount += 1;
+        }
       }
       continue;
     }
     pending += 1;
     if (asset.selectedForImport) {
       selectedPending += 1;
+      if (asset.folderSelectionSource === "missing") {
+        selectedPendingMissingFolderCount += 1;
+      }
     }
   }
 
@@ -702,6 +771,8 @@ function summarizeAssets(assets: JobAsset[]): {
     failed,
     selectedPending,
     selectedFailed,
+    selectedPendingMissingFolderCount,
+    selectedFailedMissingFolderCount,
   };
 }
 
@@ -721,13 +792,945 @@ function StatusBadge({
           <span className="status-indicator-dot" />
         </span>
       ) : null}
-      <span>{status}</span>
+      <span>{formatStatusLabel(status)}</span>
     </span>
   );
 }
 
+function useElementSize<T extends HTMLElement>(ref: { current: T | null }): { width: number; height: number } {
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) {
+      return undefined;
+    }
+
+    const update = () => {
+      setSize({
+        width: element.clientWidth,
+        height: element.clientHeight,
+      });
+    };
+
+    update();
+
+    const observer = new ResizeObserver(() => {
+      update();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return size;
+}
+
+const AssetThumbnail = memo(function AssetThumbnail({
+  asset,
+  alt,
+  className,
+}: {
+  asset: Pick<JobAsset, "thumbnailUrl" | "thumbnailWidth" | "thumbnailHeight" | "fileName">;
+  alt: string;
+  className?: string;
+}) {
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const loaded = loadedSrc === asset.thumbnailUrl;
+
+  useLayoutEffect(() => {
+    const image = imgRef.current;
+    if (image?.complete && image.naturalWidth > 0) {
+      setLoadedSrc(asset.thumbnailUrl);
+      return;
+    }
+    setLoadedSrc(null);
+  }, [asset.thumbnailUrl]);
+
+  return (
+    <span className={cx("asset-thumbnail-frame", loaded && "asset-thumbnail-frame-loaded", className)}>
+      <img
+        key={asset.thumbnailUrl}
+        ref={imgRef}
+        src={asset.thumbnailUrl}
+        alt={alt}
+        width={asset.thumbnailWidth}
+        height={asset.thumbnailHeight}
+        loading="lazy"
+        decoding="async"
+        className={cx("asset-thumbnail-image", loaded && "asset-thumbnail-image-loaded")}
+        onLoad={() => setLoadedSrc(asset.thumbnailUrl)}
+        onError={() => setLoadedSrc(null)}
+      />
+    </span>
+  );
+});
+
+function formatFolderSelectionSourceLabel(source: FolderSelectionSource): string {
+  switch (source) {
+    case "manual":
+      return "手动确认";
+    case "auto":
+      return "自动建议";
+    default:
+      return "待确认";
+  }
+}
+
+const AssetFolderControl = memo(function AssetFolderControl({
+  asset,
+  disabled,
+  onOpenFolderPicker,
+}: {
+  asset: Pick<
+    JobAsset,
+    | "id"
+    | "importStatus"
+    | "selectedForImport"
+    | "folderSelectionSource"
+    | "resolvedEagleFolderPath"
+    | "targetEagleFolderPath"
+  >;
+  disabled: boolean;
+  onOpenFolderPicker: (assetId: number) => void;
+}) {
+  const isImported = asset.importStatus === "imported";
+  const currentPath = asset.targetEagleFolderPath ?? "";
+  const displayPath = currentPath ? formatFolderPathForCard(currentPath) : "";
+  const needsFolderSelection =
+    asset.selectedForImport && !isImported && asset.folderSelectionSource === "missing";
+
+  return (
+    <div className={cx("asset-folder-field", needsFolderSelection && "asset-folder-field-missing")}>
+      <div className="asset-folder-field-header">
+        <span className="asset-folder-label">目标文件夹</span>
+        <span className={cx("asset-folder-source", `asset-folder-source-${asset.folderSelectionSource}`)}>
+          {formatFolderSelectionSourceLabel(asset.folderSelectionSource)}
+        </span>
+      </div>
+      {isImported ? (
+        <div className="asset-folder-readonly" title={currentPath || undefined}>
+          <span className={cx("asset-folder-path", !displayPath && "asset-folder-path-empty")}>
+            {displayPath || "—"}
+          </span>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="asset-folder-trigger"
+          disabled={disabled}
+          onClick={() => onOpenFolderPicker(asset.id)}
+          title={currentPath || undefined}
+        >
+          <span className={cx("asset-folder-path", !displayPath && "asset-folder-path-empty")}>
+            {displayPath || "搜索并选择 Eagle 文件夹"}
+          </span>
+          <span className="asset-folder-trigger-chevron" aria-hidden="true">
+            v
+          </span>
+        </button>
+      )}
+      {asset.folderSelectionSource === "manual" &&
+      asset.resolvedEagleFolderPath &&
+      asset.resolvedEagleFolderPath !== currentPath ? (
+        <div className="asset-folder-hint">系统建议：{asset.resolvedEagleFolderPath}</div>
+      ) : null}
+      {asset.folderSelectionSource === "missing" ? (
+        <div className="asset-folder-hint asset-folder-hint-warning">
+          {asset.selectedForImport
+            ? "已勾选资产必须先指定一个现有 Eagle 文件夹。"
+            : "当前没有匹配到可用 Eagle 文件夹，可以先手动指定。"}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+const AssetCard = memo(function AssetCard({
+  asset,
+  selected,
+  compact = false,
+  assetActionsDisabled,
+  folderSaving,
+  hasSectionDebug,
+  onToggleSelection,
+  onOpenFolderPicker,
+  onOpenPreview,
+  onFocusDebug,
+}: {
+  asset: JobAsset;
+  selected: boolean;
+  compact?: boolean;
+  assetActionsDisabled: boolean;
+  folderSaving: boolean;
+  hasSectionDebug: boolean;
+  onToggleSelection: (assetId: number, checked: boolean) => void | Promise<void>;
+  onOpenFolderPicker: (assetId: number) => void;
+  onOpenPreview: (assetId: number) => void;
+  onFocusDebug: (asset: JobAsset) => void;
+}) {
+  const needsFolderSelection =
+    asset.selectedForImport && asset.importStatus !== "imported" && asset.folderSelectionSource === "missing";
+
+  return (
+    <article
+      className={cx(
+        compact ? "route-asset-card" : "asset-card",
+        !asset.selectedForImport && (compact ? "route-asset-card-unselected" : "asset-card-unselected"),
+        selected && (compact ? "route-asset-card-focused" : "asset-card-focused"),
+        needsFolderSelection && (compact ? "route-asset-card-needs-folder" : "asset-card-needs-folder"),
+      )}
+    >
+      <label className="asset-select-control">
+        <input
+          type="checkbox"
+          checked={asset.selectedForImport}
+          disabled={assetActionsDisabled}
+          onChange={(event) => void onToggleSelection(asset.id, event.target.checked)}
+        />
+        <span>导入</span>
+      </label>
+      <button
+        type="button"
+        className={cx("asset-preview-trigger", compact && "core-route-preview-trigger")}
+        onClick={() => onOpenPreview(asset.id)}
+      >
+        <AssetThumbnail asset={asset} alt={asset.fileName} />
+      </button>
+      <div className={compact ? "route-asset-meta" : "asset-meta"}>
+        <strong>{asset.label}</strong>
+        <span>
+          {asset.kind}
+          {asset.sectionType ? ` · ${asset.sectionType}` : ""}
+        </span>
+        {!compact ? <span>q{asset.quality} · dpr{asset.dpr}</span> : null}
+        <span>{formatAssetImportStatus(asset.importStatus, asset.importError)}</span>
+      </div>
+      <div className={compact ? "route-asset-folder-wrap" : "asset-folder-wrap"}>
+        <AssetFolderControl
+          asset={asset}
+          disabled={assetActionsDisabled || folderSaving}
+          onOpenFolderPicker={onOpenFolderPicker}
+        />
+      </div>
+      <div className={compact ? "route-asset-actions" : "asset-card-actions"}>
+        {!compact ? (
+          <button type="button" onClick={() => onOpenPreview(asset.id)}>
+            打开预览
+          </button>
+        ) : null}
+        {canFocusDebugAsset(asset, hasSectionDebug) ? (
+          <button type="button" onClick={() => onFocusDebug(asset)}>
+            Debug 聚焦
+          </button>
+        ) : null}
+      </div>
+    </article>
+  );
+});
+
+const JobsListPanel = memo(function JobsListPanel({
+  jobs,
+  selectedJobId,
+  runningJobId,
+  totalPages,
+  page,
+  onSelectJob,
+  onArchiveJob,
+  onPreviousPage,
+  onNextPage,
+}: {
+  jobs: JobSummary[];
+  selectedJobId: string | null;
+  runningJobId: string | null;
+  totalPages: number;
+  page: number;
+  onSelectJob: (jobId: string) => void;
+  onArchiveJob: (jobId: string, archived: boolean) => void;
+  onPreviousPage: () => void;
+  onNextPage: () => void;
+}) {
+  return (
+    <section className="jobs-list">
+      {jobs.map((job) => {
+        const jobIsLive = runningJobId === job.id || isActiveStatus(job.status);
+        const showQuickArchive = canQuickArchiveJob(job);
+        const nextArchivedState = !Boolean(job.archivedAt);
+        return (
+          <article
+            key={job.id}
+            className={cx(
+              "job-card",
+              selectedJobId === job.id && "selected",
+              jobIsLive && "job-card-live",
+              showQuickArchive && "job-card-has-action",
+            )}
+            role="button"
+            tabIndex={0}
+            aria-pressed={selectedJobId === job.id}
+            onClick={() => onSelectJob(job.id)}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) {
+                return;
+              }
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelectJob(job.id);
+              }
+            }}
+          >
+            <div className="job-top">
+              <div className="job-top-left">
+                <StatusBadge status={job.status} />
+                {job.archivedAt ? <span className="job-archived-pill">archived</span> : null}
+              </div>
+              <span className="job-time">{formatDate(job.createdAt)}</span>
+            </div>
+            <div className="job-title">
+              {job.sourceUrl ? <ExternalLink href={job.sourceUrl} label={job.sourceUrl} /> : "未解析 URL"}
+            </div>
+            <div className="job-instruction">
+              <LinkifiedText text={job.instruction} />
+            </div>
+            <div className="job-stats">
+              <span>资产 {job.assetCount}</span>
+              <span>待确认 {job.pendingConfirmationCount}</span>
+              <span>导入成功 {job.importSuccessCount}</span>
+              <span>导入失败 {job.importFailedCount}</span>
+            </div>
+            {runningJobId === job.id ? <div className="job-live-note">队列执行中</div> : null}
+            {job.archivedAt ? <div className="job-archived-note">已归档 · {formatDate(job.archivedAt)}</div> : null}
+            {showQuickArchive ? (
+              <button
+                type="button"
+                className="job-card-quick-action"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onArchiveJob(job.id, nextArchivedState);
+                }}
+                aria-label={nextArchivedState ? "归档任务" : "取消归档"}
+              >
+                {nextArchivedState ? "归档" : "取消归档"}
+              </button>
+            ) : null}
+          </article>
+        );
+      })}
+      {jobs.length === 0 ? <div className="empty-text">暂无任务</div> : null}
+
+      <div className="pagination">
+        <button type="button" disabled={page <= 1} onClick={onPreviousPage}>
+          上一页
+        </button>
+        <span>
+          第 {page} / {totalPages} 页
+        </span>
+        <button type="button" disabled={page >= totalPages} onClick={onNextPage}>
+          下一页
+        </button>
+      </div>
+    </section>
+  );
+});
+
+const JobDetailSummary = memo(function JobDetailSummary({
+  detail,
+  statusNote,
+  isRunning,
+  canCancel,
+  canArchive,
+  assetImportSummary,
+  canImportSelected,
+  canRetryFailedImport,
+  importingSelected,
+  retryingFailedImport,
+  onCancel,
+  onArchive,
+  onImportSelected,
+  onRetryImport,
+}: {
+  detail: JobDetail;
+  statusNote: string | null;
+  isRunning: boolean;
+  canCancel: boolean;
+  canArchive: boolean;
+  assetImportSummary: ReturnType<typeof summarizeAssets>;
+  canImportSelected: boolean;
+  canRetryFailedImport: boolean;
+  importingSelected: boolean;
+  retryingFailedImport: boolean;
+  onCancel: (jobId: string) => void;
+  onArchive: (jobId: string, archived: boolean) => void;
+  onImportSelected: (jobId: string) => void | Promise<void>;
+  onRetryImport: (jobId: string) => void | Promise<void>;
+}) {
+  return (
+    <>
+      <div className="detail-header">
+        <div>
+          <h3>{detail.job.id}</h3>
+          <p>
+            <LinkifiedText text={detail.job.instruction} />
+          </p>
+        </div>
+        <div className={cx("detail-status", isRunning && "detail-status-live")}>
+          <StatusBadge status={detail.job.status} emphasis />
+          {statusNote ? <span className="detail-status-note">{statusNote}</span> : null}
+        </div>
+      </div>
+
+      <div className="detail-actions">
+        {canCancel ? (
+          <button type="button" className="danger-button" onClick={() => onCancel(detail.job.id)}>
+            取消任务
+          </button>
+        ) : null}
+        {canArchive ? (
+          <button type="button" onClick={() => onArchive(detail.job.id, !Boolean(detail.job.archivedAt))}>
+            {detail.job.archivedAt ? "取消归档" : "归档任务"}
+          </button>
+        ) : null}
+        <button type="button" disabled={!canImportSelected} onClick={() => void onImportSelected(detail.job.id)}>
+          {importingSelected ? "导入中..." : "导入已勾选"}
+        </button>
+        {assetImportSummary.failed > 0 ? (
+          <button type="button" disabled={!canRetryFailedImport} onClick={() => void onRetryImport(detail.job.id)}>
+            {retryingFailedImport ? "重试中..." : "重试失败导入"}
+          </button>
+        ) : null}
+        <span>待确认: {assetImportSummary.pending}</span>
+        {assetImportSummary.selectedPendingMissingFolderCount > 0 ? (
+          <span>待确认文件夹: {assetImportSummary.selectedPendingMissingFolderCount}</span>
+        ) : null}
+        {assetImportSummary.selectedFailedMissingFolderCount > 0 ? (
+          <span>失败项待确认文件夹: {assetImportSummary.selectedFailedMissingFolderCount}</span>
+        ) : null}
+        <span>导入成功: {assetImportSummary.imported}</span>
+        <span>导入失败: {assetImportSummary.failed}</span>
+        <span>开始: {formatDate(detail.job.startedAt)}</span>
+        <span>完成: {formatDate(detail.job.finishedAt)}</span>
+        {detail.job.archivedAt ? <span>归档于: {formatDate(detail.job.archivedAt)}</span> : null}
+      </div>
+    </>
+  );
+});
+
+const CoreRoutesPanel = memo(function CoreRoutesPanel({
+  detail,
+  assetLookup,
+  selectedAssetId,
+  assetActionsDisabled,
+  folderSavingAssetIds,
+  hasSectionDebug,
+  onToggleAssetSelection,
+  onOpenFolderPicker,
+  onOpenPreview,
+  onFocusDebug,
+  onRetryRoute,
+  browserActionsDisabled,
+}: {
+  detail: JobDetail;
+  assetLookup: ReturnType<typeof buildAssetLookupIndex>;
+  selectedAssetId: number | null;
+  assetActionsDisabled: boolean;
+  folderSavingAssetIds: Set<number>;
+  hasSectionDebug: boolean;
+  onToggleAssetSelection: (assetId: number, checked: boolean) => void | Promise<void>;
+  onOpenFolderPicker: (assetId: number) => void;
+  onOpenPreview: (assetId: number) => void;
+  onFocusDebug: (asset: JobAsset) => void;
+  onRetryRoute: (jobId: string, routeId: number) => void | Promise<void>;
+  browserActionsDisabled: boolean;
+}) {
+  return detail.routes.length > 0 ? (
+    <div className="route-list-panel">
+      <h4>核心路由卡片</h4>
+      <div className="core-route-card-list">
+        {detail.routes.map((route) => {
+          const asset = findAssetForRouteFromIndex(route, assetLookup);
+          const assets = findAssetsForRouteFromIndex(route, assetLookup);
+          const previewState = getCoreRoutePreviewState(route.status, asset);
+
+          return (
+            <article
+              key={route.id}
+              className={cx(
+                "core-route-card",
+                route.status === "running" && "core-route-card-live",
+                route.status === "queued" && "core-route-card-queued",
+              )}
+            >
+              <div className="core-route-card-main">
+                <div className="core-route-card-top">
+                  <StatusBadge status={route.status} />
+                </div>
+                <ExternalLink
+                  href={route.url}
+                  label={route.path}
+                  className="core-route-card-path"
+                  title={route.url}
+                />
+                <div className="core-route-card-actions">
+                  {asset && canFocusDebugAsset(asset, hasSectionDebug) ? (
+                    <button type="button" onClick={() => onFocusDebug(asset)}>
+                      Debug 聚焦
+                    </button>
+                  ) : null}
+                  {canRetryRoute(detail.job.status, route.status) ? (
+                    <button
+                      type="button"
+                      disabled={browserActionsDisabled}
+                      onClick={() => void onRetryRoute(detail.job.id, route.id)}
+                    >
+                      重试该路由
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="core-route-card-preview">
+                {assets.length > 0 ? (
+                  <div className="route-asset-grid">
+                    {assets.map((routeAsset) => (
+                      <AssetCard
+                        key={routeAsset.id}
+                        asset={routeAsset}
+                        compact
+                        selected={selectedAssetId === routeAsset.id}
+                        assetActionsDisabled={assetActionsDisabled}
+                        folderSaving={folderSavingAssetIds.has(routeAsset.id)}
+                        hasSectionDebug={hasSectionDebug}
+                        onToggleSelection={onToggleAssetSelection}
+                        onOpenFolderPicker={onOpenFolderPicker}
+                        onOpenPreview={onOpenPreview}
+                        onFocusDebug={onFocusDebug}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className={cx("route-preview-placeholder", `route-preview-${previewState}`)}>
+                    <strong className="route-preview-title">
+                      {previewState === "pending"
+                        ? "等待截图"
+                        : previewState === "failed"
+                          ? "截图失败"
+                          : "暂无封面"}
+                    </strong>
+                    <span className="route-preview-copy">
+                      {previewState === "pending"
+                        ? "仍在执行或排队"
+                        : previewState === "failed"
+                          ? "没有成功产物"
+                          : "无匹配封面"}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  ) : null;
+});
+
+const AssetGridPanel = memo(function AssetGridPanel({
+  assets,
+  selectedAssetId,
+  assetActionsDisabled,
+  folderSavingAssetIds,
+  hasSectionDebug,
+  onToggleAssetSelection,
+  onOpenFolderPicker,
+  onOpenPreview,
+  onFocusDebug,
+}: {
+  assets: JobAsset[];
+  selectedAssetId: number | null;
+  assetActionsDisabled: boolean;
+  folderSavingAssetIds: Set<number>;
+  hasSectionDebug: boolean;
+  onToggleAssetSelection: (assetId: number, checked: boolean) => void | Promise<void>;
+  onOpenFolderPicker: (assetId: number) => void;
+  onOpenPreview: (assetId: number) => void;
+  onFocusDebug: (asset: JobAsset) => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const { width, height } = useElementSize(scrollRef);
+  const [scrollTop, setScrollTop] = useState(0);
+  const shouldVirtualize = assets.length > ASSET_VIRTUALIZE_THRESHOLD;
+  const columns = useMemo(() => {
+    if (!shouldVirtualize || width === 0) {
+      return 1;
+    }
+    return Math.max(
+      1,
+      Math.floor((width + ASSET_GRID_GAP) / (ASSET_GRID_MIN_COLUMN_WIDTH + ASSET_GRID_GAP)),
+    );
+  }, [shouldVirtualize, width]);
+
+  const virtualWindow = useMemo(() => {
+    if (!shouldVirtualize) {
+      return {
+        startIndex: 0,
+        endIndex: assets.length,
+        offsetTop: 0,
+        totalHeight: 0,
+        visibleAssets: assets,
+        columns: 1,
+      };
+    }
+
+    const activeColumns = columns || 1;
+    const rowCount = Math.ceil(assets.length / activeColumns);
+    const viewportHeight = Math.max(height || ASSET_GRID_ROW_HEIGHT * 2, ASSET_GRID_ROW_HEIGHT * 2);
+    const startRow = Math.max(0, Math.floor(scrollTop / ASSET_GRID_ROW_HEIGHT) - ASSET_GRID_OVERSCAN_ROWS);
+    const visibleRowCount = Math.ceil(viewportHeight / ASSET_GRID_ROW_HEIGHT) + ASSET_GRID_OVERSCAN_ROWS * 2;
+    const endRow = Math.min(rowCount, startRow + visibleRowCount);
+    const startIndex = startRow * activeColumns;
+    const endIndex = Math.min(assets.length, endRow * activeColumns);
+
+    return {
+      startIndex,
+      endIndex,
+      offsetTop: startRow * ASSET_GRID_ROW_HEIGHT,
+      totalHeight: rowCount * ASSET_GRID_ROW_HEIGHT,
+      visibleAssets: assets.slice(startIndex, endIndex),
+      columns: activeColumns,
+    };
+  }, [assets, columns, height, scrollTop, shouldVirtualize]);
+
+  if (assets.length === 0) {
+    return <div className="empty-text">暂无产物</div>;
+  }
+
+  if (!shouldVirtualize) {
+    return (
+      <div className="assets-grid">
+        {assets.map((asset) => (
+          <AssetCard
+            key={asset.id}
+            asset={asset}
+            selected={selectedAssetId === asset.id}
+            assetActionsDisabled={assetActionsDisabled}
+            folderSaving={folderSavingAssetIds.has(asset.id)}
+            hasSectionDebug={hasSectionDebug}
+            onToggleSelection={onToggleAssetSelection}
+            onOpenFolderPicker={onOpenFolderPicker}
+            onOpenPreview={onOpenPreview}
+            onFocusDebug={onFocusDebug}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="assets-grid-scroll" ref={scrollRef} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
+      <div className="assets-grid-virtual-spacer" style={{ height: `${virtualWindow.totalHeight}px` }}>
+        <div
+          className="assets-grid assets-grid-virtual"
+          style={
+            {
+              transform: `translateY(${virtualWindow.offsetTop}px)`,
+              gridTemplateColumns: `repeat(${virtualWindow.columns}, minmax(0, 1fr))`,
+            } satisfies CSSProperties
+          }
+        >
+          {virtualWindow.visibleAssets.map((asset) => (
+            <AssetCard
+              key={asset.id}
+              asset={asset}
+              selected={selectedAssetId === asset.id}
+              assetActionsDisabled={assetActionsDisabled}
+              folderSaving={folderSavingAssetIds.has(asset.id)}
+              hasSectionDebug={hasSectionDebug}
+              onToggleSelection={onToggleAssetSelection}
+              onOpenFolderPicker={onOpenFolderPicker}
+              onOpenPreview={onOpenPreview}
+              onFocusDebug={onFocusDebug}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const LogsPanel = memo(function LogsPanel({
+  logs,
+  expanded,
+  onToggle,
+}: {
+  logs: JobLog[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const { height } = useElementSize(scrollRef);
+  const [scrollTop, setScrollTop] = useState(0);
+  const shouldVirtualize = expanded && logs.length > LOG_VIRTUALIZE_THRESHOLD;
+  const viewportHeight = Math.max(height || 220, 220);
+  const startIndex = shouldVirtualize ? Math.max(0, Math.floor(scrollTop / LOG_ROW_HEIGHT) - 4) : 0;
+  const visibleCount = shouldVirtualize ? Math.ceil(viewportHeight / LOG_ROW_HEIGHT) + 8 : logs.length;
+  const endIndex = shouldVirtualize ? Math.min(logs.length, startIndex + visibleCount) : logs.length;
+  const visibleLogs = logs.slice(startIndex, endIndex);
+
+  return (
+    <div className="log-box">
+      <div className="collapsible-panel-header">
+        <h4>运行日志</h4>
+        <button type="button" className="collapsible-toggle" onClick={onToggle}>
+          {expanded ? "收起" : `展开 (${logs.length})`}
+        </button>
+      </div>
+      {expanded ? (
+        <div className="log-scroll" ref={scrollRef} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
+          {shouldVirtualize ? (
+            <div style={{ height: `${logs.length * LOG_ROW_HEIGHT}px`, position: "relative" }}>
+              <div
+                style={{ transform: `translateY(${startIndex * LOG_ROW_HEIGHT}px)` }}
+                className="log-scroll-virtual"
+              >
+                {visibleLogs.map((log) => (
+                  <div key={log.id} className={`log-line log-${log.level}`}>
+                    <span>{new Date(log.ts).toLocaleTimeString()}</span>
+                    <span>{log.level.toUpperCase()}</span>
+                    <span>{log.message}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            logs.map((log) => (
+              <div key={log.id} className={`log-line log-${log.level}`}>
+                <span>{new Date(log.ts).toLocaleTimeString()}</span>
+                <span>{log.level.toUpperCase()}</span>
+                <span>{log.message}</span>
+              </div>
+            ))
+          )}
+        </div>
+      ) : (
+        <div className="collapsible-panel-hint">默认折叠，避免大日志列表持续占用渲染和布局开销。</div>
+      )}
+    </div>
+  );
+});
+
+const ManifestPanel = memo(function ManifestPanel({
+  manifest,
+  expanded,
+  onToggle,
+}: {
+  manifest: ManifestView | null;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const manifestText = useMemo(() => {
+    if (!expanded) {
+      return "";
+    }
+    return JSON.stringify(manifest, null, 2);
+  }, [expanded, manifest]);
+
+  return (
+    <div className="manifest-box">
+      <div className="collapsible-panel-header">
+        <h4>Manifest</h4>
+        <button type="button" className="collapsible-toggle" onClick={onToggle}>
+          {expanded ? "收起" : "展开"}
+        </button>
+      </div>
+      {expanded ? (
+        <pre>{manifestText}</pre>
+      ) : (
+        <div className="collapsible-panel-hint">默认折叠，避免在每次 detail 更新时序列化整份 manifest。</div>
+      )}
+    </div>
+  );
+});
+
+const PreviewModal = memo(function PreviewModal({
+  previewAsset,
+  previewRoute,
+  previewEagleName,
+  previewEaglePath,
+  previewHasDistinctEagleName,
+  selectedJobDetail,
+  selectedJobMode,
+  assetActionsDisabled,
+  hasSectionDebug,
+  copyFeedbackState,
+  onClose,
+  onToggleSelection,
+  onCopyFeedbackContext,
+  onFocusAndClose,
+}: {
+  previewAsset: JobAsset;
+  previewRoute: RouteTargetSummary | null;
+  previewEagleName: string | null;
+  previewEaglePath: string | null;
+  previewHasDistinctEagleName: boolean;
+  selectedJobDetail: JobDetail;
+  selectedJobMode: JobMode;
+  assetActionsDisabled: boolean;
+  hasSectionDebug: boolean;
+  copyFeedbackState: string | null;
+  onClose: () => void;
+  onToggleSelection: (assetId: number, checked: boolean) => void | Promise<void>;
+  onCopyFeedbackContext: () => void | Promise<void>;
+  onFocusAndClose: (asset: JobAsset) => void;
+}) {
+  return (
+    <div className="asset-preview-modal-backdrop" onClick={onClose}>
+      <div className="asset-preview-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="asset-preview-modal-header">
+          <div>
+            <strong>{previewEagleName ?? previewAsset.fileName}</strong>
+            <span>{previewRoute ? `${previewRoute.path} · ${previewRoute.status}` : previewAsset.label}</span>
+          </div>
+          <button type="button" className="asset-preview-close" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+        <div className="asset-preview-modal-body">
+          <div className="asset-preview-image-wrap">
+            <img
+              src={previewAsset.previewUrl}
+              alt={previewAsset.fileName}
+              className="asset-preview-image"
+              decoding="async"
+            />
+          </div>
+          <aside className="asset-preview-sidebar">
+            <div className="asset-preview-actions">
+              <label className="asset-select-control asset-select-control-inline">
+                <input
+                  type="checkbox"
+                  checked={previewAsset.selectedForImport}
+                  disabled={assetActionsDisabled}
+                  onChange={(event) => void onToggleSelection(previewAsset.id, event.target.checked)}
+                />
+                <span>导入到 Eagle</span>
+              </label>
+              <button type="button" onClick={() => void onCopyFeedbackContext()}>
+                Copy Feedback Context
+              </button>
+              {canFocusDebugAsset(previewAsset, hasSectionDebug) ? (
+                <button type="button" onClick={() => onFocusAndClose(previewAsset)}>
+                  Debug 聚焦
+                </button>
+              ) : null}
+            </div>
+            {copyFeedbackState ? <div className="copy-feedback-state">{copyFeedbackState}</div> : null}
+            <dl className="asset-preview-meta">
+              <div>
+                <dt>Eagle Path</dt>
+                <dd>{previewEaglePath ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>Eagle Folder</dt>
+                <dd>{previewAsset.targetEagleFolderPath ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>Folder Source</dt>
+                <dd>{formatFolderSelectionSourceLabel(previewAsset.folderSelectionSource)}</dd>
+              </div>
+              <div>
+                <dt>Eagle Name</dt>
+                <dd>{previewEagleName ?? "—"}</dd>
+              </div>
+              {previewAsset.folderSelectionSource === "manual" && previewAsset.resolvedEagleFolderPath ? (
+                <div>
+                  <dt>Suggested Folder</dt>
+                  <dd>{previewAsset.resolvedEagleFolderPath}</dd>
+                </div>
+              ) : null}
+              {previewHasDistinctEagleName ? (
+                <div>
+                  <dt>File Name</dt>
+                  <dd>{previewAsset.fileName}</dd>
+                </div>
+              ) : null}
+              <div>
+                <dt>Job</dt>
+                <dd>
+                  {selectedJobDetail.job.id} · {selectedJobMode} · {formatStatusLabel(selectedJobDetail.job.status)}
+                </dd>
+              </div>
+              <div>
+                <dt>Route</dt>
+                <dd>
+                  {previewRoute ? (
+                    <>
+                      <span>{previewRoute.path} · </span>
+                      <ExternalLink href={previewRoute.url} label={previewRoute.url} />
+                    </>
+                  ) : "—"}
+                </dd>
+              </div>
+              {previewRoute ? (
+                <div>
+                  <dt>Route Stats</dt>
+                  <dd>
+                    assets {previewRoute.assetCount} · attempts {previewRoute.attemptCount}
+                  </dd>
+                </div>
+              ) : null}
+              <div>
+                <dt>Asset</dt>
+                <dd>
+                  #{previewAsset.id} · {previewAsset.label} · {previewAsset.kind}
+                  {previewAsset.sectionType ? ` · ${previewAsset.sectionType}` : ""}
+                </dd>
+              </div>
+              <div>
+                <dt>Capture</dt>
+                <dd>
+                  q{previewAsset.quality} · dpr{previewAsset.dpr} · {formatDate(previewAsset.capturedAt)}
+                </dd>
+              </div>
+              <div>
+                <dt>Import</dt>
+                <dd>
+                  {formatAssetImportStatus(previewAsset.importStatus, previewAsset.importError)}
+                  {previewAsset.importStatus === "imported" && previewAsset.eagleId
+                    ? ` · Eagle ${previewAsset.eagleId}`
+                    : ""}
+                </dd>
+              </div>
+              <div>
+                <dt>Source URL</dt>
+                <dd>
+                  {previewAsset.sourceUrl ? (
+                    <ExternalLink href={previewAsset.sourceUrl} label={previewAsset.sourceUrl} />
+                  ) : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>Preview URL</dt>
+                <dd>
+                  <ExternalLink href={previewAsset.previewUrl} label={previewAsset.previewUrl} />
+                </dd>
+              </div>
+              {previewRoute?.error ? (
+                <div>
+                  <dt>Route Error</dt>
+                  <dd>{previewRoute.error}</dd>
+                </div>
+              ) : null}
+            </dl>
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
+  const [eagleFolders, setEagleFolders] = useState<EagleFolderOption[]>([]);
+  const [eagleFoldersError, setEagleFoldersError] = useState<string | null>(null);
   const [instruction, setInstruction] = useState("");
   const [quality, setQuality] = useState(92);
   const [dpr, setDpr] = useState<DprOption>("auto");
@@ -765,7 +1768,13 @@ export function App() {
   const [selectionSaving, setSelectionSaving] = useState(false);
   const [importingSelected, setImportingSelected] = useState(false);
   const [retryingFailedImport, setRetryingFailedImport] = useState(false);
+  const [folderSavingAssetIds, setFolderSavingAssetIds] = useState<Set<number>>(() => new Set());
+  const [folderPickerState, setFolderPickerState] = useState<FolderPickerState | null>(null);
+  const [folderPickerSaving, setFolderPickerSaving] = useState(false);
+  const [logsExpanded, setLogsExpanded] = useState(false);
+  const [manifestExpanded, setManifestExpanded] = useState(false);
   const sseRefreshTimerRef = useRef<number | null>(null);
+  const selectedJobDetailRef = useRef<JobDetail | null>(null);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(totalJobs / pageSize)), [pageSize, totalJobs]);
   const runningJobId = config?.queue.runningJobId ?? null;
@@ -773,10 +1782,6 @@ export function App() {
   const browserActionsDisabled = playwrightNeedsRepair || playwrightRuntime?.repairing || playwrightRepairPending;
   const showPlaywrightBanner = Boolean(
     playwrightRuntime && (playwrightRuntime.needsRepair || playwrightRuntime.repairing),
-  );
-  const selectedJobSummary = useMemo(
-    () => jobs.find((job) => job.id === selectedJobId) ?? null,
-    [jobs, selectedJobId],
   );
   const selectedJobMode = useMemo(
     () => parseJobMode(selectedJobDetail?.job.optionsJson ?? null),
@@ -796,11 +1801,6 @@ export function App() {
     }
     return runningJobId === selectedJobDetail.job.id || isActiveStatus(selectedJobDetail.job.status);
   }, [runningJobId, selectedJobDetail]);
-  const shouldPausePolling = Boolean(
-    liveConnected &&
-      selectedJobSummary &&
-      (selectedJobSummary.id === runningJobId || isActiveStatus(selectedJobSummary.status)),
-  );
   const selectedJobStatusNote = useMemo(() => {
     if (!selectedJobDetail) {
       return null;
@@ -821,11 +1821,16 @@ export function App() {
       return "实时执行中 · 正在采集页面";
     }
     if (selectedJobDetail.job.status === "awaiting_confirmation") {
-      return `待确认导入 ${assetImportSummary.pending} 张`;
+      if (assetImportSummary.selectedPendingMissingFolderCount > 0) {
+        return `待确认文件夹 ${assetImportSummary.selectedPendingMissingFolderCount} 张`;
+      }
+      return `待确认导入 ${assetImportSummary.selectedPending} 张`;
     }
     return null;
   }, [
     assetImportSummary.pending,
+    assetImportSummary.selectedPending,
+    assetImportSummary.selectedPendingMissingFolderCount,
     routeProgress.currentRouteLabel,
     routeProgress.done,
     routeProgress.total,
@@ -850,38 +1855,58 @@ export function App() {
   }, [selectedJobDetail]);
   const sectionDebug = useMemo(
     () => readSectionDebug(selectedJobDetail?.manifest ?? null),
-    [selectedJobDetail],
+    [selectedJobDetail?.manifest],
   );
   const manifestAssets = useMemo(
     () => readManifestAssets(selectedJobDetail?.manifest ?? null),
     [selectedJobDetail?.manifest],
   );
   const hasSectionDebug = sectionDebug !== null;
-  const routeAssetEntries = useMemo(
-    () =>
-      (selectedJobDetail?.routes ?? []).map((route) => ({
-        route,
-        asset: findAssetForRoute(route, selectedJobDetail?.assets ?? []),
-        assets: findAssetsForRoute(route, selectedJobDetail?.assets ?? []),
-      })),
-    [selectedJobDetail?.assets, selectedJobDetail?.routes],
+  const assetLookup = useMemo(
+    () => buildAssetLookupIndex(selectedJobDetail?.assets ?? []),
+    [selectedJobDetail?.assets],
   );
   const assetActionsDisabled = selectionSaving || importingSelected || retryingFailedImport || selectedJobIsRunning;
-  const canImportSelected = !assetActionsDisabled && assetImportSummary.selectedPending > 0;
-  const canRetryFailedImport = !assetActionsDisabled && assetImportSummary.selectedFailed > 0;
+  const canImportSelected =
+    !assetActionsDisabled &&
+    assetImportSummary.selectedPending > 0 &&
+    assetImportSummary.selectedPendingMissingFolderCount === 0;
+  const canRetryFailedImport =
+    !assetActionsDisabled &&
+    assetImportSummary.selectedFailed > 0 &&
+    assetImportSummary.selectedFailedMissingFolderCount === 0;
   const focusedAsset = useMemo(
     () =>
       selectedAssetId !== null
-        ? selectedJobDetail?.assets.find((asset) => asset.id === selectedAssetId) ?? null
+        ? assetLookup.assetById.get(selectedAssetId) ?? null
         : null,
-    [selectedAssetId, selectedJobDetail],
+    [assetLookup, selectedAssetId],
   );
   const previewAsset = useMemo(
     () =>
       previewAssetId !== null
-        ? selectedJobDetail?.assets.find((asset) => asset.id === previewAssetId) ?? null
+        ? assetLookup.assetById.get(previewAssetId) ?? null
         : null,
-    [previewAssetId, selectedJobDetail],
+    [assetLookup, previewAssetId],
+  );
+  const folderPickerAsset = useMemo(
+    () =>
+      folderPickerState !== null
+        ? assetLookup.assetById.get(folderPickerState.assetId) ?? null
+        : null,
+    [assetLookup, folderPickerState],
+  );
+  const folderPickerResults = useMemo<RankedEagleFolderOption[]>(
+    () =>
+      folderPickerAsset
+        ? filterAndRankFolders(
+            eagleFolders,
+            folderPickerState?.query ?? "",
+            folderPickerAsset.targetEagleFolderPath,
+            folderPickerAsset.resolvedEagleFolderPath,
+          )
+        : [],
+    [eagleFolders, folderPickerAsset, folderPickerState],
   );
   const previewRoute = useMemo(() => {
     if (!previewAsset || !selectedJobDetail) {
@@ -985,74 +2010,6 @@ export function App() {
     }
     return "未找到对应候选（可能被过滤）。";
   }, [focusSectionType, sectionDebugRows.length, selectedAssetId]);
-  const jobCardList = useMemo(
-    () =>
-      jobs.map((job) => {
-        const jobIsLive = runningJobId === job.id || isActiveStatus(job.status);
-        const showQuickArchive = canQuickArchiveJob(job);
-        const nextArchivedState = !Boolean(job.archivedAt);
-        return (
-          <article
-            key={job.id}
-            className={cx(
-              "job-card",
-              selectedJobId === job.id && "selected",
-              jobIsLive && "job-card-live",
-              showQuickArchive && "job-card-has-action",
-            )}
-            role="button"
-            tabIndex={0}
-            aria-pressed={selectedJobId === job.id}
-            onClick={() => setSelectedJobId(job.id)}
-            onKeyDown={(event) => {
-              if (event.target !== event.currentTarget) {
-                return;
-              }
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                setSelectedJobId(job.id);
-              }
-            }}
-          >
-            <div className="job-top">
-              <div className="job-top-left">
-                <StatusBadge status={job.status} />
-                {job.archivedAt ? <span className="job-archived-pill">archived</span> : null}
-              </div>
-              <span className="job-time">{formatDate(job.createdAt)}</span>
-            </div>
-            <div className="job-title">
-              {job.sourceUrl ? <ExternalLink href={job.sourceUrl} label={job.sourceUrl} /> : "未解析 URL"}
-            </div>
-            <div className="job-instruction">
-              <LinkifiedText text={job.instruction} />
-            </div>
-            <div className="job-stats">
-              <span>资产 {job.assetCount}</span>
-              <span>待确认 {job.pendingConfirmationCount}</span>
-              <span>导入成功 {job.importSuccessCount}</span>
-              <span>导入失败 {job.importFailedCount}</span>
-            </div>
-            {runningJobId === job.id ? <div className="job-live-note">队列执行中</div> : null}
-            {job.archivedAt ? <div className="job-archived-note">已归档 · {formatDate(job.archivedAt)}</div> : null}
-            {showQuickArchive ? (
-              <button
-                type="button"
-                className="job-card-quick-action"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  archiveJob(job.id, nextArchivedState);
-                }}
-                aria-label={nextArchivedState ? "归档任务" : "取消归档"}
-              >
-                {nextArchivedState ? "归档" : "取消归档"}
-              </button>
-            ) : null}
-          </article>
-        );
-      }),
-    [archiveJob, jobs, runningJobId, selectedJobId],
-  );
 
   async function loadPlaywrightRuntime(): Promise<void> {
     const result = await apiFetch<PlaywrightRuntimeState>("/api/runtime/playwright");
@@ -1073,6 +2030,17 @@ export function App() {
     setClassicMaxSections(result.defaults.classicMaxSections);
     setOutputDir(result.defaults.outputDir);
   }
+
+  const loadEagleFolders = useCallback(async (): Promise<void> => {
+    try {
+      const result = await apiFetch<EagleFolderOption[]>("/api/eagle/folders");
+      setEagleFolders(result);
+      setEagleFoldersError(null);
+    } catch (error) {
+      setEagleFolders([]);
+      setEagleFoldersError(error instanceof Error ? error.message : "Failed loading Eagle folders");
+    }
+  }, []);
 
   async function repairPlaywrightRuntime(): Promise<void> {
     if (playwrightRepairPending) {
@@ -1100,7 +2068,7 @@ export function App() {
     }
   }
 
-  async function loadJobs(preferredSelectedJobId?: string | null): Promise<void> {
+  const loadJobs = useCallback(async (preferredSelectedJobId?: string | null): Promise<void> => {
     const params = new URLSearchParams();
     if (statusFilter) {
       params.set("status", statusFilter);
@@ -1117,17 +2085,24 @@ export function App() {
       items: JobSummary[];
       total: number;
     }>(`/api/jobs?${params.toString()}`);
-    setJobs((currentJobs) => (areJobSummariesEqual(currentJobs, result.items) ? currentJobs : result.items));
-    setTotalJobs((currentTotal) => (currentTotal === result.total ? currentTotal : result.total));
-    setSelectedJobId((currentSelectedJobId) =>
-      getNextSelectedJobId(preferredSelectedJobId ?? currentSelectedJobId, result.items),
-    );
-  }
+    startTransition(() => {
+      setJobs((currentJobs) => (areJobSummariesEqual(currentJobs, result.items) ? currentJobs : result.items));
+      setTotalJobs((currentTotal) => (currentTotal === result.total ? currentTotal : result.total));
+      setSelectedJobId((currentSelectedJobId) =>
+        getNextSelectedJobId(preferredSelectedJobId ?? currentSelectedJobId, result.items),
+      );
+    });
+  }, [archivedOnly, keywordFilter, page, pageSize, statusFilter]);
 
-  async function loadJobDetail(jobId: string): Promise<void> {
+  const loadJobDetail = useCallback(async (jobId: string): Promise<void> => {
     const detail = await apiFetch<JobDetail>(`/api/jobs/${jobId}`);
-    setSelectedJobDetail(detail);
-  }
+    if (isSameJobDetailVersion(selectedJobDetailRef.current, detail)) {
+      return;
+    }
+    startTransition(() => {
+      setSelectedJobDetail(detail);
+    });
+  }, []);
 
   useEffect(() => {
     void loadConfig();
@@ -1135,6 +2110,10 @@ export function App() {
       setErrorText(error instanceof Error ? error.message : "Failed loading runtime status");
     });
   }, []);
+
+  useEffect(() => {
+    selectedJobDetailRef.current = selectedJobDetail;
+  }, [selectedJobDetail]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -1149,29 +2128,31 @@ export function App() {
     void loadJobs().catch((error: unknown) => {
       setErrorText(error instanceof Error ? error.message : "Failed loading jobs");
     });
-  }, [archivedOnly, keywordFilter, page, pageSize, statusFilter]);
+  }, [archivedOnly, keywordFilter, loadJobs, page, pageSize, statusFilter]);
 
   useEffect(() => {
-    if (shouldPausePolling) {
-      return;
-    }
     const timer = setInterval(() => {
       void loadJobs().catch(() => {
         // no-op
       });
     }, 5000);
     return () => clearInterval(timer);
-  }, [archivedOnly, keywordFilter, page, pageSize, shouldPausePolling, statusFilter]);
+  }, [archivedOnly, keywordFilter, loadJobs, page, pageSize, statusFilter]);
 
   useEffect(() => {
     if (!selectedJobId) {
       setSelectedJobDetail(null);
+      setFolderPickerState(null);
+      setFolderPickerSaving(false);
       return;
     }
+    void loadEagleFolders().catch(() => {
+      // no-op
+    });
     void loadJobDetail(selectedJobId).catch((error: unknown) => {
       setErrorText(error instanceof Error ? error.message : "Failed loading job detail");
     });
-  }, [selectedJobId]);
+  }, [loadEagleFolders, loadJobDetail, selectedJobId]);
 
   useEffect(() => {
     setSelectedAssetId(null);
@@ -1180,7 +2161,39 @@ export function App() {
     setFocusMessage(null);
     setPreviewAssetId(null);
     setCopyFeedbackState(null);
-  }, [selectedJobId]);
+    setFolderSavingAssetIds(new Set());
+    setFolderPickerState(null);
+    setFolderPickerSaving(false);
+    setLogsExpanded(false);
+    setManifestExpanded(false);
+  }, [loadJobDetail, selectedJobId]);
+
+  useEffect(() => {
+    if (!folderPickerState) {
+      return;
+    }
+
+    if (!folderPickerAsset) {
+      setFolderPickerState(null);
+      setFolderPickerSaving(false);
+      return;
+    }
+
+    const nextActiveIndex = folderPickerResults.length === 0
+      ? 0
+      : Math.min(folderPickerState.activeIndex, folderPickerResults.length - 1);
+
+    if (nextActiveIndex !== folderPickerState.activeIndex) {
+      setFolderPickerState((current) =>
+        current
+          ? {
+              ...current,
+              activeIndex: nextActiveIndex,
+            }
+          : current,
+      );
+    }
+  }, [folderPickerAsset, folderPickerResults.length, folderPickerState]);
 
   useEffect(() => {
     if (previewAssetId === null) {
@@ -1212,13 +2225,10 @@ export function App() {
       }
       sseRefreshTimerRef.current = window.setTimeout(() => {
         sseRefreshTimerRef.current = null;
-        void loadJobs().catch(() => {
-          // no-op
-        });
         void loadJobDetail(selectedJobId).catch(() => {
           // no-op
         });
-      }, 180);
+      }, 220);
     };
     return () => {
       if (sseRefreshTimerRef.current !== null) {
@@ -1228,7 +2238,7 @@ export function App() {
       setLiveConnected(false);
       eventSource.close();
     };
-  }, [archivedOnly, keywordFilter, page, pageSize, selectedJobId, statusFilter]);
+  }, [loadJobDetail, selectedJobId]);
 
   useEffect(() => {
     if (!focusAnchorDomId) {
@@ -1253,9 +2263,9 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [actionToast]);
 
-  function showToast(message: string, tone: ActionToastTone = "success"): void {
+  const showToast = useCallback((message: string, tone: ActionToastTone = "success"): void => {
     setActionToast({ message, tone });
-  }
+  }, []);
 
   async function submitJob(): Promise<void> {
     if (!instruction.trim()) {
@@ -1300,7 +2310,7 @@ export function App() {
     }
   }
 
-  async function retryImport(jobId: string): Promise<void> {
+  const retryImport = useCallback(async (jobId: string): Promise<void> => {
     setRetryingFailedImport(true);
     try {
       await apiFetch(`/api/jobs/${jobId}/retry-import`, {
@@ -1314,9 +2324,9 @@ export function App() {
     } finally {
       setRetryingFailedImport(false);
     }
-  }
+  }, [loadJobDetail, loadJobs, showToast]);
 
-  async function saveAssetSelection(jobId: string, selectedAssetIds: number[]): Promise<void> {
+  const saveAssetSelection = useCallback(async (jobId: string, selectedAssetIds: number[]): Promise<void> => {
     setSelectionSaving(true);
     try {
       await apiFetch(`/api/jobs/${jobId}/assets/selection`, {
@@ -1330,9 +2340,98 @@ export function App() {
     } finally {
       setSelectionSaving(false);
     }
-  }
+  }, [loadJobDetail, loadJobs]);
 
-  async function toggleAssetSelection(assetId: number, selected: boolean): Promise<void> {
+  const saveAssetTargetFolder = useCallback(async (assetId: number, folderId: string): Promise<boolean> => {
+    if (!selectedJobDetail) {
+      return false;
+    }
+
+    setFolderSavingAssetIds((current) => {
+      const next = new Set(current);
+      next.add(assetId);
+      return next;
+    });
+    try {
+      await apiFetch(`/api/jobs/${selectedJobDetail.job.id}/assets/${assetId}/folder`, {
+        method: "PATCH",
+        body: JSON.stringify({ targetEagleFolderId: folderId }),
+      });
+      await loadJobs();
+      await loadJobDetail(selectedJobDetail.job.id);
+      showToast("已更新目标文件夹", "info");
+      return true;
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "保存目标文件夹失败");
+      return false;
+    } finally {
+      setFolderSavingAssetIds((current) => {
+        const next = new Set(current);
+        next.delete(assetId);
+        return next;
+      });
+    }
+  }, [loadJobDetail, loadJobs, selectedJobDetail, showToast]);
+
+  const openFolderPicker = useCallback((assetId: number): void => {
+    if (assetActionsDisabled) {
+      return;
+    }
+    setFolderPickerState({
+      assetId,
+      query: "",
+      activeIndex: 0,
+    });
+    setFolderPickerSaving(false);
+  }, [assetActionsDisabled]);
+
+  const closeFolderPicker = useCallback((): void => {
+    setFolderPickerState(null);
+    setFolderPickerSaving(false);
+  }, []);
+
+  const updateFolderPickerQuery = useCallback((query: string): void => {
+    setFolderPickerState((current) =>
+      current
+        ? {
+            ...current,
+            query,
+            activeIndex: 0,
+          }
+        : current,
+    );
+  }, []);
+
+  const updateFolderPickerActiveIndex = useCallback((activeIndex: number): void => {
+    setFolderPickerState((current) =>
+      current
+        ? {
+            ...current,
+            activeIndex,
+          }
+        : current,
+    );
+  }, []);
+
+  const selectFolderFromPicker = useCallback(async (folder: EagleFolderOption): Promise<void> => {
+    if (!folderPickerAsset || folderPickerSaving) {
+      return;
+    }
+    if (folder.id === folderPickerAsset.targetEagleFolderId) {
+      closeFolderPicker();
+      return;
+    }
+
+    setFolderPickerSaving(true);
+    const saved = await saveAssetTargetFolder(folderPickerAsset.id, folder.id);
+    if (saved) {
+      closeFolderPicker();
+      return;
+    }
+    setFolderPickerSaving(false);
+  }, [closeFolderPicker, folderPickerAsset, folderPickerSaving, saveAssetTargetFolder]);
+
+  const toggleAssetSelection = useCallback(async (assetId: number, selected: boolean): Promise<void> => {
     if (!selectedJobDetail) {
       return;
     }
@@ -1343,9 +2442,9 @@ export function App() {
       selectedAssetIds.push(assetId);
     }
     await saveAssetSelection(selectedJobDetail.job.id, selectedAssetIds);
-  }
+  }, [saveAssetSelection, selectedJobDetail]);
 
-  async function importSelected(jobId: string): Promise<void> {
+  const importSelected = useCallback(async (jobId: string): Promise<void> => {
     setImportingSelected(true);
     try {
       await apiFetch(`/api/jobs/${jobId}/import-selected`, {
@@ -1358,9 +2457,9 @@ export function App() {
     } finally {
       setImportingSelected(false);
     }
-  }
+  }, [loadJobDetail, loadJobs]);
 
-  async function retryRoute(jobId: string, routeId: number): Promise<void> {
+  const retryRoute = useCallback(async (jobId: string, routeId: number): Promise<void> => {
     if (browserActionsDisabled) {
       setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
       return;
@@ -1382,9 +2481,9 @@ export function App() {
         });
       }
     }
-  }
+  }, [browserActionsDisabled, loadJobDetail, loadJobs, playwrightRuntime?.message, showToast]);
 
-  async function executeCancelJob(jobId: string): Promise<void> {
+  const executeCancelJob = useCallback(async (jobId: string): Promise<void> => {
     try {
       const result = await apiFetch<{ cancellationRequested?: boolean }>(`/api/jobs/${jobId}/cancel`, {
         method: "POST",
@@ -1401,9 +2500,9 @@ export function App() {
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : "取消任务失败");
     }
-  }
+  }, [loadJobDetail, loadJobs, showToast]);
 
-  function cancelJob(jobId: string): void {
+  const cancelJob = useCallback((jobId: string): void => {
     setActionDialog({
       title: "取消任务",
       description: "取消后当前任务不会继续执行。正在处理中的当前路由结束后会停止。",
@@ -1412,9 +2511,9 @@ export function App() {
       tone: "danger",
       onConfirm: () => executeCancelJob(jobId),
     });
-  }
+  }, [executeCancelJob]);
 
-  async function executeArchiveJob(jobId: string, archived: boolean): Promise<void> {
+  const executeArchiveJob = useCallback(async (jobId: string, archived: boolean): Promise<void> => {
     try {
       await apiFetch<{ archivedAt: string | null }>(`/api/jobs/${jobId}/archive`, {
         method: "POST",
@@ -1433,9 +2532,9 @@ export function App() {
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : archived ? "归档任务失败" : "取消归档失败");
     }
-  }
+  }, [archivedOnly, loadJobDetail, loadJobs, selectedJobId, showToast]);
 
-  function archiveJob(jobId: string, archived: boolean): void {
+  const archiveJob = useCallback((jobId: string, archived: boolean): void => {
     setActionDialog({
       title: archived ? "归档任务" : "取消归档",
       description: archived
@@ -1445,7 +2544,7 @@ export function App() {
       cancelLabel: archived ? "暂不归档" : "保留归档",
       onConfirm: () => executeArchiveJob(jobId, archived),
     });
-  }
+  }, [executeArchiveJob]);
 
   function closeActionDialog(): void {
     if (actionDialogBusy) {
@@ -1467,24 +2566,24 @@ export function App() {
     }
   }
 
-  function clearFocus(): void {
+  const clearFocus = useCallback((): void => {
     setSelectedAssetId(null);
     setFocusSectionType(null);
     setFocusSelector(null);
     setFocusMessage(null);
-  }
+  }, []);
 
-  function openPreview(assetId: number): void {
+  const openPreview = useCallback((assetId: number): void => {
     setPreviewAssetId(assetId);
     setCopyFeedbackState(null);
-  }
+  }, []);
 
-  function closePreview(): void {
+  const closePreview = useCallback((): void => {
     setPreviewAssetId(null);
     setCopyFeedbackState(null);
-  }
+  }, []);
 
-  function focusDebugFromAsset(asset: JobAsset): void {
+  const focusDebugFromAsset = useCallback((asset: JobAsset): void => {
     setSelectedAssetId(asset.id);
     if (asset.kind === "fullPage") {
       setFocusSectionType(null);
@@ -1512,7 +2611,7 @@ export function App() {
       setFocusSelector(null);
       setFocusMessage("未找到对应候选（可能被过滤）。");
     }
-  }
+  }, [sectionDebug]);
 
   async function copyText(value: string): Promise<void> {
     if (navigator.clipboard?.writeText) {
@@ -1534,7 +2633,7 @@ export function App() {
     }
   }
 
-  async function copyFeedbackContext(): Promise<void> {
+  const copyFeedbackContext = useCallback(async (): Promise<void> => {
     if (!previewAsset || !selectedJobDetail) {
       return;
     }
@@ -1557,7 +2656,7 @@ export function App() {
     } catch (error) {
       setCopyFeedbackState(error instanceof Error ? error.message : "复制失败");
     }
-  }
+  }, [previewAsset, previewRoute, selectedJobDetail, selectedJobMode]);
 
   return (
     <div className="layout">
@@ -1761,93 +2860,40 @@ export function App() {
         </div>
 
         <div className="split">
-          <section className="jobs-list">
-            {jobCardList}
-            {jobs.length === 0 ? <div className="empty-text">暂无任务</div> : null}
-
-            <div className="pagination">
-              <button type="button" disabled={page <= 1} onClick={() => setPage((prev) => Math.max(1, prev - 1))}>
-                上一页
-              </button>
-              <span>
-                第 {page} / {totalPages} 页
-              </span>
-              <button
-                type="button"
-                disabled={page >= totalPages}
-                onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
-              >
-                下一页
-              </button>
-            </div>
-          </section>
+          <JobsListPanel
+            jobs={jobs}
+            selectedJobId={selectedJobId}
+            runningJobId={runningJobId}
+            totalPages={totalPages}
+            page={page}
+            onSelectJob={setSelectedJobId}
+            onArchiveJob={archiveJob}
+            onPreviousPage={() => setPage((prev) => Math.max(1, prev - 1))}
+            onNextPage={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+          />
 
           <section className="job-detail">
             {!selectedJobDetail ? (
               <div className="empty-text">选择一个任务查看详情</div>
             ) : (
               <>
-                <div className="detail-header">
-                  <div>
-                    <h3>{selectedJobDetail.job.id}</h3>
-                    <p>
-                      <LinkifiedText text={selectedJobDetail.job.instruction} />
-                    </p>
-                  </div>
-                  <div className={cx("detail-status", selectedJobIsRunning && "detail-status-live")}>
-                    <StatusBadge status={selectedJobDetail.job.status} emphasis />
-                    {selectedJobStatusNote ? <span className="detail-status-note">{selectedJobStatusNote}</span> : null}
-                  </div>
-                </div>
-
-                <div className="detail-actions">
-                  {canCancelSelectedJob ? (
-                    <button
-                      type="button"
-                      className="danger-button"
-                      onClick={() => cancelJob(selectedJobDetail.job.id)}
-                    >
-                      取消任务
-                    </button>
-                  ) : null}
-                  {canArchiveSelectedJob ? (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        archiveJob(
-                          selectedJobDetail.job.id,
-                          !Boolean(selectedJobDetail.job.archivedAt),
-                        )
-                      }
-                    >
-                      {selectedJobDetail.job.archivedAt ? "取消归档" : "归档任务"}
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    disabled={!canImportSelected}
-                    onClick={() => void importSelected(selectedJobDetail.job.id)}
-                  >
-                    {importingSelected ? "导入中..." : "导入已勾选"}
-                  </button>
-                  {assetImportSummary.failed > 0 ? (
-                    <button
-                      type="button"
-                      disabled={!canRetryFailedImport}
-                      onClick={() => void retryImport(selectedJobDetail.job.id)}
-                    >
-                      {retryingFailedImport ? "重试中..." : "重试失败导入"}
-                    </button>
-                  ) : null}
-                  <span>待确认: {assetImportSummary.pending}</span>
-                  <span>导入成功: {assetImportSummary.imported}</span>
-                  <span>导入失败: {assetImportSummary.failed}</span>
-                  <span>开始: {formatDate(selectedJobDetail.job.startedAt)}</span>
-                  <span>完成: {formatDate(selectedJobDetail.job.finishedAt)}</span>
-                  {selectedJobDetail.job.archivedAt ? (
-                    <span>归档于: {formatDate(selectedJobDetail.job.archivedAt)}</span>
-                  ) : null}
-                </div>
+                <JobDetailSummary
+                  detail={selectedJobDetail}
+                  statusNote={selectedJobStatusNote}
+                  isRunning={selectedJobIsRunning}
+                  canCancel={canCancelSelectedJob}
+                  canArchive={canArchiveSelectedJob}
+                  assetImportSummary={assetImportSummary}
+                  canImportSelected={canImportSelected}
+                  canRetryFailedImport={canRetryFailedImport}
+                  importingSelected={importingSelected}
+                  retryingFailedImport={retryingFailedImport}
+                  onCancel={cancelJob}
+                  onArchive={archiveJob}
+                  onImportSelected={importSelected}
+                  onRetryImport={retryImport}
+                />
+                {eagleFoldersError ? <div className="detail-inline-warning">{eagleFoldersError}</div> : null}
 
                 {selectedJobMode === "core-routes" ? (
                   <div className={cx("progress-panel", selectedJobIsRunning && "progress-panel-live")}>
@@ -1888,163 +2934,32 @@ export function App() {
                 ) : null}
 
                 {selectedJobMode === "core-routes" ? (
-                  selectedJobDetail.routes.length > 0 ? (
-                    <div className="route-list-panel">
-                      <h4>核心路由卡片</h4>
-                      <div className="core-route-card-list">
-                        {routeAssetEntries.map(({ route, asset, assets }) => {
-                          const previewState = getCoreRoutePreviewState(route.status, asset);
-                          return (
-                            <article
-                              key={route.id}
-                              className={cx(
-                                "core-route-card",
-                                route.status === "running" && "core-route-card-live",
-                                route.status === "queued" && "core-route-card-queued",
-                              )}
-                            >
-                              <div className="core-route-card-main">
-                                <div className="core-route-card-top">
-                                  <StatusBadge status={route.status} />
-                                </div>
-                                <ExternalLink
-                                  href={route.url}
-                                  label={route.path}
-                                  className="core-route-card-path"
-                                  title={route.url}
-                                />
-                                <div className="core-route-card-actions">
-                                  {asset && canFocusDebugAsset(asset, hasSectionDebug) ? (
-                                    <button type="button" onClick={() => focusDebugFromAsset(asset)}>
-                                      Debug 聚焦
-                                    </button>
-                                  ) : null}
-                                  {canRetryRoute(selectedJobDetail.job.status, route.status) ? (
-                                    <button
-                                      type="button"
-                                      disabled={browserActionsDisabled}
-                                      onClick={() => void retryRoute(selectedJobDetail.job.id, route.id)}
-                                    >
-                                      重试该路由
-                                    </button>
-                                  ) : null}
-                                </div>
-                              </div>
-                              <div className="core-route-card-preview">
-                                {assets.length > 0 ? (
-                                  <div className="route-asset-grid">
-                                    {assets.map((routeAsset) => (
-                                      <article
-                                        key={routeAsset.id}
-                                        className={cx(
-                                          "route-asset-card",
-                                          selectedAssetId === routeAsset.id && "route-asset-card-focused",
-                                        )}
-                                      >
-                                        <label className="asset-select-control">
-                                          <input
-                                            type="checkbox"
-                                            checked={routeAsset.selectedForImport}
-                                            disabled={assetActionsDisabled}
-                                            onChange={(event) =>
-                                              void toggleAssetSelection(routeAsset.id, event.target.checked)
-                                            }
-                                          />
-                                          <span>导入</span>
-                                        </label>
-                                        <button
-                                          type="button"
-                                          className="asset-preview-trigger core-route-preview-trigger"
-                                          onClick={() => openPreview(routeAsset.id)}
-                                        >
-                                          <img src={routeAsset.previewUrl} alt={routeAsset.fileName} loading="lazy" />
-                                        </button>
-                                        <div className="route-asset-meta">
-                                          <strong>{routeAsset.label}</strong>
-                                          <span>
-                                            {routeAsset.kind}
-                                            {routeAsset.sectionType ? ` · ${routeAsset.sectionType}` : ""}
-                                          </span>
-                                          <span>{formatAssetImportStatus(routeAsset.importStatus, routeAsset.importError)}</span>
-                                        </div>
-                                        <div className="route-asset-actions">
-                                          {canFocusDebugAsset(routeAsset, hasSectionDebug) ? (
-                                            <button type="button" onClick={() => focusDebugFromAsset(routeAsset)}>
-                                              Debug 聚焦
-                                            </button>
-                                          ) : null}
-                                        </div>
-                                      </article>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <div className={cx("route-preview-placeholder", `route-preview-${previewState}`)}>
-                                    <strong className="route-preview-title">
-                                      {previewState === "pending"
-                                        ? "等待截图"
-                                        : previewState === "failed"
-                                          ? "截图失败"
-                                          : "暂无封面"}
-                                    </strong>
-                                    <span className="route-preview-copy">
-                                      {previewState === "pending"
-                                        ? "仍在执行或排队"
-                                        : previewState === "failed"
-                                          ? "没有成功产物"
-                                          : "无匹配封面"}
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                            </article>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : null
+                  <CoreRoutesPanel
+                    detail={selectedJobDetail}
+                    assetLookup={assetLookup}
+                    selectedAssetId={selectedAssetId}
+                    assetActionsDisabled={assetActionsDisabled}
+                    folderSavingAssetIds={folderSavingAssetIds}
+                    hasSectionDebug={hasSectionDebug}
+                    onToggleAssetSelection={toggleAssetSelection}
+                    onOpenFolderPicker={openFolderPicker}
+                    onOpenPreview={openPreview}
+                    onFocusDebug={focusDebugFromAsset}
+                    onRetryRoute={retryRoute}
+                    browserActionsDisabled={browserActionsDisabled}
+                  />
                 ) : (
-                  <div className="assets-grid">
-                    {selectedJobDetail.assets.map((asset) => (
-                      <article
-                        key={asset.id}
-                        className={`asset-card ${selectedAssetId === asset.id ? "asset-card-focused" : ""}`}
-                      >
-                        <label className="asset-select-control">
-                          <input
-                            type="checkbox"
-                            checked={asset.selectedForImport}
-                            disabled={assetActionsDisabled}
-                            onChange={(event) => void toggleAssetSelection(asset.id, event.target.checked)}
-                          />
-                          <span>导入</span>
-                        </label>
-                        <button
-                          type="button"
-                          className="asset-preview-trigger"
-                          onClick={() => openPreview(asset.id)}
-                        >
-                          <img src={asset.previewUrl} alt={asset.fileName} loading="lazy" />
-                        </button>
-                        <div className="asset-meta">
-                          <strong>{asset.label}</strong>
-                          <span>{asset.kind}{asset.sectionType ? ` · ${asset.sectionType}` : ""}</span>
-                          <span>q{asset.quality} · dpr{asset.dpr}</span>
-                          <span>{formatAssetImportStatus(asset.importStatus, asset.importError)}</span>
-                        </div>
-                        <div className="asset-card-actions">
-                          <button type="button" onClick={() => openPreview(asset.id)}>
-                            打开预览
-                          </button>
-                          {canFocusDebugAsset(asset, hasSectionDebug) ? (
-                            <button type="button" onClick={() => focusDebugFromAsset(asset)}>
-                              Debug 聚焦
-                            </button>
-                          ) : null}
-                        </div>
-                      </article>
-                    ))}
-                    {selectedJobDetail.assets.length === 0 ? <div className="empty-text">暂无产物</div> : null}
-                  </div>
+                  <AssetGridPanel
+                    assets={selectedJobDetail.assets}
+                    selectedAssetId={selectedAssetId}
+                    assetActionsDisabled={assetActionsDisabled}
+                    folderSavingAssetIds={folderSavingAssetIds}
+                    hasSectionDebug={hasSectionDebug}
+                    onToggleAssetSelection={toggleAssetSelection}
+                    onOpenFolderPicker={openFolderPicker}
+                    onOpenPreview={openPreview}
+                    onFocusDebug={focusDebugFromAsset}
+                  />
                 )}
 
                 <details className="section-debug-panel" open>
@@ -2158,23 +3073,16 @@ export function App() {
                 </details>
 
                 <div className="detail-columns">
-                  <div className="log-box">
-                    <h4>运行日志</h4>
-                    <div className="log-scroll">
-                      {selectedJobDetail.logs.map((log) => (
-                        <div key={log.id} className={`log-line log-${log.level}`}>
-                          <span>{new Date(log.ts).toLocaleTimeString()}</span>
-                          <span>{log.level.toUpperCase()}</span>
-                          <span>{log.message}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="manifest-box">
-                    <h4>Manifest</h4>
-                    <pre>{JSON.stringify(selectedJobDetail.manifest, null, 2)}</pre>
-                  </div>
+                  <LogsPanel
+                    logs={selectedJobDetail.logs}
+                    expanded={logsExpanded}
+                    onToggle={() => setLogsExpanded((current) => !current)}
+                  />
+                  <ManifestPanel
+                    manifest={selectedJobDetail.manifest}
+                    expanded={manifestExpanded}
+                    onToggle={() => setManifestExpanded((current) => !current)}
+                  />
                 </div>
               </>
             )}
@@ -2183,142 +3091,42 @@ export function App() {
       </main>
 
       {previewAsset ? (
-        <div className="asset-preview-modal-backdrop" onClick={closePreview}>
-          <div className="asset-preview-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="asset-preview-modal-header">
-              <div>
-                <strong>{previewEagleName ?? previewAsset.fileName}</strong>
-                <span>
-                  {previewRoute ? `${previewRoute.path} · ${previewRoute.status}` : previewAsset.label}
-                </span>
-              </div>
-              <button type="button" className="asset-preview-close" onClick={closePreview}>
-                关闭
-              </button>
-            </div>
-            <div className="asset-preview-modal-body">
-              <div className="asset-preview-image-wrap">
-                <img src={previewAsset.previewUrl} alt={previewAsset.fileName} className="asset-preview-image" />
-              </div>
-              <aside className="asset-preview-sidebar">
-                <div className="asset-preview-actions">
-                  <label className="asset-select-control asset-select-control-inline">
-                    <input
-                      type="checkbox"
-                      checked={previewAsset.selectedForImport}
-                      disabled={assetActionsDisabled}
-                      onChange={(event) => void toggleAssetSelection(previewAsset.id, event.target.checked)}
-                    />
-                    <span>导入到 Eagle</span>
-                  </label>
-                  <button type="button" onClick={() => void copyFeedbackContext()}>
-                    Copy Feedback Context
-                  </button>
-                  {canFocusDebugAsset(previewAsset, hasSectionDebug) ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        focusDebugFromAsset(previewAsset);
-                        closePreview();
-                      }}
-                    >
-                      Debug 聚焦
-                    </button>
-                  ) : null}
-                </div>
-                {copyFeedbackState ? <div className="copy-feedback-state">{copyFeedbackState}</div> : null}
-                <dl className="asset-preview-meta">
-                  <div>
-                    <dt>Eagle Path</dt>
-                    <dd>{previewEaglePath ?? "—"}</dd>
-                  </div>
-                  <div>
-                    <dt>Eagle Folder</dt>
-                    <dd>{previewAsset.eagleFolderPath ?? "Root"}</dd>
-                  </div>
-                  <div>
-                    <dt>Eagle Name</dt>
-                    <dd>{previewEagleName ?? "—"}</dd>
-                  </div>
-                  {previewHasDistinctEagleName ? (
-                    <div>
-                      <dt>File Name</dt>
-                      <dd>{previewAsset.fileName}</dd>
-                    </div>
-                  ) : null}
-                  <div>
-                    <dt>Job</dt>
-                    <dd>
-                      {selectedJobDetail.job.id} · {selectedJobMode} · {selectedJobDetail.job.status}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Route</dt>
-                    <dd>
-                      {previewRoute ? (
-                        <>
-                          <span>{previewRoute.path} · </span>
-                          <ExternalLink href={previewRoute.url} label={previewRoute.url} />
-                        </>
-                      ) : "—"}
-                    </dd>
-                  </div>
-                  {previewRoute ? (
-                    <div>
-                      <dt>Route Stats</dt>
-                      <dd>
-                        assets {previewRoute.assetCount} · attempts {previewRoute.attemptCount}
-                      </dd>
-                    </div>
-                  ) : null}
-                  <div>
-                    <dt>Asset</dt>
-                    <dd>
-                      #{previewAsset.id} · {previewAsset.label} · {previewAsset.kind}
-                      {previewAsset.sectionType ? ` · ${previewAsset.sectionType}` : ""}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Capture</dt>
-                    <dd>
-                      q{previewAsset.quality} · dpr{previewAsset.dpr} · {formatDate(previewAsset.capturedAt)}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Import</dt>
-                    <dd>
-                      {formatAssetImportStatus(previewAsset.importStatus, previewAsset.importError)}
-                      {previewAsset.importStatus === "imported" && previewAsset.eagleId
-                        ? ` · Eagle ${previewAsset.eagleId}`
-                        : ""}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Source URL</dt>
-                    <dd>
-                      {previewAsset.sourceUrl ? (
-                        <ExternalLink href={previewAsset.sourceUrl} label={previewAsset.sourceUrl} />
-                      ) : "—"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Preview URL</dt>
-                    <dd>
-                      <ExternalLink href={previewAsset.previewUrl} label={previewAsset.previewUrl} />
-                    </dd>
-                  </div>
-                  {previewRoute?.error ? (
-                    <div>
-                      <dt>Route Error</dt>
-                      <dd>{previewRoute.error}</dd>
-                    </div>
-                  ) : null}
-                </dl>
-              </aside>
-            </div>
-          </div>
-        </div>
+        <PreviewModal
+          previewAsset={previewAsset}
+          previewRoute={previewRoute}
+          previewEagleName={previewEagleName}
+          previewEaglePath={previewEaglePath}
+          previewHasDistinctEagleName={previewHasDistinctEagleName}
+          selectedJobDetail={selectedJobDetail}
+          selectedJobMode={selectedJobMode}
+          assetActionsDisabled={assetActionsDisabled}
+          hasSectionDebug={hasSectionDebug}
+          copyFeedbackState={copyFeedbackState}
+          onClose={closePreview}
+          onToggleSelection={toggleAssetSelection}
+          onCopyFeedbackContext={copyFeedbackContext}
+          onFocusAndClose={(asset) => {
+            focusDebugFromAsset(asset);
+            closePreview();
+          }}
+        />
       ) : null}
+      <FolderPickerDialog
+        open={folderPickerAsset !== null}
+        assetLabel={folderPickerAsset?.label ?? ""}
+        assetKind={folderPickerAsset?.kind ?? "section"}
+        assetSectionType={folderPickerAsset?.sectionType ?? null}
+        currentPath={folderPickerAsset?.targetEagleFolderPath ?? null}
+        suggestedPath={folderPickerAsset?.resolvedEagleFolderPath ?? null}
+        query={folderPickerState?.query ?? ""}
+        results={folderPickerResults}
+        activeIndex={folderPickerState?.activeIndex ?? 0}
+        pending={folderPickerSaving}
+        onClose={closeFolderPicker}
+        onQueryChange={updateFolderPickerQuery}
+        onActiveIndexChange={updateFolderPickerActiveIndex}
+        onSelectFolder={(folder) => void selectFolderFromPicker(folder)}
+      />
       <ActionDialog
         open={Boolean(actionDialog)}
         title={actionDialog?.title ?? ""}

@@ -41,15 +41,20 @@ import { EagleClient } from "../eagle/client.js";
 import { readManifest, writeManifestToPath } from "../utils/manifest.js";
 import type {
   AssetRecord,
+  AssetPreviewRecord,
   CreateJobRequest,
-  JobDetail,
+  EagleFlatFolder,
+  FolderSelectionSource,
+  JobDetailResponse,
   JobEvent,
   JobExecutionOptions,
   JobStatus,
   JobMode,
+  JobRecord,
   RouteTargetSummary,
   RunManifest,
 } from "../types.js";
+import { buildThumbnailUrl, getThumbnailDimensions, getThumbnailPath } from "./asset-thumbnails.js";
 import { JobsRepository } from "./db.js";
 import {
   buildPlaywrightRuntimeService,
@@ -68,6 +73,15 @@ export interface BuildServerOptions {
   importSelectedFn?: (manifestPath: string, log?: ExecuteInstructionParams["log"]) => Promise<RunManifest>;
   retryCoreRouteFn?: (params: Parameters<typeof retryCoreRouteByManifest>[0]) => ReturnType<typeof retryCoreRouteByManifest>;
 }
+
+const AUTO_ARCHIVE_AGE_DAYS = 7;
+const AUTO_ARCHIVE_INTERVAL_MS = 60 * 60 * 1000;
+const AUTO_ARCHIVE_TERMINAL_STATUSES: JobStatus[] = [
+  "success",
+  "partial_success",
+  "failed",
+  "cancelled",
+];
 
 function statusFromManifest(manifest: RunManifest | null): JobStatus {
   if (!manifest) {
@@ -132,6 +146,10 @@ function emitToQueue(queue: JobQueue, event: JobEvent): void {
   queue.emit(event);
 }
 
+function getAutoArchiveCutoffIso(now = new Date()): string {
+  return new Date(now.getTime() - AUTO_ARCHIVE_AGE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+}
+
 function cancelOrphanedRoutes(repo: JobsRepository, jobId: string): void {
   const routes = repo.listRouteTargets(jobId);
   for (const route of routes) {
@@ -147,6 +165,84 @@ function cancelOrphanedRoutes(repo: JobsRepository, jobId: string): void {
 
 function serializeSse(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
+}
+
+interface AssetFolderState {
+  resolvedEagleFolderId: string | null;
+  resolvedEagleFolderPath: string | null;
+  targetEagleFolderId: string | null;
+  targetEagleFolderPath: string | null;
+  folderSelectionSource: FolderSelectionSource;
+}
+
+function sortEagleFolders(folders: EagleFlatFolder[]): EagleFlatFolder[] {
+  return [...folders].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function loadFlatEagleFolders(): Promise<EagleFlatFolder[]> {
+  const eagle = new EagleClient();
+  const folders = await eagle.listFolders();
+  return sortEagleFolders(eagle.flattenFolders(folders));
+}
+
+function buildAssetRecordLookup(assets: AssetRecord[]): Map<string, AssetRecord[]> {
+  const assetsByFingerprint = new Map<string, AssetRecord[]>();
+  for (const asset of assets) {
+    const fingerprint = buildAssetFingerprint(asset);
+    const matches = assetsByFingerprint.get(fingerprint) ?? [];
+    matches.push(asset);
+    assetsByFingerprint.set(fingerprint, matches);
+  }
+  return assetsByFingerprint;
+}
+
+function resolveAssetFolderState(
+  asset: Pick<AssetRecord, "kind" | "sectionType" | "sourceUrl" | "folderOverrideId">,
+  rulesState: Awaited<ReturnType<typeof loadEagleFolderRules>>,
+  folderIndex: ReturnType<typeof buildFolderIndex>,
+): AssetFolderState {
+  const resolvedFolderResult =
+    asset.kind === "section"
+      ? resolveSectionFolder(asset.sectionType ?? undefined, rulesState.rules, folderIndex)
+      : resolveFullPageFolder(
+          classifyFullPageType(asset.sourceUrl, rulesState.rules).type,
+          rulesState.rules,
+          folderIndex,
+        );
+  const resolvedFolder = resolvedFolderResult.folderId
+    ? folderIndex.byId.get(resolvedFolderResult.folderId) ?? null
+    : null;
+  const overrideFolder = asset.folderOverrideId
+    ? folderIndex.byId.get(asset.folderOverrideId) ?? null
+    : null;
+
+  if (overrideFolder) {
+    return {
+      resolvedEagleFolderId: resolvedFolderResult.folderId ?? null,
+      resolvedEagleFolderPath: resolvedFolder?.path ?? null,
+      targetEagleFolderId: overrideFolder.id,
+      targetEagleFolderPath: overrideFolder.path,
+      folderSelectionSource: "manual",
+    };
+  }
+
+  if (resolvedFolder) {
+    return {
+      resolvedEagleFolderId: resolvedFolder.id,
+      resolvedEagleFolderPath: resolvedFolder.path,
+      targetEagleFolderId: resolvedFolder.id,
+      targetEagleFolderPath: resolvedFolder.path,
+      folderSelectionSource: "auto",
+    };
+  }
+
+  return {
+      resolvedEagleFolderId: resolvedFolderResult.folderId ?? null,
+      resolvedEagleFolderPath: null,
+      targetEagleFolderId: null,
+      targetEagleFolderPath: null,
+      folderSelectionSource: "missing",
+    };
 }
 
 function findManifestAsset(
@@ -183,13 +279,7 @@ function syncManifestSelection(
   assets: AssetRecord[],
   selectedAssetIds: Set<number>,
 ): RunManifest {
-  const assetsByFingerprint = new Map<string, AssetRecord[]>();
-  for (const asset of assets) {
-    const fingerprint = buildAssetFingerprint(asset);
-    const matches = assetsByFingerprint.get(fingerprint) ?? [];
-    matches.push(asset);
-    assetsByFingerprint.set(fingerprint, matches);
-  }
+  const assetsByFingerprint = buildAssetRecordLookup(assets);
 
   return {
     ...manifest,
@@ -214,52 +304,197 @@ function syncManifestSelection(
   };
 }
 
+function syncManifestAssetFolderOverride(
+  manifest: RunManifest,
+  assets: AssetRecord[],
+  assetId: number,
+  folderOverrideId: string,
+): RunManifest {
+  const assetsByFingerprint = buildAssetRecordLookup(assets);
+
+  return {
+    ...manifest,
+    assets: manifest.assets.map((asset) => {
+      const fingerprint = buildManifestAssetFingerprint(asset);
+      const matched = assetsByFingerprint.get(fingerprint)?.shift();
+      if (!matched || matched.id !== assetId) {
+        return asset;
+      }
+      return {
+        ...asset,
+        folderOverrideId,
+      };
+    }),
+  };
+}
+
 async function decorateAssetsForResponse(
   assets: AssetRecord[],
   manifest: RunManifest | null,
   cwd = process.cwd(),
-): Promise<
-  Array<
-    AssetRecord & {
-      previewUrl: string;
-      eagleFolderId: string | null;
-      eagleFolderPath: string | null;
-    }
-  >
-> {
+): Promise<AssetPreviewRecord[]> {
   const rulesState = await loadEagleFolderRules(cwd);
   let folderIndex = buildFolderIndex([]);
 
   try {
-    const eagle = new EagleClient();
-    const folders = await eagle.listFolders();
-    folderIndex = buildFolderIndex(eagle.flattenFolders(folders));
+    folderIndex = buildFolderIndex(await loadFlatEagleFolders());
   } catch {
     folderIndex = buildFolderIndex([]);
   }
 
-  return assets.map((asset) => {
+  return Promise.all(assets.map(async (asset) => {
     const manifestAsset = findManifestAsset(manifest, asset);
-    const folderResolution =
-      asset.kind === "section"
-        ? resolveSectionFolder(asset.sectionType ?? undefined, rulesState.rules, folderIndex)
-        : resolveFullPageFolder(
-            classifyFullPageType(asset.sourceUrl, rulesState.rules).type,
-            rulesState.rules,
-            folderIndex,
-          );
-    const folder = folderResolution.folderId
-      ? folderIndex.byId.get(folderResolution.folderId) ?? null
-      : null;
+    const folderState = resolveAssetFolderState(
+      {
+        ...asset,
+        folderOverrideId: manifestAsset?.folderOverrideId ?? asset.folderOverrideId,
+      },
+      rulesState,
+      folderIndex,
+    );
+    const { thumbnailWidth, thumbnailHeight } = await getThumbnailDimensions(asset).catch(() => ({
+      thumbnailWidth: 360,
+      thumbnailHeight: 225,
+    }));
 
     return {
       ...asset,
       pageTitle: manifestAsset?.pageTitle,
       previewUrl: `/api/assets/${asset.id}/file`,
-      eagleFolderId: folderResolution.folderId ?? null,
-      eagleFolderPath: folder?.path ?? null,
+      thumbnailUrl: buildThumbnailUrl(asset.id, thumbnailWidth),
+      thumbnailWidth,
+      thumbnailHeight,
+      ...folderState,
+      eagleFolderId: folderState.targetEagleFolderId,
+      eagleFolderPath: folderState.targetEagleFolderPath,
     };
+  }));
+}
+
+async function collectAssetsMissingFolderTarget(
+  assets: AssetRecord[],
+  manifest: RunManifest,
+  mode: "selected_pending" | "selected_failed",
+  cwd = process.cwd(),
+): Promise<AssetRecord[]> {
+  const rulesState = await loadEagleFolderRules(cwd);
+  let folderIndex = buildFolderIndex([]);
+
+  try {
+    folderIndex = buildFolderIndex(await loadFlatEagleFolders());
+  } catch {
+    folderIndex = buildFolderIndex([]);
+  }
+
+  const manifestAssetsByFingerprint = new Map<string, RunManifest["assets"][number][]>();
+  for (const asset of manifest.assets) {
+    const fingerprint = buildManifestAssetFingerprint(asset);
+    const matches = manifestAssetsByFingerprint.get(fingerprint) ?? [];
+    matches.push(asset);
+    manifestAssetsByFingerprint.set(fingerprint, matches);
+  }
+
+  return assets.filter((asset) => {
+    if (!asset.selectedForImport) {
+      return false;
+    }
+    if (mode === "selected_pending" && asset.importStatus !== "pending_confirmation") {
+      return false;
+    }
+    if (mode === "selected_failed" && asset.importStatus !== "failed") {
+      return false;
+    }
+
+    const fingerprint = buildAssetFingerprint(asset);
+    const manifestAsset = manifestAssetsByFingerprint.get(fingerprint)?.shift();
+    const folderState = resolveAssetFolderState(
+      {
+        ...asset,
+        folderOverrideId: manifestAsset?.folderOverrideId ?? asset.folderOverrideId,
+      },
+      rulesState,
+      folderIndex,
+    );
+    return folderState.folderSelectionSource === "missing";
   });
+}
+
+function deriveTerminalJobError(
+  status: JobStatus,
+  failureMessage: string,
+): string | null {
+  if (status === "success" || status === "awaiting_confirmation" || status === "partial_success") {
+    return null;
+  }
+  if (status === "cancelled") {
+    return "Cancelled by user";
+  }
+  return failureMessage;
+}
+
+async function refreshPersistedTerminalJobState(
+  repo: JobsRepository,
+  job: JobRecord | null,
+): Promise<JobRecord | null> {
+  if (!job || !job.manifestPath || job.status === "queued" || job.status === "running" || job.status === "cancelled") {
+    return job;
+  }
+
+  let manifest: RunManifest;
+  try {
+    manifest = normalizeManifestImports(await readManifest(job.manifestPath));
+  } catch {
+    return job;
+  }
+
+  const mode = parseJobMode(job.optionsJson);
+  const nextStatus =
+    mode === "core-routes"
+      ? statusFromCoreRouteState(manifest, repo.listRouteTargets(job.id))
+      : statusFromManifest(manifest);
+  const nextError = deriveTerminalJobError(
+    nextStatus,
+    mode === "core-routes" ? "Some routes or assets are still failing" : "Some assets still require attention",
+  );
+
+  if (job.status === nextStatus && job.error === nextError) {
+    return job;
+  }
+
+  repo.setJobResult({
+    jobId: job.id,
+    status: nextStatus,
+    taskJson: JSON.stringify(manifest.task),
+    manifestPath: job.manifestPath,
+    outputDir: manifest.outputDir,
+    error: nextError,
+  });
+  return repo.getJob(job.id);
+}
+
+function runAutoArchiveSweep(
+  repo: JobsRepository,
+  log: FastifyInstance["log"],
+  reason: "startup" | "interval",
+): { jobIds: string[]; archivedAt: string | null; cutoffIso: string } {
+  const cutoffIso = getAutoArchiveCutoffIso();
+  const result = repo.archiveFinishedJobsBefore({
+    cutoffIso,
+    statuses: AUTO_ARCHIVE_TERMINAL_STATUSES,
+  });
+  log.info(
+    {
+      reason,
+      cutoffIso,
+      archivedCount: result.jobIds.length,
+      archivedJobIds: result.jobIds,
+    },
+    "Auto-archive sweep completed",
+  );
+  return {
+    ...result,
+    cutoffIso,
+  };
 }
 
 export async function buildServer(options: BuildServerOptions = {}): Promise<FastifyInstance> {
@@ -275,8 +510,17 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   const retryImportFn = options.retryImportFn ?? retryImportByManifestPath;
   const importSelectedFn = options.importSelectedFn ?? importSelectedByManifestPath;
   const retryCoreRouteFn = options.retryCoreRouteFn ?? retryCoreRouteByManifest;
+  const autoArchiveTimer = setInterval(() => {
+    try {
+      runAutoArchiveSweep(repo, app.log, "interval");
+    } catch (error) {
+      app.log.error({ err: error }, "Auto-archive interval sweep failed");
+    }
+  }, AUTO_ARCHIVE_INTERVAL_MS);
+  autoArchiveTimer.unref?.();
 
   app.addHook("onClose", async () => {
+    clearInterval(autoArchiveTimer);
     if (!options.repo) {
       repo.close();
     }
@@ -293,6 +537,17 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
         fallback: rulesState.rules.policy.missingFolderBehavior,
       },
     };
+  });
+
+  app.get("/api/eagle/folders", async (_request, reply) => {
+    try {
+      return await loadFlatEagleFolders();
+    } catch (error) {
+      reply.code(503);
+      return {
+        error: error instanceof Error ? error.message : "Failed loading Eagle folders",
+      };
+    }
   });
 
   app.get("/api/runtime/playwright", async () => {
@@ -396,7 +651,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
             manifestPath: result.manifestPath,
             outputDir: result.manifest.outputDir,
             error:
-              finalStatus === "success" || finalStatus === "awaiting_confirmation"
+              finalStatus === "success" || finalStatus === "awaiting_confirmation" || finalStatus === "partial_success"
                 ? null
                 : finalStatus === "cancelled"
                   ? "Cancelled by user"
@@ -546,14 +801,28 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   }>("/api/jobs", async (request) => {
     const page = request.query.page ? Number(request.query.page) : 1;
     const pageSize = request.query.pageSize ? Number(request.query.pageSize) : 20;
-    const result = repo.listJobs({
+    const query = {
       status: request.query.status,
       q: request.query.q,
       archivedOnly:
         request.query.archivedOnly === "true" || request.query.archivedOnly === "1",
       page: Number.isFinite(page) ? page : 1,
       pageSize: Number.isFinite(pageSize) ? pageSize : 20,
-    });
+    };
+    let result = repo.listJobs(query);
+
+    let refreshed = false;
+    for (const item of result.items) {
+      const updatedJob = await refreshPersistedTerminalJobState(repo, repo.getJob(item.id));
+      if (updatedJob && (updatedJob.status !== item.status || updatedJob.error !== item.error)) {
+        refreshed = true;
+      }
+    }
+
+    if (refreshed) {
+      result = repo.listJobs(query);
+    }
+
     return {
       items: result.items,
       total: result.total,
@@ -602,6 +871,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   });
 
   app.get<{ Params: { jobId: string } }>("/api/jobs/:jobId", async (request, reply) => {
+    await refreshPersistedTerminalJobState(repo, repo.getJob(request.params.jobId));
     const detail = repo.getJobDetail(request.params.jobId);
     if (!detail) {
       reply.code(404);
@@ -619,11 +889,12 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
 
     const assets = await decorateAssetsForResponse(detail.assets, manifest);
 
-    return {
+    const response: JobDetailResponse = {
       ...detail,
       manifest,
       assets,
     };
+    return response;
   });
 
   app.get<{ Params: { assetId: string } }>("/api/assets/:assetId/file", async (request, reply) => {
@@ -639,6 +910,141 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     }
     reply.type("image/jpeg");
     return reply.send(createReadStream(asset.filePath));
+  });
+
+  app.get<{
+    Params: { assetId: string };
+    Querystring: { w?: string; q?: string };
+  }>("/api/assets/:assetId/thumbnail", async (request, reply) => {
+    const assetId = Number(request.params.assetId);
+    if (!Number.isFinite(assetId)) {
+      reply.code(400);
+      return { error: "Invalid asset id" };
+    }
+    const asset = repo.getAssetById(assetId);
+    if (!asset || !existsSync(asset.filePath)) {
+      reply.code(404);
+      return { error: "Asset not found" };
+    }
+
+    try {
+      const thumbnail = await getThumbnailPath(asset, {
+        width: Number(request.query?.w),
+        quality: Number(request.query?.q),
+      });
+      reply.type("image/jpeg");
+      reply.header("Cache-Control", "public, max-age=31536000, immutable");
+      return reply.send(createReadStream(thumbnail.filePath));
+    } catch {
+      reply.type("image/jpeg");
+      return reply.send(createReadStream(asset.filePath));
+    }
+  });
+
+  app.patch<{
+    Params: { jobId: string; assetId: string };
+    Body: { targetEagleFolderId?: string };
+  }>("/api/jobs/:jobId/assets/:assetId/folder", async (request, reply) => {
+    const job = repo.getJob(request.params.jobId);
+    if (!job) {
+      reply.code(404);
+      return { error: "Job not found" };
+    }
+    if (job.status === "running") {
+      reply.code(400);
+      return { error: "Folder selection is not available while the job is running" };
+    }
+    if (!job.manifestPath) {
+      reply.code(400);
+      return { error: "No manifest for this job" };
+    }
+
+    const assetId = Number(request.params.assetId);
+    if (!Number.isFinite(assetId)) {
+      reply.code(400);
+      return { error: "Invalid asset id" };
+    }
+
+    const targetEagleFolderId = request.body?.targetEagleFolderId;
+    if (typeof targetEagleFolderId !== "string" || !targetEagleFolderId.trim()) {
+      reply.code(400);
+      return { error: "targetEagleFolderId is required" };
+    }
+
+    const asset = repo.getAssets(job.id).find((candidate) => candidate.id === assetId);
+    if (!asset) {
+      reply.code(404);
+      return { error: "Asset not found for this job" };
+    }
+    if (asset.importStatus === "imported") {
+      reply.code(400);
+      return { error: "Imported assets cannot change target folders" };
+    }
+
+    let folders: EagleFlatFolder[];
+    try {
+      folders = await loadFlatEagleFolders();
+    } catch (error) {
+      reply.code(503);
+      return {
+        error: error instanceof Error ? error.message : "Failed loading Eagle folders",
+      };
+    }
+
+    const folder = folders.find((candidate) => candidate.id === targetEagleFolderId.trim());
+    if (!folder) {
+      reply.code(400);
+      return { error: "targetEagleFolderId must reference an existing Eagle folder" };
+    }
+
+    let manifest: RunManifest;
+    try {
+      manifest = normalizeManifestImports(await readManifest(job.manifestPath));
+    } catch {
+      reply.code(500);
+      return { error: "Failed to read manifest for this job" };
+    }
+
+    const assets = repo.getAssets(job.id);
+    const updatedManifest = syncManifestAssetFolderOverride(manifest, assets, assetId, folder.id);
+    await writeManifestToPath(job.manifestPath, updatedManifest);
+    repo.replaceAssets(job.id, updatedManifest);
+
+    const finalStatus =
+      parseJobMode(job.optionsJson) === "core-routes"
+        ? statusFromCoreRouteState(updatedManifest, repo.listRouteTargets(job.id))
+        : statusFromManifest(updatedManifest);
+    repo.setJobResult({
+      jobId: job.id,
+      status: finalStatus,
+      taskJson: JSON.stringify(updatedManifest.task),
+      manifestPath: job.manifestPath,
+      outputDir: updatedManifest.outputDir,
+      error:
+        finalStatus === "success" || finalStatus === "awaiting_confirmation" || finalStatus === "partial_success"
+          ? null
+          : "Some assets still require attention",
+    });
+
+    emitToQueue(queue, {
+      type: "assets_updated",
+      jobId: job.id,
+      at: new Date().toISOString(),
+    });
+    emitToQueue(queue, {
+      type: "status",
+      jobId: job.id,
+      status: finalStatus,
+      at: new Date().toISOString(),
+    });
+
+    return {
+      jobId: job.id,
+      assetId,
+      status: finalStatus,
+      targetEagleFolderId: folder.id,
+      targetEagleFolderPath: folder.path,
+    };
   });
 
   app.patch<{
@@ -699,7 +1105,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       manifestPath: job.manifestPath,
       outputDir: updatedManifest.outputDir,
       error:
-        finalStatus === "success" || finalStatus === "awaiting_confirmation"
+        finalStatus === "success" || finalStatus === "awaiting_confirmation" || finalStatus === "partial_success"
           ? null
           : "Some assets still require attention",
     });
@@ -744,6 +1150,27 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       return { error: "No selected pending assets to import" };
     }
 
+    let manifest: RunManifest;
+    try {
+      manifest = normalizeManifestImports(await readManifest(job.manifestPath));
+    } catch {
+      reply.code(500);
+      return { error: "Failed to read manifest for this job" };
+    }
+
+    const assetsMissingTarget = await collectAssetsMissingFolderTarget(
+      repo.getAssets(job.id),
+      manifest,
+      "selected_pending",
+    );
+    if (assetsMissingTarget.length > 0) {
+      reply.code(400);
+      return {
+        error: "Selected pending assets must use an existing Eagle folder before import",
+        assetIds: assetsMissingTarget.map((asset) => asset.id),
+      };
+    }
+
     queue.enqueue(job.id, async () => {
       repo.setJobRunning(job.id);
       repo.addLog(job.id, "info", "Import selected started");
@@ -777,7 +1204,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           manifestPath: job.manifestPath,
           outputDir: manifest.outputDir,
           error:
-            finalStatus === "success" || finalStatus === "awaiting_confirmation"
+            finalStatus === "success" || finalStatus === "awaiting_confirmation" || finalStatus === "partial_success"
               ? null
               : "Some assets still require attention",
         });
@@ -834,6 +1261,27 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       return { error: "No selected failed assets to retry" };
     }
 
+    let manifest: RunManifest;
+    try {
+      manifest = normalizeManifestImports(await readManifest(job.manifestPath));
+    } catch {
+      reply.code(500);
+      return { error: "Failed to read manifest for this job" };
+    }
+
+    const assetsMissingTarget = await collectAssetsMissingFolderTarget(
+      repo.getAssets(job.id),
+      manifest,
+      "selected_failed",
+    );
+    if (assetsMissingTarget.length > 0) {
+      reply.code(400);
+      return {
+        error: "Selected failed assets must use an existing Eagle folder before retry",
+        assetIds: assetsMissingTarget.map((asset) => asset.id),
+      };
+    }
+
     queue.enqueue(job.id, async () => {
       repo.setJobRunning(job.id);
       repo.addLog(job.id, "info", "Retry import started");
@@ -867,7 +1315,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           manifestPath: job.manifestPath,
           outputDir: manifest!.outputDir,
           error:
-            finalStatus === "success" || finalStatus === "awaiting_confirmation"
+            finalStatus === "success" || finalStatus === "awaiting_confirmation" || finalStatus === "partial_success"
               ? null
               : "Some assets still require attention",
         });
@@ -1003,7 +1451,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           manifestPath: job.manifestPath,
           outputDir: retried.manifest.outputDir,
           error:
-            finalStatus === "success" || finalStatus === "awaiting_confirmation"
+            finalStatus === "success" || finalStatus === "awaiting_confirmation" || finalStatus === "partial_success"
               ? null
               : "Some routes or assets are still failing",
         });
@@ -1114,6 +1562,12 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       }
       return reply.sendFile("index.html");
     });
+  }
+
+  try {
+    runAutoArchiveSweep(repo, app.log, "startup");
+  } catch (error) {
+    app.log.error({ err: error }, "Auto-archive startup sweep failed");
   }
 
   return app;

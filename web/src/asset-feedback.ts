@@ -31,6 +31,9 @@ export interface AssetFeedbackAsset {
   importError: string | null;
   eagleId: string | null;
   previewUrl: string;
+  thumbnailUrl: string;
+  thumbnailWidth: number;
+  thumbnailHeight: number;
   sourceUrl: string | null;
 }
 
@@ -46,35 +49,84 @@ export interface AssetFeedbackRoute {
 
 export type CoreRoutePreviewState = "ready" | "pending" | "failed" | "empty";
 
+export interface AssetLookupIndex {
+  assetById: Map<number, AssetFeedbackAsset>;
+  assetsBySourceUrl: Map<string, AssetFeedbackAsset[]>;
+  latestAssetBySourceUrl: Map<string, AssetFeedbackAsset>;
+}
+
+function compareAssets(left: AssetFeedbackAsset, right: AssetFeedbackAsset): number {
+  if (left.kind !== right.kind) {
+    return left.kind === "fullPage" ? -1 : 1;
+  }
+  const byCapturedAt = Date.parse(right.capturedAt) - Date.parse(left.capturedAt);
+  if (byCapturedAt !== 0) {
+    return byCapturedAt;
+  }
+  return right.id - left.id;
+}
+
+export function buildAssetLookupIndex(assets: AssetFeedbackAsset[]): AssetLookupIndex {
+  const assetById = new Map<number, AssetFeedbackAsset>();
+  const grouped = new Map<string, AssetFeedbackAsset[]>();
+
+  for (const asset of assets) {
+    assetById.set(asset.id, asset);
+    if (!asset.sourceUrl) {
+      continue;
+    }
+    const existing = grouped.get(asset.sourceUrl);
+    if (existing) {
+      existing.push(asset);
+    } else {
+      grouped.set(asset.sourceUrl, [asset]);
+    }
+  }
+
+  const assetsBySourceUrl = new Map<string, AssetFeedbackAsset[]>();
+  const latestAssetBySourceUrl = new Map<string, AssetFeedbackAsset>();
+  for (const [sourceUrl, groupedAssets] of grouped.entries()) {
+    const sortedAssets = [...groupedAssets].sort(compareAssets);
+    assetsBySourceUrl.set(sourceUrl, sortedAssets);
+    const first = sortedAssets[0];
+    if (first) {
+      latestAssetBySourceUrl.set(sourceUrl, first);
+    }
+  }
+
+  return {
+    assetById,
+    assetsBySourceUrl,
+    latestAssetBySourceUrl,
+  };
+}
+
 export function findAssetForRoute(
   route: Pick<AssetFeedbackRoute, "url">,
   assets: AssetFeedbackAsset[],
 ): AssetFeedbackAsset | null {
-  const matches = findAssetsForRoute(route, assets);
-  if (matches.length === 0) {
-    return null;
-  }
-  return matches[0];
+  return findAssetForRouteFromIndex(route, buildAssetLookupIndex(assets));
 }
 
 export function findAssetsForRoute(
   route: Pick<AssetFeedbackRoute, "url">,
   assets: AssetFeedbackAsset[],
 ): AssetFeedbackAsset[] {
-  const matches = assets.filter((asset) => asset.sourceUrl === route.url);
-  if (matches.length === 0) {
-    return [];
-  }
-  return [...matches].sort((left, right) => {
-    if (left.kind !== right.kind) {
-      return left.kind === "fullPage" ? -1 : 1;
-    }
-    const byCapturedAt = Date.parse(right.capturedAt) - Date.parse(left.capturedAt);
-    if (byCapturedAt !== 0) {
-      return byCapturedAt;
-    }
-    return right.id - left.id;
-  });
+  return findAssetsForRouteFromIndex(route, buildAssetLookupIndex(assets));
+}
+
+export function findAssetForRouteFromIndex(
+  route: Pick<AssetFeedbackRoute, "url">,
+  index: AssetLookupIndex,
+): AssetFeedbackAsset | null {
+  return index.latestAssetBySourceUrl.get(route.url) ?? null;
+}
+
+export function findAssetsForRouteFromIndex(
+  route: Pick<AssetFeedbackRoute, "url">,
+  index: AssetLookupIndex,
+): AssetFeedbackAsset[] {
+  return index.assetsBySourceUrl.get(route.url) ?? [];
 }
 
 export function getCoreRoutePreviewState(

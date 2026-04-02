@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { JobsRepository } from "../src/server/db.js";
 
@@ -73,5 +74,64 @@ describe("jobs repository route targets", () => {
 
     expect(updated?.status).toBe("running");
     expect(updated?.attemptCount).toBe(1);
+  });
+
+  it("archives only finished terminal jobs older than the cutoff", () => {
+    const rawDb = new Database(dbPath);
+    const cutoffIso = "2026-04-02T00:00:00.000Z";
+    const oldFinishedAt = "2026-04-02T00:00:00.000Z";
+    const recentFinishedAt = "2026-04-02T00:00:00.001Z";
+
+    const createFinishedJob = (jobId: string, status: "success" | "partial_success" | "failed" | "cancelled") => {
+      repo.createJob({
+        id: jobId,
+        instruction: `job ${jobId}`,
+        options: DEFAULT_OPTIONS,
+      });
+      repo.setJobResult({
+        jobId,
+        status,
+        taskJson: JSON.stringify({ url: "https://example.com" }),
+        error: status === "failed" ? "failed once" : status === "cancelled" ? "Cancelled by user" : null,
+      });
+    };
+
+    createFinishedJob("old-success", "success");
+    createFinishedJob("old-partial", "partial_success");
+    createFinishedJob("old-failed", "failed");
+    createFinishedJob("old-cancelled", "cancelled");
+    createFinishedJob("recent-success", "success");
+    createFinishedJob("already-archived", "success");
+    repo.createJob({
+      id: "running-job",
+      instruction: "running job",
+      options: DEFAULT_OPTIONS,
+    });
+    repo.setJobRunning("running-job");
+
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, "old-success");
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, "old-partial");
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, "old-failed");
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, "old-cancelled");
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(recentFinishedAt, "recent-success");
+    rawDb
+      .prepare("UPDATE jobs SET finished_at = ?, archived_at = ? WHERE id = ?")
+      .run(oldFinishedAt, "2026-04-01T00:00:00.000Z", "already-archived");
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, "running-job");
+    rawDb.close();
+
+    const result = repo.archiveFinishedJobsBefore({
+      cutoffIso,
+      statuses: ["success", "partial_success", "failed", "cancelled"],
+    });
+
+    expect(result.jobIds.sort()).toEqual(["old-cancelled", "old-failed", "old-partial", "old-success"]);
+    expect(repo.getJob("old-success")?.archivedAt).toBeTruthy();
+    expect(repo.getJob("old-partial")?.archivedAt).toBeTruthy();
+    expect(repo.getJob("old-failed")?.archivedAt).toBeTruthy();
+    expect(repo.getJob("old-cancelled")?.archivedAt).toBeTruthy();
+    expect(repo.getJob("recent-success")?.archivedAt).toBeNull();
+    expect(repo.getJob("already-archived")?.archivedAt).toBe("2026-04-01T00:00:00.000Z");
+    expect(repo.getJob("running-job")?.archivedAt).toBeNull();
   });
 });

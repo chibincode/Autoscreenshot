@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFeedbackContext,
+  buildAssetLookupIndex,
   canFocusDebugAsset,
   findAssetForRoute,
+  findAssetForRouteFromIndex,
   getCoreRoutePreviewState,
 } from "../web/src/asset-feedback.js";
+
+const thumbnailFields = {
+  thumbnailUrl: "/api/assets/thumbnail",
+  thumbnailWidth: 360,
+  thumbnailHeight: 225,
+};
 
 describe("asset feedback ui helpers", () => {
   it("matches a core route to its full-page asset by sourceUrl", () => {
@@ -26,6 +34,7 @@ describe("asset feedback ui helpers", () => {
           importError: null,
           eagleId: "abc",
           previewUrl: "/api/assets/1/file",
+          ...thumbnailFields,
           sourceUrl: "https://example.com/pricing",
         },
         {
@@ -43,6 +52,7 @@ describe("asset feedback ui helpers", () => {
           importError: null,
           eagleId: "def",
           previewUrl: "/api/assets/2/file",
+          ...thumbnailFields,
           sourceUrl: "https://example.com/pricing",
         },
       ],
@@ -56,6 +66,58 @@ describe("asset feedback ui helpers", () => {
     expect(getCoreRoutePreviewState("running", null)).toBe("pending");
     expect(getCoreRoutePreviewState("failed", null)).toBe("failed");
     expect(getCoreRoutePreviewState("success", null)).toBe("empty");
+  });
+
+  it("builds a reusable asset lookup index for repeated route matching", () => {
+    const assets = [
+      {
+        id: 11,
+        kind: "section" as const,
+        sectionType: "hero",
+        label: "hero",
+        fileName: "hero.jpg",
+        quality: 92,
+        dpr: 2,
+        capturedAt: "2026-03-07T10:00:00.000Z",
+        selectedForImport: true,
+        importStatus: "pending_confirmation" as const,
+        importOk: false,
+        importError: null,
+        eagleId: null,
+        previewUrl: "/api/assets/11/file",
+        thumbnailUrl: "/api/assets/11/thumbnail?w=360&q=42",
+        thumbnailWidth: 360,
+        thumbnailHeight: 225,
+        sourceUrl: "https://example.com/pricing",
+      },
+      {
+        id: 12,
+        kind: "fullPage" as const,
+        sectionType: null,
+        label: "full_page",
+        fileName: "pricing.jpg",
+        quality: 92,
+        dpr: 2,
+        capturedAt: "2026-03-07T10:01:00.000Z",
+        selectedForImport: true,
+        importStatus: "imported" as const,
+        importOk: true,
+        importError: null,
+        eagleId: "def",
+        previewUrl: "/api/assets/12/file",
+        thumbnailUrl: "/api/assets/12/thumbnail?w=360&q=42",
+        thumbnailWidth: 360,
+        thumbnailHeight: 225,
+        sourceUrl: "https://example.com/pricing",
+      },
+    ];
+
+    const index = buildAssetLookupIndex(assets);
+    const matched = findAssetForRouteFromIndex({ url: "https://example.com/pricing" }, index);
+
+    expect(index.assetById.get(11)?.label).toBe("hero");
+    expect(index.assetsBySourceUrl.get("https://example.com/pricing")?.length).toBe(2);
+    expect(matched?.id).toBe(12);
   });
 
   it("only allows explicit debug focus for section assets with sectionDebug", () => {
@@ -87,6 +149,7 @@ describe("asset feedback ui helpers", () => {
         importError: "upload failed",
         eagleId: null,
         previewUrl: "/api/assets/22/file",
+        ...thumbnailFields,
         sourceUrl: "https://example.com/pricing",
       },
       assetUrl: "http://127.0.0.1:5173/api/assets/22/file",

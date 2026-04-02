@@ -1,6 +1,8 @@
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import Database from "better-sqlite3";
+import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildServer } from "../src/server/app.js";
 import { createPendingImportResult, normalizeImportResult } from "../src/core/import-state.js";
@@ -10,6 +12,19 @@ import type { ExecuteInstructionParams, ExecuteInstructionResult } from "../src/
 import type { ExecuteCoreRoutesParams, ExecuteCoreRoutesResult } from "../src/core/core-routes-service.js";
 import type { PlaywrightRuntimeService, PlaywrightRuntimeState } from "../src/server/playwright-runtime.js";
 import type { RunManifest } from "../src/types.js";
+
+async function writeTestJpeg(filePath: string, width = 1280, height = 720): Promise<void> {
+  await sharp({
+    create: {
+      width,
+      height,
+      channels: 3,
+      background: { r: 246, g: 247, b: 250 },
+    },
+  })
+    .jpeg({ quality: 82 })
+    .toFile(filePath);
+}
 
 async function waitForTerminalStatus(
   app: Awaited<ReturnType<typeof buildServer>>,
@@ -139,6 +154,52 @@ async function createManualCoreRoutesJob(
   return { jobId: params.id, routeId: route.id };
 }
 
+const DEFAULT_EAGLE_FOLDER_TREE = [
+  {
+    id: "pages-root",
+    name: "Pages",
+    children: [
+      {
+        id: "JZR6J2FS0KW4W",
+        name: "Page_Home",
+      },
+      {
+        id: "page-pricing-id",
+        name: "Page_Pricing",
+      },
+    ],
+  },
+  {
+    id: "sections-root",
+    name: "Sections",
+    children: [
+      {
+        id: "section-general-id",
+        name: "Section_Gerneral",
+      },
+    ],
+  },
+];
+
+function mockEagleFolderList(folderTree = DEFAULT_EAGLE_FOLDER_TREE): void {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/api/folder/list")) {
+      return new Response(
+        JSON.stringify({
+          status: "success",
+          data: folderTree,
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  });
+}
+
 describe("server api", () => {
   let app: Awaited<ReturnType<typeof buildServer>>;
   let tmpDir: string;
@@ -163,7 +224,7 @@ describe("server api", () => {
       const outputDir = path.join(tmpDir, params.runId ?? "run");
       await fs.mkdir(outputDir, { recursive: true });
       const imagePath = path.join(outputDir, "sample.jpg");
-      await fs.writeFile(imagePath, "fake");
+      await writeTestJpeg(imagePath, 1440, 900);
 
       const manifest: RunManifest = {
         runId: params.runId ?? "run",
@@ -237,10 +298,7 @@ describe("server api", () => {
     };
 
     const importSelectedFn = async (manifestPath: string): Promise<RunManifest> => {
-      const existing = manifestMap.get(manifestPath);
-      if (!existing) {
-        throw new Error("manifest not found");
-      }
+      const existing = JSON.parse(await fs.readFile(manifestPath, "utf8")) as RunManifest;
       const updated: RunManifest = {
         ...existing,
         assets: existing.assets.map((asset) => ({
@@ -263,10 +321,7 @@ describe("server api", () => {
     };
 
     const retryImportFn = async (manifestPath: string): Promise<RunManifest> => {
-      const existing = manifestMap.get(manifestPath);
-      if (!existing) {
-        throw new Error("manifest not found");
-      }
+      const existing = JSON.parse(await fs.readFile(manifestPath, "utf8")) as RunManifest;
       const updated: RunManifest = {
         ...existing,
         assets: existing.assets.map((asset) => ({
@@ -340,7 +395,7 @@ describe("server api", () => {
       });
 
       const imagePath = path.join(params.outputDir, "core-home.jpg");
-      await fs.writeFile(imagePath, "fake");
+      await writeTestJpeg(imagePath, 1920, 2560);
 
       const manifest: RunManifest = {
         runId: params.runId,
@@ -436,7 +491,7 @@ describe("server api", () => {
       }
 
       const routeImage = path.join(existing.outputDir, `retry-${params.routePath.replace(/\W+/g, "_")}.jpg`);
-      await fs.writeFile(routeImage, "fake");
+      await writeTestJpeg(routeImage, 1600, 2400);
       const next: RunManifest = {
         ...existing,
         assets: [
@@ -558,6 +613,40 @@ describe("server api", () => {
     expect(data.eagleImportPolicy?.fallback).toBe("root");
   });
 
+  it("returns flattened Eagle folders sorted by path", async () => {
+    mockEagleFolderList([
+      {
+        id: "sections-root",
+        name: "Sections",
+        children: [
+          { id: "section-general-id", name: "Section_Gerneral" },
+        ],
+      },
+      {
+        id: "pages-root",
+        name: "Pages",
+        children: [
+          { id: "page-pricing-id", name: "Page_Pricing" },
+          { id: "page-home-id", name: "Page_Home" },
+        ],
+      },
+    ]);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/eagle/folders",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([
+      { id: "pages-root", name: "Pages", path: "Pages" },
+      { id: "page-home-id", name: "Page_Home", path: "Pages/Page_Home" },
+      { id: "page-pricing-id", name: "Page_Pricing", path: "Pages/Page_Pricing" },
+      { id: "sections-root", name: "Sections", path: "Sections" },
+      { id: "section-general-id", name: "Section_Gerneral", path: "Sections/Section_Gerneral" },
+    ]);
+  });
+
   it("returns playwright runtime health", async () => {
     playwrightRuntimeState = {
       healthy: false,
@@ -611,33 +700,7 @@ describe("server api", () => {
   });
 
   it("creates a job and returns detail", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.endsWith("/api/folder/list")) {
-        return new Response(
-          JSON.stringify({
-            status: "success",
-            data: [
-              {
-                id: "pages-root",
-                name: "Pages",
-                children: [
-                  {
-                    id: "JZR6J2FS0KW4W",
-                    name: "Page_Home",
-                  },
-                ],
-              },
-            ],
-          }),
-          {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      }
-      throw new Error(`Unexpected fetch: ${url}`);
-    });
+    mockEagleFolderList();
 
     const createResponse = await app.inject({
       method: "POST",
@@ -676,6 +739,14 @@ describe("server api", () => {
     const detailData = detailResponse.json() as {
       assets: Array<{
         previewUrl: string;
+        thumbnailUrl: string;
+        thumbnailWidth: number;
+        thumbnailHeight: number;
+        resolvedEagleFolderId: string | null;
+        resolvedEagleFolderPath: string | null;
+        targetEagleFolderId: string | null;
+        targetEagleFolderPath: string | null;
+        folderSelectionSource: string;
         eagleFolderId: string | null;
         eagleFolderPath: string | null;
         pageTitle?: string;
@@ -691,12 +762,82 @@ describe("server api", () => {
     };
     expect(detailData.assets.length).toBeGreaterThan(0);
     expect(detailData.assets[0].previewUrl).toContain("/api/assets/");
+    expect(detailData.assets[0].thumbnailUrl).toContain("/api/assets/");
+    expect(detailData.assets[0].thumbnailWidth).toBe(360);
+    expect(detailData.assets[0].thumbnailHeight).toBeGreaterThan(0);
+    expect(detailData.assets[0].resolvedEagleFolderId).toBe("JZR6J2FS0KW4W");
+    expect(detailData.assets[0].resolvedEagleFolderPath).toBe("Pages/Page_Home");
+    expect(detailData.assets[0].targetEagleFolderId).toBe("JZR6J2FS0KW4W");
+    expect(detailData.assets[0].targetEagleFolderPath).toBe("Pages/Page_Home");
+    expect(detailData.assets[0].folderSelectionSource).toBe("auto");
     expect(detailData.assets[0].eagleFolderId).toBe("JZR6J2FS0KW4W");
     expect(detailData.assets[0].eagleFolderPath).toBe("Pages/Page_Home");
     expect(detailData.assets[0].selectedForImport).toBe(true);
     expect(detailData.assets[0].importStatus).toBe("pending_confirmation");
     expect(detailData.logs.length).toBeGreaterThan(0);
     expect(detailData.manifest.sectionDebug?.rawCandidates.length).toBe(1);
+
+    const thumbnailResponse = await app.inject({
+      method: "GET",
+      url: detailData.assets[0].thumbnailUrl,
+    });
+    expect(thumbnailResponse.statusCode).toBe(200);
+    expect(thumbnailResponse.headers["content-type"]).toContain("image/jpeg");
+    expect(Buffer.byteLength(thumbnailResponse.body)).toBeGreaterThan(0);
+  });
+
+  it("stores a manual Eagle folder override for a pending asset", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and capture",
+      },
+    });
+    const jobId = (createResponse.json() as { jobId: string }).jobId;
+    await waitForTerminalStatus(app, jobId);
+
+    const detailBefore = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const detailBeforeData = detailBefore.json() as {
+      assets: Array<{ id: number }>;
+    };
+    const assetId = detailBeforeData.assets[0]?.id;
+    if (!assetId) {
+      throw new Error("Expected seeded asset");
+    }
+
+    mockEagleFolderList();
+    const updateResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/jobs/${jobId}/assets/${assetId}/folder`,
+      payload: {
+        targetEagleFolderId: "page-pricing-id",
+      },
+    });
+    expect(updateResponse.statusCode).toBe(200);
+
+    mockEagleFolderList();
+    const detailAfter = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const detailAfterData = detailAfter.json() as {
+      assets: Array<{
+        folderOverrideId?: string | null;
+        resolvedEagleFolderPath: string | null;
+        targetEagleFolderId: string | null;
+        targetEagleFolderPath: string | null;
+        folderSelectionSource: string;
+      }>;
+    };
+    expect(detailAfterData.assets[0].folderOverrideId).toBe("page-pricing-id");
+    expect(detailAfterData.assets[0].resolvedEagleFolderPath).toBe("Pages/Page_Home");
+    expect(detailAfterData.assets[0].targetEagleFolderId).toBe("page-pricing-id");
+    expect(detailAfterData.assets[0].targetEagleFolderPath).toBe("Pages/Page_Pricing");
+    expect(detailAfterData.assets[0].folderSelectionSource).toBe("manual");
   });
 
   it("keeps the parsed URL visible in job list when capture fails before assets are saved", async () => {
@@ -1069,6 +1210,108 @@ describe("server api", () => {
     });
   });
 
+  it("auto-archives finished jobs older than a week on server startup", async () => {
+    const isolatedTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-api-auto-archive-"));
+    const isolatedDbPath = path.join(isolatedTmpDir, "jobs.db");
+    const isolatedRepo = new JobsRepository(isolatedDbPath);
+    const isolatedQueue = new JobQueue();
+
+    const oldJobId = "old-finished-job";
+    const recentJobId = "recent-finished-job";
+
+    isolatedRepo.createJob({
+      id: oldJobId,
+      instruction: "old job",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir: path.join(isolatedTmpDir, oldJobId),
+      },
+    });
+    isolatedRepo.setJobResult({
+      jobId: oldJobId,
+      status: "success",
+      taskJson: JSON.stringify({ url: "https://example.com/old" }),
+    });
+
+    isolatedRepo.createJob({
+      id: recentJobId,
+      instruction: "recent job",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir: path.join(isolatedTmpDir, recentJobId),
+      },
+    });
+    isolatedRepo.setJobResult({
+      jobId: recentJobId,
+      status: "success",
+      taskJson: JSON.stringify({ url: "https://example.com/recent" }),
+    });
+
+    const rawDb = new Database(isolatedDbPath);
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run("2026-03-20T00:00:00.000Z", oldJobId);
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run("2026-03-31T00:00:00.000Z", recentJobId);
+    rawDb.close();
+
+    const isolatedApp = await buildServer({
+      repo: isolatedRepo,
+      queue: isolatedQueue,
+      webDistDir: path.join(isolatedTmpDir, "no-ui"),
+    });
+    await isolatedApp.ready();
+
+    try {
+      const defaultListResponse = await isolatedApp.inject({
+        method: "GET",
+        url: "/api/jobs?page=1&pageSize=20",
+      });
+      expect(defaultListResponse.statusCode).toBe(200);
+      const defaultListData = defaultListResponse.json() as { items: Array<{ id: string }> };
+      expect(defaultListData.items.some((job) => job.id === oldJobId)).toBe(false);
+      expect(defaultListData.items.some((job) => job.id === recentJobId)).toBe(true);
+
+      const archivedListResponse = await isolatedApp.inject({
+        method: "GET",
+        url: "/api/jobs?page=1&pageSize=20&archivedOnly=true",
+      });
+      expect(archivedListResponse.statusCode).toBe(200);
+      const archivedListData = archivedListResponse.json() as {
+        items: Array<{ id: string; archivedAt: string | null }>;
+      };
+      expect(archivedListData.items.find((job) => job.id === oldJobId)?.archivedAt).toBeTruthy();
+      expect(archivedListData.items.some((job) => job.id === recentJobId)).toBe(false);
+
+      const unarchiveResponse = await isolatedApp.inject({
+        method: "POST",
+        url: `/api/jobs/${oldJobId}/archive`,
+        payload: {
+          archived: false,
+        },
+      });
+      expect(unarchiveResponse.statusCode).toBe(200);
+
+      const listAfterUnarchive = await isolatedApp.inject({
+        method: "GET",
+        url: "/api/jobs?page=1&pageSize=20",
+      });
+      const listAfterUnarchiveData = listAfterUnarchive.json() as { items: Array<{ id: string }> };
+      expect(listAfterUnarchiveData.items.some((job) => job.id === oldJobId)).toBe(true);
+    } finally {
+      await isolatedApp.close();
+      isolatedRepo.close();
+      await fs.rm(isolatedTmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects retry-route while the core-routes job is still running", async () => {
     const seeded = await createManualCoreRoutesJob(repo, tmpDir, {
       id: "manual-running-job",
@@ -1243,7 +1486,7 @@ describe("server api", () => {
     expect(route?.error).toBe("Cancelled by user");
   });
 
-  it("saves full asset selection and updates job summary counts", async () => {
+  it("saves full asset selection and treats fully unselected pending assets as non-blocking", async () => {
     const createResponse = await app.inject({
       method: "POST",
       url: "/api/jobs",
@@ -1281,7 +1524,7 @@ describe("server api", () => {
       job: { status: string };
       assets: Array<{ selectedForImport: boolean; importStatus: string }>;
     };
-    expect(detailAfterData.job.status).toBe("awaiting_confirmation");
+    expect(detailAfterData.job.status).toBe("failed");
     expect(detailAfterData.assets[0].selectedForImport).toBe(false);
     expect(detailAfterData.assets[0].importStatus).toBe("pending_confirmation");
 
@@ -1293,7 +1536,114 @@ describe("server api", () => {
       items: Array<{ id: string; pendingConfirmationCount: number }>;
     };
     const updatedJob = listAfterData.items.find((job) => job.id === jobId);
-    expect(updatedJob?.pendingConfirmationCount).toBe(1);
+    expect(updatedJob?.pendingConfirmationCount).toBe(0);
+  });
+
+  it("blocks selected import when a selected asset has no existing Eagle folder target", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and capture",
+      },
+    });
+    const jobId = (createResponse.json() as { jobId: string }).jobId;
+    await waitForTerminalStatus(app, jobId);
+
+    mockEagleFolderList([
+      {
+        id: "sections-root",
+        name: "Sections",
+        children: [{ id: "section-general-id", name: "Section_Gerneral" }],
+      },
+    ]);
+
+    const importResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/import-selected`,
+    });
+
+    expect(importResponse.statusCode).toBe(400);
+    expect(importResponse.json()).toMatchObject({
+      error: "Selected pending assets must use an existing Eagle folder before import",
+    });
+  });
+
+  it("treats importing only part of the assets as partial success", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and capture",
+      },
+    });
+    const jobId = (createResponse.json() as { jobId: string }).jobId;
+    await waitForTerminalStatus(app, jobId);
+
+    const job = repo.getJob(jobId);
+    if (!job?.manifestPath || !job.outputDir) {
+      throw new Error("Expected manifest path for seeded job");
+    }
+
+    const manifest = JSON.parse(await fs.readFile(job.manifestPath, "utf8")) as RunManifest;
+    const secondaryImagePath = path.join(job.outputDir, "secondary.jpg");
+    await writeTestJpeg(secondaryImagePath, 1280, 960);
+    const expandedManifest: RunManifest = {
+      ...manifest,
+      assets: [
+        ...manifest.assets,
+        {
+          kind: "fullPage",
+          label: "full_page",
+          filePath: secondaryImagePath,
+          fileName: "secondary.jpg",
+          sourceUrl: "https://example.com/pricing",
+          quality: 92,
+          dpr: 2,
+          capturedAt: new Date().toISOString(),
+          import: createPendingImportResult(),
+        },
+      ],
+    };
+    await fs.writeFile(job.manifestPath, JSON.stringify(expandedManifest, null, 2), "utf8");
+    manifestMap.set(job.manifestPath, expandedManifest);
+    repo.replaceAssets(jobId, expandedManifest);
+    repo.setJobResult({
+      jobId,
+      status: "awaiting_confirmation",
+      taskJson: JSON.stringify(expandedManifest.task),
+      manifestPath: job.manifestPath,
+      outputDir: expandedManifest.outputDir,
+      error: null,
+    });
+
+    const detailBefore = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const detailBeforeData = detailBefore.json() as {
+      assets: Array<{ id: number }>;
+    };
+    expect(detailBeforeData.assets).toHaveLength(2);
+
+    const selectionResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/jobs/${jobId}/assets/selection`,
+      payload: {
+        selectedAssetIds: [detailBeforeData.assets[0].id],
+      },
+    });
+    expect(selectionResponse.statusCode).toBe(200);
+
+    mockEagleFolderList();
+    const importResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/import-selected`,
+    });
+    expect(importResponse.statusCode).toBe(202);
+
+    const finalStatus = await waitForNextTerminalStatus(app, jobId, "awaiting_confirmation");
+    expect(finalStatus).toBe("partial_success");
   });
 
   it("imports only selected pending assets", async () => {
@@ -1306,6 +1656,7 @@ describe("server api", () => {
     });
     const jobId = (createResponse.json() as { jobId: string }).jobId;
     await waitForTerminalStatus(app, jobId);
+    mockEagleFolderList();
 
     const importResponse = await app.inject({
       method: "POST",
@@ -1367,6 +1718,7 @@ describe("server api", () => {
       outputDir: failedManifest.outputDir,
       error: "Some assets still require attention",
     });
+    mockEagleFolderList();
 
     const retryResponse = await app.inject({
       method: "POST",

@@ -31,6 +31,11 @@ interface ListJobsParams {
   pageSize?: number;
 }
 
+interface ArchiveFinishedJobsParams {
+  cutoffIso: string;
+  statuses: JobStatus[];
+}
+
 interface JobRow {
   id: string;
   instruction: string;
@@ -71,6 +76,7 @@ interface AssetRow {
   import_ok: number;
   import_error: string | null;
   eagle_id: string | null;
+  folder_override_id: string | null;
 }
 
 interface JobLogRow {
@@ -139,6 +145,7 @@ function toAssetRecord(row: AssetRow): AssetRecord {
     importOk: row.import_status === "imported",
     importError: row.import_error,
     eagleId: row.eagle_id,
+    folderOverrideId: row.folder_override_id,
   };
 }
 
@@ -207,6 +214,10 @@ export class JobsRepository {
     this.db.close();
   }
 
+  private touchJob(jobId: string, now = new Date().toISOString()): void {
+    this.db.prepare("UPDATE jobs SET updated_at = @now WHERE id = @jobId").run({ jobId, now });
+  }
+
   private createSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS jobs (
@@ -242,6 +253,7 @@ export class JobsRepository {
         import_ok INTEGER NOT NULL DEFAULT 0,
         import_error TEXT,
         eagle_id TEXT,
+        folder_override_id TEXT,
         FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
       );
 
@@ -301,6 +313,9 @@ export class JobsRepository {
       this.db.exec(
         "ALTER TABLE assets ADD COLUMN import_status TEXT NOT NULL DEFAULT 'pending_confirmation'",
       );
+    }
+    if (!columnNames.has("folder_override_id")) {
+      this.db.exec("ALTER TABLE assets ADD COLUMN folder_override_id TEXT");
     }
 
     this.db.exec(`
@@ -417,6 +432,53 @@ export class JobsRepository {
       });
   }
 
+  archiveFinishedJobsBefore(params: ArchiveFinishedJobsParams): { jobIds: string[]; archivedAt: string | null } {
+    if (params.statuses.length === 0) {
+      return { jobIds: [], archivedAt: null };
+    }
+
+    const placeholders = params.statuses.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `
+      SELECT id
+      FROM jobs
+      WHERE archived_at IS NULL
+        AND finished_at IS NOT NULL
+        AND finished_at <= ?
+        AND status IN (${placeholders})
+    `,
+      )
+      .all(params.cutoffIso, ...params.statuses) as Array<{ id: string }>;
+
+    const jobIds = rows.map((row) => row.id);
+    if (jobIds.length === 0) {
+      return { jobIds: [], archivedAt: null };
+    }
+
+    const archivedAt = new Date().toISOString();
+    const update = this.db.prepare(
+      `
+      UPDATE jobs
+      SET archived_at = @archivedAt,
+          updated_at = @updatedAt
+      WHERE id = @jobId
+    `,
+    );
+    const tx = this.db.transaction((ids: string[], nextArchivedAt: string) => {
+      for (const jobId of ids) {
+        update.run({
+          jobId,
+          archivedAt: nextArchivedAt,
+          updatedAt: nextArchivedAt,
+        });
+      }
+    });
+    tx(jobIds, archivedAt);
+
+    return { jobIds, archivedAt };
+  }
+
   addLog(jobId: string, level: "info" | "warn" | "error", message: string): JobLogRecord {
     const ts = new Date().toISOString();
     const result = this.db
@@ -427,6 +489,7 @@ export class JobsRepository {
     `,
       )
       .run({ jobId, level, message, ts });
+    this.touchJob(jobId, ts);
 
     return {
       id: Number(result.lastInsertRowid),
@@ -462,6 +525,7 @@ export class JobsRepository {
       }
     });
     tx(jobId, routes);
+    this.touchJob(jobId, now);
   }
 
   updateRouteTargetStatus(params: {
@@ -501,6 +565,7 @@ export class JobsRepository {
         finishedAt: params.finishedAt ?? null,
         now,
       });
+    this.touchJob(params.jobId, now);
   }
 
   updateRouteTargetById(params: {
@@ -538,9 +603,14 @@ export class JobsRepository {
         finishedAt: params.finishedAt ?? null,
         now,
       });
+    const route = this.getRouteTargetById(params.id);
+    if (route) {
+      this.touchJob(route.jobId, now);
+    }
   }
 
   replaceAssets(jobId: string, manifest: RunManifest): void {
+    const now = new Date().toISOString();
     const tx = this.db.transaction((id: string, currentManifest: RunManifest) => {
       const existingRows = this.db
         .prepare("SELECT * FROM assets WHERE job_id = ? ORDER BY id ASC")
@@ -568,7 +638,8 @@ export class JobsRepository {
             import_status = @importStatus,
             import_ok = @importOk,
             import_error = @importError,
-            eagle_id = @eagleId
+            eagle_id = @eagleId,
+            folder_override_id = @folderOverrideId
         WHERE id = @id
       `);
       const insert = this.db.prepare(`
@@ -587,7 +658,8 @@ export class JobsRepository {
           import_status,
           import_ok,
           import_error,
-          eagle_id
+          eagle_id,
+          folder_override_id
         ) VALUES (
           @jobId,
           @kind,
@@ -603,7 +675,8 @@ export class JobsRepository {
           @importStatus,
           @importOk,
           @importError,
-          @eagleId
+          @eagleId,
+          @folderOverrideId
         )
       `);
       const seenIds = new Set<number>();
@@ -625,6 +698,7 @@ export class JobsRepository {
           importOk: importState.status === "imported" ? 1 : 0,
           importError: importState.error ?? null,
           eagleId: importState.eagleId ?? null,
+          folderOverrideId: asset.folderOverrideId ?? null,
         };
         const fingerprint = buildManifestAssetFingerprint(asset);
         const matched = existingByFingerprint.get(fingerprint)?.shift();
@@ -650,6 +724,7 @@ export class JobsRepository {
       }
     });
     tx(jobId, manifest);
+    this.touchJob(jobId, now);
   }
 
   getAssets(jobId: string): AssetRecord[] {
@@ -721,7 +796,7 @@ export class JobsRepository {
       SELECT
         j.*,
         COUNT(a.id) AS asset_count,
-        SUM(CASE WHEN a.import_status = 'pending_confirmation' THEN 1 ELSE 0 END) AS pending_confirmation_count,
+        SUM(CASE WHEN a.import_status = 'pending_confirmation' AND a.selected_for_import = 1 THEN 1 ELSE 0 END) AS pending_confirmation_count,
         SUM(CASE WHEN a.import_status = 'imported' THEN 1 ELSE 0 END) AS import_success_count,
         SUM(CASE WHEN a.import_status = 'failed' THEN 1 ELSE 0 END) AS import_failed_count
       FROM jobs j

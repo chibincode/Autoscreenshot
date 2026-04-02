@@ -204,19 +204,23 @@ export function deriveJobStatusFromImportSummary(
     imported: number;
     failed: number;
     pendingConfirmation: number;
+    selectedPending: number;
   },
 ): JobStatus {
   if (summary.total === 0) {
     return "failed";
   }
-  if (summary.failed > 0) {
-    return "partial_success";
+  if (summary.imported === summary.total) {
+    return "success";
   }
-  if (summary.pendingConfirmation > 0) {
+  if (summary.selectedPending > 0) {
     return "awaiting_confirmation";
   }
   if (summary.imported > 0) {
-    return "success";
+    return "partial_success";
+  }
+  if (summary.failed > 0) {
+    return "failed";
   }
   return "failed";
 }

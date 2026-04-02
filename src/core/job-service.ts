@@ -105,6 +105,43 @@ function buildAssetTags(): string[] {
   return ["imported by Autoscreenshot"];
 }
 
+function resolveImportFolderId(
+  asset: RunManifest["assets"][number],
+  rulesState: Awaited<ReturnType<typeof loadEagleFolderRules>>,
+  folderIndex: ReturnType<typeof buildFolderIndex>,
+): {
+  folderId?: string;
+  resolvedBy: string;
+  reason: string;
+  fullPageType?: FullPageType;
+} {
+  let fullPageType: FullPageType | undefined;
+  const autoResolveResult =
+    asset.kind === "section"
+      ? resolveSectionFolder(asset.sectionType, rulesState.rules, folderIndex)
+      : (() => {
+          const classification = classifyFullPageType(asset.sourceUrl, rulesState.rules);
+          fullPageType = classification.type;
+          return resolveFullPageFolder(classification.type, rulesState.rules, folderIndex);
+        })();
+
+  if (asset.folderOverrideId && folderIndex.byId.has(asset.folderOverrideId)) {
+    return {
+      folderId: asset.folderOverrideId,
+      resolvedBy: "manual_override",
+      reason: "mapped",
+      fullPageType,
+    };
+  }
+
+  return {
+    folderId: autoResolveResult.folderId,
+    resolvedBy: autoResolveResult.resolvedBy,
+    reason: autoResolveResult.reason,
+    fullPageType,
+  };
+}
+
 export async function importManifestAssets(
   manifest: RunManifest,
   manifestPath: string,
@@ -150,7 +187,7 @@ export async function importManifestAssets(
     emit(
       log,
       "warn",
-      `Unable to read Eagle folders, falling back to root import: ${
+      `Unable to read Eagle folders, import folder resolution may be incomplete: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
@@ -163,15 +200,7 @@ export async function importManifestAssets(
       continue;
     }
 
-    let fullPageType: FullPageType | undefined;
-    const resolveResult =
-      asset.kind === "section"
-        ? resolveSectionFolder(asset.sectionType, rulesState.rules, folderIndex)
-        : (() => {
-            const classification = classifyFullPageType(asset.sourceUrl, rulesState.rules);
-            fullPageType = classification.type;
-            return resolveFullPageFolder(classification.type, rulesState.rules, folderIndex);
-          })();
+    const resolveResult = resolveImportFolderId(asset, rulesState, folderIndex);
 
     emit(
       log,
@@ -181,7 +210,7 @@ export async function importManifestAssets(
         `asset=${asset.fileName}`,
         `asset_kind=${asset.kind}`,
         `section_type=${asset.sectionType ?? "none"}`,
-        `fullpage_type=${fullPageType ?? "none"}`,
+        `fullpage_type=${resolveResult.fullPageType ?? "none"}`,
         `resolved_by=${resolveResult.resolvedBy}`,
         `folder_id=${resolveResult.folderId ?? "root"}`,
         `reason=${resolveResult.reason}`,
