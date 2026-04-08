@@ -166,7 +166,10 @@ export interface CaptureRunResult {
   scrollSceneDebug?: ScrollSceneReplacementDebug[];
 }
 
-export type ScrollSceneLayoutMode = "sticky_only_unfold" | "split_content_preserve";
+export type ScrollSceneLayoutMode =
+  | "sticky_only_unfold"
+  | "split_content_preserve"
+  | "split_content_unfold";
 
 export interface ScrollSceneReplacementDebug {
   sceneId: string;

@@ -83,7 +83,20 @@
     },
     "help": {
       "folderId": "K4VENZVJKVIHP",
-      "pathRules": ["/help"]
+      "pathRules": [
+        "/help",
+        "/help/*",
+        "/doc",
+        "/doc/*",
+        "/docs",
+        "/docs/*",
+        "/documentation",
+        "/documentation/*",
+        "/guides",
+        "/guides/*",
+        "/api",
+        "/api/*"
+      ]
     },
     "login": {
       "folderId": "JZR6M1QFMZYMN",

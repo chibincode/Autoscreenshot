@@ -30,6 +30,23 @@ const rules = normalizeEagleFolderRules({
     },
     blog_list: { folderId: "blog-list-id", pathRules: ["/blog", "/blog/page/*", "/blog/tag/*"] },
     blog_detail: { folderId: "blog-detail-id", pathRules: ["/blog/:slug"] },
+    help: {
+      folderId: "page-document-id",
+      pathRules: [
+        "/help",
+        "/help/*",
+        "/doc",
+        "/doc/*",
+        "/docs",
+        "/docs/*",
+        "/documentation",
+        "/documentation/*",
+        "/guides",
+        "/guides/*",
+        "/api",
+        "/api/*",
+      ],
+    },
   },
 });
 
@@ -88,8 +105,20 @@ describe("classifyFullPageType", () => {
     );
   });
 
+  it("classifies docs, guides, and api routes as help/documentation pages", () => {
+    expect(classifyFullPageType("https://example.com/docs/getting-started", rules).type).toBe(
+      "help",
+    );
+    expect(classifyFullPageType("https://example.com/documentation/install", rules).type).toBe(
+      "help",
+    );
+    expect(classifyFullPageType("https://example.com/api/reference/auth", rules).type).toBe(
+      "help",
+    );
+  });
+
   it("returns unmatched when no rule matches", () => {
-    const result = classifyFullPageType("https://example.com/docs/getting-started", rules);
+    const result = classifyFullPageType("https://example.com/platform/edge-ai", rules);
     expect(result.type).toBe("unmatched");
   });
 });

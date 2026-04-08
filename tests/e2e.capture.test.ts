@@ -598,6 +598,196 @@ function splitScrollScenePageTemplate(): string {
   `;
 }
 
+function splitScrollSceneUnfoldPageTemplate(): string {
+  const states = [
+    { label: "Retargeting", frame: "#b91c1c", glow: "rgba(248, 113, 113, 0.24)", block: "#ef4444" },
+    { label: "Persona pages", frame: "#d97706", glow: "rgba(251, 191, 36, 0.24)", block: "#f59e0b" },
+    { label: "Discovery", frame: "#15803d", glow: "rgba(74, 222, 128, 0.24)", block: "#22c55e" },
+    { label: "Champion enablement", frame: "#0891b2", glow: "rgba(103, 232, 249, 0.24)", block: "#06b6d4" },
+    { label: "Upsell launch", frame: "#7c3aed", glow: "rgba(196, 181, 253, 0.26)", block: "#6366f1" },
+    { label: "Conference booth", frame: "#111827", glow: "rgba(148, 163, 184, 0.18)", block: "#0f172a" },
+  ];
+  const blocks = states
+    .map(
+      (state, index) => `
+        <article class="split-unfold-content-block" style="background:${state.block}">
+          <small>0${index + 1}</small>
+          <h3>${state.label}</h3>
+          <p>Right-column content should remain visible after the sticky scene is expanded.</p>
+        </article>
+      `,
+    )
+    .join("");
+
+  return `
+    <html>
+      <head>
+        <title>Split Scroll Scene Unfold Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #f8fafc;
+            color: #0f172a;
+          }
+          .intro,
+          .outro {
+            min-height: 680px;
+            padding: 48px;
+            box-sizing: border-box;
+            background: linear-gradient(180deg, #eff6ff 0%, #e2e8f0 100%);
+          }
+          .split-unfold-scene {
+            padding: 0 48px 96px;
+            background: #ffffff;
+          }
+          .split-unfold-container {
+            position: relative;
+            display: flex;
+            width: min(100%, 1360px);
+            min-height: 1800px;
+            margin: 0 auto;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+          }
+          .split-unfold-sidebar {
+            position: sticky;
+            top: 72px;
+            align-self: flex-start;
+            width: 640px;
+            height: 520px;
+            border-right: 1px solid #e2e8f0;
+            overflow: hidden;
+            background: radial-gradient(circle at top left, #dbeafe 0%, #ffffff 58%);
+          }
+          .split-unfold-frame {
+            position: relative;
+            height: 100%;
+            overflow: hidden;
+            background: #1d4ed8;
+            color: white;
+          }
+          .split-unfold-frame-overlay {
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 20% 20%, white, transparent 45%);
+            opacity: 0.18;
+          }
+          .split-unfold-progress {
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 4px;
+            height: 0;
+            background: #38bdf8;
+          }
+          .split-unfold-device {
+            position: absolute;
+            inset: 56px 56px 56px 72px;
+            border-radius: 28px;
+            background: rgba(255, 255, 255, 0.92);
+            box-shadow: 0 28px 60px rgba(15, 23, 42, 0.18);
+            color: #0f172a;
+          }
+          .split-unfold-device small {
+            display: block;
+            padding: 24px 28px 0;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #475569;
+          }
+          .split-unfold-device h2 {
+            margin: 8px 28px 0;
+            font-size: 42px;
+            line-height: 1;
+          }
+          .split-unfold-device p {
+            margin: 18px 28px 0;
+            max-width: 280px;
+            font-size: 17px;
+            line-height: 1.5;
+            color: #334155;
+          }
+          .split-unfold-content {
+            flex: 1;
+            background: #ffffff;
+          }
+          .split-unfold-content-block {
+            height: 300px;
+            padding: 42px 52px;
+            box-sizing: border-box;
+            color: white;
+          }
+          .split-unfold-content-block small {
+            display: inline-block;
+            margin-bottom: 12px;
+            font-size: 15px;
+            letter-spacing: 0.16em;
+            opacity: 0.72;
+          }
+          .split-unfold-content-block h3 {
+            margin: 0;
+            font-size: 46px;
+          }
+          .split-unfold-content-block p {
+            max-width: 380px;
+            font-size: 20px;
+            line-height: 1.5;
+          }
+        </style>
+      </head>
+      <body>
+        <section class="intro">
+          <h1>Interactive demo intro</h1>
+          <p>Used to verify split scroll-scene unfolding with preserved right-column content.</p>
+        </section>
+        <section class="split-unfold-scene">
+          <div class="split-unfold-container" id="split-unfold-scene">
+            <aside class="split-unfold-sidebar">
+              <div class="split-unfold-frame" id="split-unfold-frame">
+                <div class="split-unfold-frame-overlay" id="split-unfold-overlay"></div>
+                <div class="split-unfold-progress" id="split-unfold-progress"></div>
+                <div class="split-unfold-device">
+                  <small>Buyer Journey</small>
+                  <h2 id="split-unfold-title">Retargeting</h2>
+                  <p>Left-side sticky states should expand into multiple frames while the right column stays readable.</p>
+                </div>
+              </div>
+            </aside>
+            <div class="split-unfold-content">${blocks}</div>
+          </div>
+        </section>
+        <section class="outro">
+          <h2>Footer</h2>
+          <p>Closing content after the split unfold scene.</p>
+        </section>
+        <script>
+          const states = ${JSON.stringify(states)};
+          const frame = document.getElementById('split-unfold-frame');
+          const title = document.getElementById('split-unfold-title');
+          const overlay = document.getElementById('split-unfold-overlay');
+          const progress = document.getElementById('split-unfold-progress');
+          const section = document.getElementById('split-unfold-scene');
+          function renderScene() {
+            const start = section.offsetTop;
+            const end = start + section.offsetHeight - window.innerHeight;
+            const progressValue = Math.max(0, Math.min(0.9999, (window.scrollY - start) / Math.max(1, end - start)));
+            const index = Math.min(states.length - 1, Math.floor(progressValue * states.length));
+            const state = states[index];
+            frame.style.background = 'linear-gradient(160deg, ' + state.frame + ' 0%, #020617 100%)';
+            title.textContent = state.label;
+            overlay.style.background = 'radial-gradient(circle at 20% 20%, ' + state.glow + ', transparent 46%)';
+            overlay.style.opacity = String(0.22 + index * 0.08);
+            progress.style.height = String(12 + index * 15) + '%';
+          }
+          window.addEventListener('scroll', renderScene, { passive: true });
+          renderScene();
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     const pathname = req.url ?? "/";
@@ -644,6 +834,11 @@ beforeAll(async () => {
     if (pathname.startsWith("/very-tall")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(veryTallPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/split-scroll-scene-unfold")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(splitScrollSceneUnfoldPageTemplate());
       return;
     }
     if (pathname.startsWith("/split-scroll-scene")) {
@@ -853,6 +1048,81 @@ describe("split scroll scene preservation", () => {
     expect(repeatedStickyCard[0]).toBeGreaterThan(200);
     expect(repeatedStickyCard[1]).toBeGreaterThan(200);
     expect(repeatedStickyCard[2]).toBeGreaterThan(200);
+  }, 20_000);
+});
+
+describe("split scroll scene unfolding", () => {
+  it("expands multi-frame sticky sidebars while preserving the right content column", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-split-scroll-scene-unfold-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/split-scroll-scene-unfold`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    const firstScene = result.scrollSceneDebug?.[0];
+    expect(fullPageAsset).toBeTruthy();
+    expect(firstScene).toBeTruthy();
+    expect(firstScene?.layoutMode).toBe("split_content_unfold");
+    expect(firstScene?.distinctFrameCount).toBeGreaterThanOrEqual(4);
+    expect(firstScene?.replacementHeight).toBeGreaterThan(firstScene?.outerHeight ?? 0);
+    expect(logs.some((message) => message.includes("layoutMode=split_content_unfold"))).toBe(true);
+
+    const rightColumnSamples = await Promise.all(
+      Array.from({ length: firstScene!.sampledFrameCount }, async (_value, index) =>
+        sharp(fullPageAsset!.filePath)
+          .extract({
+            left: 1540,
+            top: Math.round(firstScene!.outerTop + index * firstScene!.stickyHeight + 56),
+            width: 1,
+            height: 1,
+          })
+          .raw()
+          .toBuffer(),
+      ),
+    );
+    const leftColumnSamples = await Promise.all(
+      Array.from({ length: firstScene!.distinctFrameCount }, async (_value, index) =>
+        sharp(fullPageAsset!.filePath)
+          .extract({
+            left: 420,
+            top: Math.round(firstScene!.outerTop + index * firstScene!.stickyHeight + firstScene!.stickyHeight / 2),
+            width: 1,
+            height: 1,
+          })
+          .raw()
+          .toBuffer(),
+      ),
+    );
+
+    expect(new Set(rightColumnSamples.map((sample) => `${sample[0]}-${sample[1]}-${sample[2]}`)).size).toBeGreaterThanOrEqual(
+      Math.min(5, firstScene!.sampledFrameCount),
+    );
+    expect(new Set(leftColumnSamples.map((sample) => `${sample[0]}-${sample[1]}-${sample[2]}`)).size).toBeGreaterThanOrEqual(4);
+
+    const lowerRightSample = await sharp(fullPageAsset!.filePath)
+      .extract({
+        left: 1540,
+        top: Math.round(firstScene!.outerTop + (firstScene!.sampledFrameCount - 1) * firstScene!.stickyHeight + 56),
+        width: 1,
+        height: 1,
+      })
+      .raw()
+      .toBuffer();
+    expect(lowerRightSample[0] + lowerRightSample[1] + lowerRightSample[2]).toBeLessThan(700);
   }, 20_000);
 });
 

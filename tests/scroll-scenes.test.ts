@@ -72,6 +72,20 @@ describe("scroll scene helpers", () => {
     expect(distinct[1].scrollY).toBe(2);
   });
 
+  it("keeps frames distinct when hue changes but brightness stays close", async () => {
+    const red = await solidPng(120, 80, { r: 255, g: 0, b: 0 });
+    const greenWithSimilarLuma = await solidPng(120, 80, { r: 0, g: 130, b: 0 });
+
+    const distinct = await filterDistinctSceneFrames([
+      { buffer: red, scrollY: 0 },
+      { buffer: greenWithSimilarLuma, scrollY: 1 },
+    ]);
+
+    expect(distinct).toHaveLength(2);
+    expect(distinct[0].scrollY).toBe(0);
+    expect(distinct[1].scrollY).toBe(1);
+  });
+
   it("replaces a tall region with a shorter stacked composite", async () => {
     const top = await solidPng(100, 20, { r: 255, g: 0, b: 0 });
     const middle = await solidPng(100, 50, { r: 0, g: 255, b: 0 });

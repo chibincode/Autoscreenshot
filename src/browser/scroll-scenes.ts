@@ -15,11 +15,21 @@ const DIFF_SAMPLE_SIZE = 64;
 const DIFF_THRESHOLD = 0.012;
 const SCROLL_SETTLE_TOLERANCE = 12;
 const SCROLL_SETTLE_MAX_PASSES = 14;
-const SPLIT_CONTENT_MIN_HEIGHT_RATIO = 0.9;
+const SPLIT_CONTENT_MIN_HEIGHT_RATIO = 0.85;
 const SPLIT_CONTENT_MIN_WIDTH_RATIO = 0.4;
+const SPLIT_CONTENT_BLOCK_MIN_HEIGHT = 96;
+const SPLIT_CONTENT_BLOCK_MIN_WIDTH_RATIO = 0.5;
+const SPLIT_CONTENT_MIN_BLOCKS_FOR_UNFOLD = 3;
+const SPLIT_CONTENT_MIN_SAMPLE_COUNT = 4;
+const SPLIT_CONTENT_MAX_SAMPLE_COUNT = 6;
 const DIVIDER_MAX_WIDTH_PX = 12;
 const DIVIDER_MAX_WIDTH_RATIO = 0.05;
 const DIVIDER_MIN_HEIGHT_RATIO = 0.8;
+
+interface ScrollSceneContentBlock {
+  top: number;
+  height: number;
+}
 
 interface ScrollSceneGeometry {
   sceneId: string;
@@ -31,7 +41,8 @@ interface ScrollSceneGeometry {
   stickyTop: number;
   stickyHeight: number;
   stickyWidth: number;
-  layoutMode: ScrollSceneLayoutMode;
+  splitLayout: boolean;
+  contentBlocks: ScrollSceneContentBlock[];
   background: {
     r: number;
     g: number;
@@ -45,6 +56,7 @@ interface SampledSceneFrame {
   scrollY: number;
   clipLeft: number;
   clipWidth: number;
+  contentBlock?: ScrollSceneContentBlock;
 }
 
 type RgbaColor = ScrollSceneGeometry["background"];
@@ -85,12 +97,7 @@ export function sampleSceneScrollPositions(params: {
   frameCount?: number;
 }): number[] {
   const frameCount = params.frameCount ?? FRAME_COUNT;
-  const maxScroll = Math.max(0, params.documentHeight - params.viewportHeight);
-  const start = Math.max(0, Math.min(maxScroll, Math.round(params.outerTop)));
-  const end = Math.max(
-    start,
-    Math.min(maxScroll, Math.round(params.outerTop + params.outerHeight - params.stickyHeight)),
-  );
+  const { start, end } = getSceneScrollRange(params);
   if (frameCount <= 1 || end === start) {
     return [start];
   }
@@ -103,10 +110,100 @@ export function sampleSceneScrollPositions(params: {
   return [...positions].sort((left, right) => left - right);
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getSceneScrollRange(params: {
+  outerTop: number;
+  outerHeight: number;
+  stickyHeight: number;
+  viewportHeight: number;
+  documentHeight: number;
+}): { start: number; end: number } {
+  const maxScroll = Math.max(0, params.documentHeight - params.viewportHeight);
+  const start = Math.max(0, Math.min(maxScroll, Math.round(params.outerTop)));
+  const end = Math.max(
+    start,
+    Math.min(maxScroll, Math.round(params.outerTop + params.outerHeight - params.stickyHeight)),
+  );
+  return { start, end };
+}
+
+function selectEvenlySpacedItems<T>(items: T[], targetCount: number): T[] {
+  if (items.length <= targetCount) {
+    return [...items];
+  }
+
+  const indices = new Set<number>();
+  for (let index = 0; index < targetCount; index += 1) {
+    indices.add(Math.round((index * (items.length - 1)) / (targetCount - 1)));
+  }
+
+  const orderedIndices = [...indices].sort((left, right) => left - right);
+  if (orderedIndices.length === targetCount) {
+    return orderedIndices.map((index) => items[index]);
+  }
+
+  for (let index = 0; index < items.length && orderedIndices.length < targetCount; index += 1) {
+    if (!indices.has(index)) {
+      orderedIndices.push(index);
+      indices.add(index);
+    }
+  }
+
+  orderedIndices.sort((left, right) => left - right);
+  return orderedIndices.slice(0, targetCount).map((index) => items[index]);
+}
+
+function sampleSplitSceneContentBlocks(contentBlocks: ScrollSceneContentBlock[]): ScrollSceneContentBlock[] {
+  if (contentBlocks.length === 0) {
+    return [];
+  }
+
+  const targetCount = Math.min(
+    contentBlocks.length,
+    clampNumber(contentBlocks.length, SPLIT_CONTENT_MIN_SAMPLE_COUNT, SPLIT_CONTENT_MAX_SAMPLE_COUNT),
+  );
+  return selectEvenlySpacedItems(contentBlocks, targetCount);
+}
+
+function sampleSplitSceneScrollTargets(params: {
+  outerTop: number;
+  outerHeight: number;
+  stickyHeight: number;
+  viewportHeight: number;
+  documentHeight: number;
+  contentBlocks: ScrollSceneContentBlock[];
+}): Array<{ scrollY: number; contentBlock: ScrollSceneContentBlock }> {
+  const selectedBlocks = sampleSplitSceneContentBlocks(params.contentBlocks);
+  if (selectedBlocks.length === 0) {
+    return [];
+  }
+
+  const { start, end } = getSceneScrollRange(params);
+  if (start === end) {
+    return [{ scrollY: start, contentBlock: selectedBlocks[0] }];
+  }
+
+  const targets = new Map<number, ScrollSceneContentBlock>();
+  for (const block of selectedBlocks) {
+    const ratio = clampNumber((block.top + block.height / 2) / Math.max(1, params.outerHeight), 0, 1);
+    const scrollY = Math.round(start + (end - start) * ratio);
+    if (!targets.has(scrollY)) {
+      targets.set(scrollY, block);
+    }
+  }
+
+  return [...targets.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([scrollY, contentBlock]) => ({ scrollY, contentBlock }));
+}
+
 async function buildDiffSignature(buffer: Buffer): Promise<Buffer> {
   return sharp(buffer)
     .resize(DIFF_SAMPLE_SIZE, DIFF_SAMPLE_SIZE, { fit: "fill" })
-    .greyscale()
+    .removeAlpha()
     .raw()
     .toBuffer();
 }
@@ -143,6 +240,28 @@ async function estimateFrameBackground(buffer: Buffer): Promise<RgbaColor> {
     b: Math.round(blue / points.length),
     alpha: Math.max(0, Math.min(1, alpha / points.length)),
   };
+}
+
+async function scoreSceneFrameContent(buffer: Buffer): Promise<number> {
+  const { data } = await sharp(buffer)
+    .resize(DIFF_SAMPLE_SIZE, DIFF_SAMPLE_SIZE, { fit: "fill" })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  let activePixels = 0;
+
+  for (let index = 0; index < data.length; index += 3) {
+    const red = data[index] ?? 255;
+    const green = data[index + 1] ?? 255;
+    const blue = data[index + 2] ?? 255;
+    const brightness = (red + green + blue) / 3;
+    const spread = Math.max(red, green, blue) - Math.min(red, green, blue);
+    if (brightness < 242 || spread > 18) {
+      activePixels += 1;
+    }
+  }
+
+  return activePixels / (data.length / 3);
 }
 
 export async function filterDistinctSceneFrames<T extends { buffer: Buffer }>(
@@ -286,6 +405,138 @@ async function buildSplitContentPreserveReplacement(params: {
     .toBuffer();
 }
 
+async function buildSplitContentUnfoldReplacement(params: {
+  baseImage: Buffer;
+  candidate: ScrollSceneGeometry;
+  dpr: number;
+  sampledFrames: SampledSceneFrame[];
+  distinctFrames: SampledSceneFrame[];
+}): Promise<Buffer> {
+  const baseMeta = await sharp(params.baseImage).metadata();
+  if (!baseMeta.width || !baseMeta.height) {
+    throw new Error("Unable to read base image metadata");
+  }
+
+  const bandTop = Math.round(params.candidate.outerTop * params.dpr);
+  const bandHeight = Math.round(params.candidate.outerHeight * params.dpr);
+  if (bandTop < 0 || bandHeight <= 0 || bandTop + bandHeight > baseMeta.height) {
+    throw new Error("Invalid split-content unfold band dimensions");
+  }
+
+  const anchoredFrames = params.sampledFrames.filter(
+    (frame): frame is SampledSceneFrame & { contentBlock: ScrollSceneContentBlock } => Boolean(frame.contentBlock),
+  );
+  const representativeFrames = params.distinctFrames.filter(
+    (frame): frame is SampledSceneFrame & { contentBlock: ScrollSceneContentBlock } => Boolean(frame.contentBlock),
+  );
+  if (anchoredFrames.length < 2 || representativeFrames.length < 2) {
+    throw new Error("Not enough split-content unfold frames");
+  }
+
+  const blockMidpoints = anchoredFrames.map((frame) => frame.contentBlock.top + frame.contentBlock.height / 2);
+  const boundaries = [0];
+  for (let index = 0; index < blockMidpoints.length - 1; index += 1) {
+    boundaries.push(Math.round((blockMidpoints[index] + blockMidpoints[index + 1]) / 2));
+  }
+  boundaries.push(Math.round(params.candidate.outerHeight));
+
+  const stickyHeight = Math.max(1, Math.round(params.candidate.stickyHeight * params.dpr));
+  const background = {
+    r: params.candidate.background.r,
+    g: params.candidate.background.g,
+    b: params.candidate.background.b,
+    alpha: 1,
+  };
+  const representativeScores = await Promise.all(
+    representativeFrames.map(async (frame) => ({
+      frame,
+      score: await scoreSceneFrameContent(frame.buffer),
+    })),
+  );
+  const densestRepresentative = representativeScores.reduce((best, candidateScore) =>
+    candidateScore.score > best.score ? candidateScore : best,
+  );
+  const segments: Buffer[] = [];
+
+  for (let index = 0; index < anchoredFrames.length; index += 1) {
+    const segmentTopCss = clampNumber(Math.round(boundaries[index] ?? 0), 0, Math.round(params.candidate.outerHeight));
+    const segmentBottomCss = clampNumber(
+      Math.round(boundaries[index + 1] ?? params.candidate.outerHeight),
+      segmentTopCss + 1,
+      Math.round(params.candidate.outerHeight),
+    );
+    const rawTop = bandTop + Math.round(segmentTopCss * params.dpr);
+    const rawHeight = Math.max(
+      1,
+      Math.min(baseMeta.height - rawTop, Math.round((segmentBottomCss - segmentTopCss) * params.dpr)),
+    );
+    const segmentHeight = Math.max(rawHeight, stickyHeight);
+    const anchorFrame = anchoredFrames[index];
+    const nearestRepresentative = representativeScores.reduce((best, candidateScore) =>
+      Math.abs(candidateScore.frame.scrollY - anchorFrame.scrollY) < Math.abs(best.frame.scrollY - anchorFrame.scrollY)
+        ? candidateScore
+        : best,
+    );
+    const frame =
+      nearestRepresentative.score >= 0.08 || densestRepresentative.score <= nearestRepresentative.score + 0.04
+        ? nearestRepresentative.frame
+        : densestRepresentative.frame;
+    const stickyLeft = Math.max(0, Math.round(frame.clipLeft * params.dpr));
+    const stickyWidth = Math.max(1, Math.round(params.candidate.stickyWidth * params.dpr));
+
+    const rawSlice = await sharp(params.baseImage)
+      .extract({
+        left: 0,
+        top: rawTop,
+        width: baseMeta.width,
+        height: rawHeight,
+      })
+      .ensureAlpha()
+      .png()
+      .toBuffer();
+    const stickyColumnFill = await createSolidPng(stickyWidth, segmentHeight, background);
+
+    segments.push(
+      await sharp({
+        create: {
+          width: baseMeta.width,
+          height: segmentHeight,
+          channels: 4,
+          background,
+        },
+      })
+        .composite([
+          {
+            input: rawSlice,
+            left: 0,
+            top: 0,
+          },
+          {
+            input: stickyColumnFill,
+            left: stickyLeft,
+            top: 0,
+          },
+          {
+            input: frame.buffer,
+            left: stickyLeft,
+            top: 0,
+          },
+        ])
+        .png()
+        .toBuffer(),
+    );
+  }
+
+  return stackSceneFrames({
+    width: baseMeta.width,
+    frames: segments,
+    gap: 0,
+    canvasWidth: baseMeta.width,
+    frameLeft: 0,
+    background,
+  });
+}
+
 export async function replaceImageRegions(
   baseImage: Buffer,
   replacements: ImageRegionReplacement[],
@@ -381,6 +632,8 @@ export async function detectScrollSceneCandidates(page: Page): Promise<ScrollSce
       minStickyWidth,
       minHeightRatio,
       sceneAttr,
+      splitContentBlockMinHeight,
+      splitContentBlockMinWidthRatio,
       splitContentMinHeightRatio,
       splitContentMinWidthRatio,
       stickyAttr,
@@ -402,7 +655,11 @@ export async function detectScrollSceneCandidates(page: Page): Promise<ScrollSce
         stickyTop: number;
         stickyHeight: number;
         stickyWidth: number;
-        layoutMode: "sticky_only_unfold" | "split_content_preserve";
+        splitLayout: boolean;
+        contentBlocks: Array<{
+          top: number;
+          height: number;
+        }>;
         background: {
           r: number;
           g: number;
@@ -463,13 +720,32 @@ export async function detectScrollSceneCandidates(page: Page): Promise<ScrollSce
             child.height >= outerRect.height * splitContentMinHeightRatio &&
             child.width >= outerRect.width * splitContentMinWidthRatio,
         );
-        const layoutMode =
+        const splitLayout =
           sticky.parentElement === outer &&
           directChildren.length === 2 &&
           stickyChildren.length === 1 &&
-          contentChildren.length === 1
-            ? "split_content_preserve"
-            : "sticky_only_unfold";
+          contentChildren.length === 1;
+        const contentBlocks =
+          splitLayout && contentChildren[0]
+            ? Array.from(contentChildren[0].element.children)
+                .map((child) => {
+                  const childRect = child.getBoundingClientRect();
+                  return {
+                    top: Math.round(childRect.top - outerRect.top),
+                    height: Math.round(childRect.height),
+                    width: childRect.width,
+                  };
+                })
+                .filter(
+                  (child) =>
+                    child.height >= splitContentBlockMinHeight &&
+                    child.width >= contentChildren[0].width * splitContentBlockMinWidthRatio,
+                )
+                .map((child) => ({
+                  top: child.top,
+                  height: child.height,
+                }))
+            : [];
         result.push({
           sceneId,
           outerLeft: outerRect.left + window.scrollX,
@@ -480,7 +756,8 @@ export async function detectScrollSceneCandidates(page: Page): Promise<ScrollSce
           stickyTop: stickyRect.top + window.scrollY,
           stickyHeight: stickyRect.height,
           stickyWidth: stickyRect.width,
-          layoutMode,
+          splitLayout,
+          contentBlocks,
           background: (() => {
             let current: HTMLElement | null = sticky;
             while (current && current !== document.body && current !== document.documentElement) {
@@ -519,6 +796,8 @@ export async function detectScrollSceneCandidates(page: Page): Promise<ScrollSce
       minStickyWidth: MIN_STICKY_WIDTH,
       minHeightRatio: MIN_HEIGHT_RATIO,
       sceneAttr: SCENE_ATTR,
+      splitContentBlockMinHeight: SPLIT_CONTENT_BLOCK_MIN_HEIGHT,
+      splitContentBlockMinWidthRatio: SPLIT_CONTENT_BLOCK_MIN_WIDTH_RATIO,
       splitContentMinHeightRatio: SPLIT_CONTENT_MIN_HEIGHT_RATIO,
       splitContentMinWidthRatio: SPLIT_CONTENT_MIN_WIDTH_RATIO,
       stickyAttr: SCENE_STICKY_ATTR,
@@ -601,17 +880,30 @@ async function captureSceneFrames(params: {
   documentHeight: number;
   viewportHeight: number;
 }): Promise<SampledSceneFrame[]> {
-  const scrollPositions = sampleSceneScrollPositions({
-    outerTop: params.candidate.outerTop,
-    outerHeight: params.candidate.outerHeight,
-    stickyHeight: params.candidate.stickyHeight,
-    viewportHeight: params.viewportHeight,
-    documentHeight: params.documentHeight,
-  });
+  const splitTargets = params.candidate.splitLayout
+    ? sampleSplitSceneScrollTargets({
+        outerTop: params.candidate.outerTop,
+        outerHeight: params.candidate.outerHeight,
+        stickyHeight: params.candidate.stickyHeight,
+        viewportHeight: params.viewportHeight,
+        documentHeight: params.documentHeight,
+        contentBlocks: params.candidate.contentBlocks,
+      })
+    : [];
+  const scrollTargets =
+    splitTargets.length > 0
+      ? splitTargets
+      : sampleSceneScrollPositions({
+          outerTop: params.candidate.outerTop,
+          outerHeight: params.candidate.outerHeight,
+          stickyHeight: params.candidate.stickyHeight,
+          viewportHeight: params.viewportHeight,
+          documentHeight: params.documentHeight,
+        }).map((scrollY) => ({ scrollY, contentBlock: undefined }));
 
   const frames: SampledSceneFrame[] = [];
-  for (const scrollY of scrollPositions) {
-    const settledScrollY = await settleSceneScroll(params.page, scrollY);
+  for (const target of scrollTargets) {
+    const settledScrollY = await settleSceneScroll(params.page, target.scrollY);
 
     const clip = await params.page.evaluate(
       ({ sceneId, stickyAttr }) => {
@@ -656,10 +948,29 @@ async function captureSceneFrames(params: {
       scrollY: settledScrollY,
       clipLeft: clip.x,
       clipWidth: clip.width,
+      contentBlock: target.contentBlock,
     });
   }
 
   return frames;
+}
+
+function resolveSceneLayoutMode(params: {
+  candidate: ScrollSceneGeometry;
+  distinctFrames: SampledSceneFrame[];
+}): ScrollSceneLayoutMode {
+  if (!params.candidate.splitLayout) {
+    return "sticky_only_unfold";
+  }
+
+  if (
+    params.candidate.contentBlocks.length >= SPLIT_CONTENT_MIN_BLOCKS_FOR_UNFOLD &&
+    params.distinctFrames.length >= 2
+  ) {
+    return "split_content_unfold";
+  }
+
+  return "split_content_preserve";
 }
 
 export async function captureScrollSceneReplacements(params: {
@@ -682,7 +993,7 @@ export async function captureScrollSceneReplacements(params: {
   for (const candidate of candidates) {
     params.log?.(
       "info",
-      `scroll_scene_detected id=${candidate.sceneId} layoutMode=${candidate.layoutMode} top=${Math.round(candidate.outerTop)} height=${Math.round(candidate.outerHeight)} stickyHeight=${Math.round(candidate.stickyHeight)}`,
+      `scroll_scene_detected id=${candidate.sceneId} splitLayout=${candidate.splitLayout} contentBlocks=${candidate.contentBlocks.length} top=${Math.round(candidate.outerTop)} height=${Math.round(candidate.outerHeight)} stickyHeight=${Math.round(candidate.stickyHeight)}`,
     );
 
     try {
@@ -694,41 +1005,68 @@ export async function captureScrollSceneReplacements(params: {
       });
 
       const distinctFrames = await filterDistinctSceneFrames(sampledFrames);
+      const layoutMode = resolveSceneLayoutMode({
+        candidate,
+        distinctFrames,
+      });
       if (sampledFrames.length === 0) {
         params.log?.(
           "warn",
-          `scroll_scene_skipped id=${candidate.sceneId} layoutMode=${candidate.layoutMode} reason=missing_sampled_frames sampled=${sampledFrames.length} distinct=${distinctFrames.length}`,
+          `scroll_scene_skipped id=${candidate.sceneId} layoutMode=${layoutMode} reason=missing_sampled_frames sampled=${sampledFrames.length} distinct=${distinctFrames.length}`,
         );
         continue;
       }
 
-      if (candidate.layoutMode === "sticky_only_unfold" && distinctFrames.length < 2) {
+      if (layoutMode === "sticky_only_unfold" && distinctFrames.length < 2) {
         params.log?.(
           "warn",
-          `scroll_scene_skipped id=${candidate.sceneId} layoutMode=${candidate.layoutMode} reason=insufficient_distinct_frames sampled=${sampledFrames.length} distinct=${distinctFrames.length}`,
+          `scroll_scene_skipped id=${candidate.sceneId} layoutMode=${layoutMode} reason=insufficient_distinct_frames sampled=${sampledFrames.length} distinct=${distinctFrames.length}`,
         );
         continue;
       }
 
-      const replacement =
-        candidate.layoutMode === "split_content_preserve"
-          ? await buildSplitContentPreserveReplacement({
+      let effectiveLayoutMode = layoutMode;
+      let replacement: Buffer;
+      if (layoutMode === "split_content_preserve") {
+        replacement = await buildSplitContentPreserveReplacement({
+          baseImage: params.baseImage,
+          candidate,
+          dpr: params.dpr,
+          frame: sampledFrames[0],
+        });
+      } else if (layoutMode === "split_content_unfold") {
+        try {
+          replacement = await buildSplitContentUnfoldReplacement({
+            baseImage: params.baseImage,
+            candidate,
+            dpr: params.dpr,
+            sampledFrames,
+            distinctFrames,
+          });
+        } catch (error) {
+          effectiveLayoutMode = "split_content_preserve";
+          params.log?.(
+            "warn",
+            `scroll_scene_degraded id=${candidate.sceneId} from=split_content_unfold to=split_content_preserve reason=${error instanceof Error ? error.message : String(error)}`,
+          );
+          replacement = await buildSplitContentPreserveReplacement({
               baseImage: params.baseImage,
               candidate,
               dpr: params.dpr,
               frame: sampledFrames[0],
-            })
-          : await (async () => {
-              const background = await estimateFrameBackground(distinctFrames[0].buffer);
-              return stackSceneFrames({
-                width: Math.round((distinctFrames[0]?.clipWidth ?? candidate.stickyWidth) * params.dpr),
-                frames: distinctFrames.map((frame) => frame.buffer),
-                gap: Math.round(FRAME_GAP_CSS * params.dpr),
-                canvasWidth: Math.round(params.pageWidth * params.dpr),
-                frameLeft: Math.round((distinctFrames[0]?.clipLeft ?? candidate.stickyLeft) * params.dpr),
-                background,
-              });
-            })();
+            });
+        }
+      } else {
+        const background = await estimateFrameBackground(distinctFrames[0].buffer);
+        replacement = await stackSceneFrames({
+          width: Math.round((distinctFrames[0]?.clipWidth ?? candidate.stickyWidth) * params.dpr),
+          frames: distinctFrames.map((frame) => frame.buffer),
+          gap: Math.round(FRAME_GAP_CSS * params.dpr),
+          canvasWidth: Math.round(params.pageWidth * params.dpr),
+          frameLeft: Math.round((distinctFrames[0]?.clipLeft ?? candidate.stickyLeft) * params.dpr),
+          background,
+        });
+      }
       const replacementMeta = await sharp(replacement).metadata();
       if (!replacementMeta.height) {
         throw new Error("Unable to read replacement metadata");
@@ -741,7 +1079,7 @@ export async function captureScrollSceneReplacements(params: {
       });
       debug.push({
         sceneId: candidate.sceneId,
-        layoutMode: candidate.layoutMode,
+        layoutMode: effectiveLayoutMode,
         outerTop: Math.round(candidate.outerTop),
         outerHeight: Math.round(candidate.outerHeight),
         stickyHeight: Math.round(candidate.stickyHeight),
@@ -751,12 +1089,12 @@ export async function captureScrollSceneReplacements(params: {
       });
       params.log?.(
         "info",
-        `scroll_scene_replaced id=${candidate.sceneId} layoutMode=${candidate.layoutMode} sampled=${sampledFrames.length} distinct=${distinctFrames.length} originalHeight=${Math.round(candidate.outerHeight)} replacementHeight=${Math.round(replacementMeta.height / params.dpr)}`,
+        `scroll_scene_replaced id=${candidate.sceneId} layoutMode=${effectiveLayoutMode} sampled=${sampledFrames.length} distinct=${distinctFrames.length} originalHeight=${Math.round(candidate.outerHeight)} replacementHeight=${Math.round(replacementMeta.height / params.dpr)}`,
       );
     } catch (error) {
       params.log?.(
         "warn",
-        `scroll_scene_failed id=${candidate.sceneId} layoutMode=${candidate.layoutMode} reason=${error instanceof Error ? error.message : String(error)}`,
+        `scroll_scene_failed id=${candidate.sceneId} reason=${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
