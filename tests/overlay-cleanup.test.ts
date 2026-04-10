@@ -18,6 +18,9 @@ function makeSnapshot(partial: Partial<OverlaySnapshot>): OverlaySnapshot {
     height: 180,
     viewportWidth: 1920,
     viewportHeight: 1080,
+    acceptActionCount: 0,
+    rejectActionCount: 0,
+    closeActionCount: 0,
     ...partial,
   };
 }
@@ -41,6 +44,21 @@ describe("overlay cleanup classification", () => {
       makeSnapshot({
         id: "cookie-banner",
         text: "This site uses cookies to improve your experience",
+      }),
+    );
+
+    expect(result).toEqual({ type: "consent", vendor: "generic" });
+  });
+
+  it("classifies inline consent cards when they expose accept and reject controls", () => {
+    const result = classifyOverlaySnapshot(
+      makeSnapshot({
+        position: "static",
+        width: 420,
+        height: 220,
+        text: "Cookie Settings We use cookies to personalize content and analyze traffic.",
+        acceptActionCount: 1,
+        rejectActionCount: 1,
       }),
     );
 

@@ -8,6 +8,8 @@ const FULL_PAGE_MATCH_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "contact",
   "customers_list",
   "customer_detail",
+  "projects_list",
+  "project_detail",
   "blog_list",
   "blog_detail",
   "news",

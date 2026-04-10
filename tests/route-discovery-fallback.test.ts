@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
   gotoMock,
   evaluateMock,
+  waitForTimeoutMock,
   closePageMock,
   closeContextMock,
   closeBrowserMock,
@@ -15,6 +16,7 @@ const {
   vi.hoisted(() => {
     const gotoMock = vi.fn();
     const evaluateMock = vi.fn();
+    const waitForTimeoutMock = vi.fn();
     const closePageMock = vi.fn();
     const closeContextMock = vi.fn();
     const closeBrowserMock = vi.fn();
@@ -27,6 +29,7 @@ const {
     return {
       gotoMock,
       evaluateMock,
+      waitForTimeoutMock,
       closePageMock,
       closeContextMock,
       closeBrowserMock,
@@ -53,6 +56,7 @@ describe("route discovery navigation fallback", () => {
     const page = {
       goto: gotoMock,
       evaluate: evaluateMock,
+      waitForTimeout: waitForTimeoutMock,
       close: closePageMock,
     };
     const context = {
@@ -72,6 +76,7 @@ describe("route discovery navigation fallback", () => {
     gotoMock
       .mockRejectedValueOnce(new Error('page.goto: Timeout 75000ms exceeded. waiting until "networkidle"'))
       .mockResolvedValueOnce(null);
+    waitForTimeoutMock.mockResolvedValue(undefined);
     requestHeadMock.mockReset();
     requestGetMock.mockReset();
     evaluateMock.mockResolvedValue([
@@ -92,6 +97,89 @@ describe("route discovery navigation fallback", () => {
 
   it("falls back to domcontentloaded when discovery navigation times out on networkidle", async () => {
     const onNavigationFallback = vi.fn();
+    evaluateMock
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/pricing",
+          title: "Pricing",
+          source: "nav",
+          depth: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/pricing",
+          title: "Pricing",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/docs",
+          title: "Docs",
+          source: "nav",
+          depth: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/pricing",
+          title: "Pricing",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/docs",
+          title: "Docs",
+          source: "nav",
+          depth: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/pricing",
+          title: "Pricing",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/docs",
+          title: "Docs",
+          source: "nav",
+          depth: 0,
+        },
+      ]);
 
     const result = await discoverCoreRoutes({
       entryUrl: "https://example.com/",
@@ -111,7 +199,8 @@ describe("route discovery navigation fallback", () => {
         url: "https://example.com/",
       }),
     );
-    expect(result.routes.map((route) => route.path)).toEqual(["/", "/pricing", "/blog/post-1"]);
+    expect(waitForTimeoutMock).toHaveBeenCalledTimes(4);
+    expect(result.routes.map((route) => route.path)).toEqual(["/", "/pricing", "/docs"]);
     expect(requestHeadMock).not.toHaveBeenCalled();
   });
 
@@ -161,5 +250,168 @@ describe("route discovery navigation fallback", () => {
       from: "https://example.io/redirect?n=about-us",
       to: "https://example.com/about-us",
     });
+  });
+
+  it("settles after low initial same-domain count without navigation fallback", async () => {
+    gotoMock.mockReset();
+    gotoMock.mockResolvedValueOnce(null);
+    evaluateMock
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/pricing",
+          title: "Pricing",
+          source: "nav",
+          depth: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/pricing",
+          title: "Pricing",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/about",
+          title: "About",
+          source: "link",
+          depth: 1,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/pricing",
+          title: "Pricing",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/about",
+          title: "About",
+          source: "link",
+          depth: 1,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/pricing",
+          title: "Pricing",
+          source: "nav",
+          depth: 0,
+        },
+        {
+          href: "https://example.com/about",
+          title: "About",
+          source: "link",
+          depth: 1,
+        },
+      ]);
+
+    const result = await discoverCoreRoutes({
+      entryUrl: "https://example.com/",
+      maxRoutes: 5,
+      waitUntil: "networkidle",
+    });
+
+    expect(gotoMock).toHaveBeenCalledTimes(1);
+    expect(waitForTimeoutMock).toHaveBeenCalledTimes(4);
+    expect(result.routes.map((route) => route.path)).toEqual(["/", "/pricing", "/about"]);
+  });
+
+  it("keeps the fast path when the initial snapshot is already rich enough", async () => {
+    gotoMock.mockReset();
+    gotoMock.mockResolvedValueOnce(null);
+    evaluateMock.mockResolvedValueOnce([
+      {
+        href: "https://example.com/pricing",
+        title: "Pricing",
+        source: "nav",
+        depth: 0,
+      },
+      {
+        href: "https://example.com/docs",
+        title: "Docs",
+        source: "nav",
+        depth: 0,
+      },
+      {
+        href: "https://example.com/about",
+        title: "About",
+        source: "link",
+        depth: 1,
+      },
+    ]);
+
+    const result = await discoverCoreRoutes({
+      entryUrl: "https://example.com/",
+      maxRoutes: 5,
+      waitUntil: "networkidle",
+    });
+
+    expect(waitForTimeoutMock).not.toHaveBeenCalled();
+    expect(result.routes.map((route) => route.path)).toEqual(["/", "/pricing", "/docs", "/about"]);
+  });
+
+  it("returns the best snapshot and stops at the bounded settle window when links do not improve", async () => {
+    gotoMock.mockReset();
+    gotoMock.mockResolvedValueOnce(null);
+    evaluateMock
+      .mockResolvedValueOnce([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+      ])
+      .mockResolvedValue([
+        {
+          href: "https://example.com/",
+          title: "Home",
+          source: "nav",
+          depth: 0,
+        },
+      ]);
+
+    const result = await discoverCoreRoutes({
+      entryUrl: "https://example.com/",
+      maxRoutes: 5,
+      waitUntil: "networkidle",
+    });
+
+    expect(waitForTimeoutMock).toHaveBeenCalledTimes(10);
+    expect(result.routes.map((route) => route.path)).toEqual(["/"]);
   });
 });

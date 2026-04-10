@@ -23,6 +23,8 @@ export type FullPageType =
   | "contact"
   | "customers_list"
   | "customer_detail"
+  | "projects_list"
+  | "project_detail"
   | "blog_list"
   | "blog_detail"
   | "news"

@@ -23,6 +23,7 @@ const CORE_ROUTE_TYPE_LIMITS: Partial<Record<Exclude<FullPageType, "unmatched">,
   home: 1,
   blog_detail: 1,
   customer_detail: 1,
+  project_detail: 1,
   product_detail: 1,
   download_detail: 1,
 };
@@ -33,6 +34,8 @@ const COVERAGE_FAMILY_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "pricing",
   "customers_list",
   "customer_detail",
+  "projects_list",
+  "project_detail",
   "integration",
   "help",
   "contact",
@@ -46,6 +49,7 @@ const COVERAGE_FAMILY_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
 ];
 const KNOWN_DETAIL_FAMILIES = new Set<Exclude<FullPageType, "unmatched">>([
   "customer_detail",
+  "project_detail",
   "blog_detail",
   "product_detail",
   "download_detail",
@@ -632,6 +636,13 @@ export async function executeCoreRoutesInstruction(
     },
     onRedirectResolved: (event) => {
       emit(log, "info", `core_routes_redirect_resolved from=${event.from} to=${event.to}`);
+    },
+    onDiscoverySettle: (event) => {
+      emit(
+        log,
+        "info",
+        `core_routes_discovery_settle triggered=${event.triggered} initial=${event.initialCandidateCount} final=${event.finalCandidateCount} polls=${event.polls} actualWaitUntil=${event.actualWaitUntil}`,
+      );
     },
   });
   emit(log, "info", `core_routes_discovered_raw count=${discovery.routes.length}`);

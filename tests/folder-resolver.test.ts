@@ -107,6 +107,36 @@ describe("folder resolver", () => {
     });
   });
 
+  it("routes explicit project page types to their mapped Eagle folders", () => {
+    const rules = normalizeEagleFolderRules({
+      fullPage: {
+        projects_list: {
+          folderId: "project-list-id",
+          pathRules: ["/projects"],
+        },
+        project_detail: {
+          folderId: "project-detail-id",
+          pathRules: ["/projects/:slug"],
+        },
+      },
+    });
+    const folderIndex = buildFolderIndex([
+      { id: "project-list-id", name: "Page_Project list", path: "作品包装/网站/Page_Project list" },
+      { id: "project-detail-id", name: "Page_Projiect Detail", path: "作品包装/网站/Page_Projiect Detail" },
+    ]);
+
+    expect(resolveFullPageFolder("projects_list", rules, folderIndex)).toEqual({
+      folderId: "project-list-id",
+      resolvedBy: "explicit",
+      reason: "mapped",
+    });
+    expect(resolveFullPageFolder("project_detail", rules, folderIndex)).toEqual({
+      folderId: "project-detail-id",
+      resolvedBy: "explicit",
+      reason: "mapped",
+    });
+  });
+
   it("does not send classified sections to general when explicit mapping is broken", () => {
     const rules = normalizeEagleFolderRules({
       sections: {

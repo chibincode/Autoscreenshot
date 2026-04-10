@@ -10,8 +10,17 @@ export interface RankedEagleFolderOption {
   isSuggested: boolean;
 }
 
+const TEXT_ALIASES: Array<[from: RegExp, to: string]> = [
+  [/projiect/g, "project"],
+  [/gerneral/g, "general"],
+];
+
 function normalizeText(value: string | null | undefined): string {
-  return value?.trim().toLocaleLowerCase() ?? "";
+  let normalized = value?.trim().toLocaleLowerCase() ?? "";
+  for (const [pattern, replacement] of TEXT_ALIASES) {
+    normalized = normalized.replace(pattern, replacement);
+  }
+  return normalized;
 }
 
 function fallbackCompactPath(path: string, maxLength: number): string {

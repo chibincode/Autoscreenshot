@@ -429,6 +429,90 @@ function lateOverlayPageTemplate(): string {
   `;
 }
 
+function inlineConsentCardPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Inline Consent Card Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #fffdf7;
+            color: #1f2937;
+          }
+          .hero,
+          .footer {
+            min-height: 1200px;
+            padding: 48px;
+            box-sizing: border-box;
+          }
+          .hero {
+            background: linear-gradient(180deg, #fffdf7 0%, #f6efe4 100%);
+          }
+          .panel {
+            position: relative;
+            min-height: 920px;
+            padding: 56px 48px;
+            box-sizing: border-box;
+            background: #ff8b2b;
+          }
+          .panel-card {
+            position: absolute;
+            left: 50%;
+            top: 170px;
+            transform: translateX(-50%);
+            width: 420px;
+            padding: 24px;
+            border-radius: 18px;
+            background: #fffefb;
+            color: #2c241e;
+            box-shadow: 0 24px 60px rgba(44, 36, 30, 0.2);
+          }
+          .panel-card__actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 18px;
+          }
+          .panel-card button {
+            flex: 1;
+            border: 0;
+            border-radius: 12px;
+            padding: 12px 16px;
+            background: #102322;
+            color: #fffefb;
+          }
+          .footer {
+            background: linear-gradient(180deg, #102322 0%, #081312 100%);
+            color: #fffefb;
+          }
+        </style>
+      </head>
+      <body>
+        <section class="hero">
+          <h1>Inline consent fixture</h1>
+          <p>Used to verify consent cards rendered inside page content are removed before full-page capture.</p>
+        </section>
+        <section class="panel">
+          <h2>Mid-page content</h2>
+          <p>This section mimics a content card where a consent panel is rendered after the user scrolls.</p>
+          <div class="panel-card">
+            <strong>Cookie Settings</strong>
+            <p>We use cookies to personalize content, run ads, and analyze traffic.</p>
+            <div class="panel-card__actions">
+              <button type="button" onclick="document.querySelector('.panel-card').remove()">Reject</button>
+              <button type="button" onclick="document.querySelector('.panel-card').remove()">Accept</button>
+            </div>
+          </div>
+        </section>
+        <section class="footer">
+          <h2>Footer</h2>
+        </section>
+      </body>
+    </html>
+  `;
+}
+
 function veryTallPageTemplate(): string {
   const sections = Array.from(
     { length: 18 },
@@ -829,6 +913,11 @@ beforeAll(async () => {
     if (pathname.startsWith("/late-overlay")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(lateOverlayPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/inline-consent-card")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(inlineConsentCardPageTemplate());
       return;
     }
     if (pathname.startsWith("/very-tall")) {
@@ -1264,6 +1353,40 @@ describe("overlay cleanup", () => {
 
     expect(sample[0]).toBeGreaterThan(220);
     expect(logs.some((message) => message.includes("overlay_action action="))).toBe(true);
+  }, 30_000);
+
+  it("removes inline consent cards that become offscreen before the second cleanup pass", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-inline-consent-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/inline-consent-card`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    const sample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 1480, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(sample[0]).toBeGreaterThan(220);
+    expect(sample[1]).toBeGreaterThan(100);
+    expect(sample[2]).toBeLessThan(90);
+    expect(logs.some((message) => message.includes("overlay_detected type=consent vendor=generic"))).toBe(true);
+    expect(logs.some((message) => message.includes("overlay_action action=hide_dom_offscreen"))).toBe(true);
   }, 30_000);
 });
 

@@ -69,6 +69,19 @@
       "folderId": "K0IC2S1PICKEP",
       "pathRules": ["/customers/:slug", "/use-cases/:slug"]
     },
+    "projects_list": {
+      "folderId": "K9SL078IT4CHR",
+      "pathRules": ["/project", "/projects", "/work", "/portfolio"]
+    },
+    "project_detail": {
+      "folderId": "K9MUNN81VU2EM",
+      "pathRules": [
+        "/project/:slug",
+        "/projects/:slug",
+        "/work/:slug",
+        "/portfolio/:slug"
+      ]
+    },
     "blog_list": {
       "folderId": "K09RV5HAHZ1E5",
       "pathRules": ["/blog", "/blog/page/*", "/blog/tag/*"]

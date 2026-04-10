@@ -14,6 +14,7 @@ interface DiscoverCoreRoutesOptions {
   waitUntil: WaitUntilState;
   onNavigationFallback?: (event: NavigationFallbackEvent) => void;
   onRedirectResolved?: (event: { from: string; to: string }) => void;
+  onDiscoverySettle?: (event: DiscoverySettleEvent) => void;
 }
 
 interface RawLink {
@@ -29,12 +30,31 @@ interface NormalizedRouteCandidate {
   hostname: string;
 }
 
+interface RawLinksSnapshot {
+  rawLinks: RawLink[];
+  candidateCount: number;
+  titledCount: number;
+  navCount: number;
+}
+
+export interface DiscoverySettleEvent {
+  triggered: "fallback" | "low_count";
+  initialCandidateCount: number;
+  finalCandidateCount: number;
+  polls: number;
+  actualWaitUntil: WaitUntilState;
+}
+
 const RESOURCE_EXT_RE = /\.(pdf|zip|png|jpe?g|gif|svg|webp|mp4|webm|mov|mp3|wav|json|xml|txt|ico)$/i;
 const EXCLUDED_PREFIXES = ["/search", "/tag", "/tags", "/author", "/category"];
 const EXCLUDED_EXACT = new Set(["/privacy", "/privacy-policy", "/terms", "/terms-of-service", "/cookie", "/cookies"]);
 const PAGE_PAGINATION_RE = /^\/page\/\d+\/?$/i;
 const REDIRECT_RESOLVE_TIMEOUT_MS = 10_000;
 const REDIRECT_RESOLVE_MAX_REDIRECTS = 10;
+const DISCOVERY_SETTLE_TOTAL_MS = 2_500;
+const DISCOVERY_SETTLE_POLL_MS = 250;
+const DISCOVERY_LOW_COUNT_THRESHOLD = 3;
+const DISCOVERY_STABLE_POLLS_TO_STOP = 2;
 
 const PATH_PRIORITY_GROUPS: Array<{ paths: string[]; score: number }> = [
   { paths: ["/"], score: 10_000 },
@@ -308,8 +328,9 @@ async function collectRawLinks(
   entryUrl: string,
   waitUntil: WaitUntilState,
   onNavigationFallback?: (event: NavigationFallbackEvent) => void,
+  onDiscoverySettle?: (event: DiscoverySettleEvent) => void,
 ): Promise<RawLink[]> {
-  await gotoWithFallback({
+  const actualWaitUntil = await gotoWithFallback({
     page,
     url: entryUrl,
     waitUntil,
@@ -318,7 +339,54 @@ async function collectRawLinks(
     fallbackWaitUntil: "domcontentloaded",
     onFallback: onNavigationFallback,
   });
-  const links = await page.evaluate(() => {
+  const entry = new URL(entryUrl);
+  const initialSnapshot = buildRawLinksSnapshot(await readRawLinksSnapshot(page), entry);
+  const shouldSettleBecauseFallback = actualWaitUntil !== waitUntil;
+  const shouldSettleBecauseLowCount = !shouldSettleBecauseFallback &&
+    initialSnapshot.candidateCount < DISCOVERY_LOW_COUNT_THRESHOLD;
+
+  if (!shouldSettleBecauseFallback && !shouldSettleBecauseLowCount) {
+    return initialSnapshot.rawLinks;
+  }
+
+  let bestSnapshot = initialSnapshot;
+  let consecutiveStablePolls = 0;
+  let polls = 0;
+  const maxPolls = Math.ceil(DISCOVERY_SETTLE_TOTAL_MS / DISCOVERY_SETTLE_POLL_MS);
+
+  for (let pollIndex = 0; pollIndex < maxPolls; pollIndex += 1) {
+    await page.waitForTimeout(DISCOVERY_SETTLE_POLL_MS);
+    polls += 1;
+
+    const candidateSnapshot = buildRawLinksSnapshot(await readRawLinksSnapshot(page), entry);
+    if (isBetterSnapshot(candidateSnapshot, bestSnapshot)) {
+      bestSnapshot = candidateSnapshot;
+      consecutiveStablePolls = 0;
+    } else {
+      consecutiveStablePolls += 1;
+    }
+
+    if (
+      bestSnapshot.candidateCount >= DISCOVERY_LOW_COUNT_THRESHOLD &&
+      consecutiveStablePolls >= DISCOVERY_STABLE_POLLS_TO_STOP
+    ) {
+      break;
+    }
+  }
+
+  onDiscoverySettle?.({
+    triggered: shouldSettleBecauseFallback ? "fallback" : "low_count",
+    initialCandidateCount: initialSnapshot.candidateCount,
+    finalCandidateCount: bestSnapshot.candidateCount,
+    polls,
+    actualWaitUntil,
+  });
+
+  return bestSnapshot.rawLinks;
+}
+
+async function readRawLinksSnapshot(page: Page): Promise<RawLink[]> {
+  return page.evaluate(() => {
     const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"));
     return anchors.map((anchor) => {
       const href = anchor.getAttribute("href") ?? "";
@@ -338,7 +406,54 @@ async function collectRawLinks(
       };
     });
   });
-  return links;
+}
+
+function buildRawLinksSnapshot(rawLinks: RawLink[], entry: URL): RawLinksSnapshot {
+  const dedup = new Map<string, { hasTitle: boolean; hasNav: boolean }>();
+
+  for (const rawLink of rawLinks) {
+    const normalized = normalizeSameDomainUrl(rawLink.href, entry);
+    if (!normalized) {
+      continue;
+    }
+
+    const current = dedup.get(normalized.url) ?? { hasTitle: false, hasNav: false };
+    dedup.set(normalized.url, {
+      hasTitle: current.hasTitle || rawLink.title.trim().length > 0,
+      hasNav: current.hasNav || rawLink.source === "nav",
+    });
+  }
+
+  let titledCount = 0;
+  let navCount = 0;
+  for (const value of dedup.values()) {
+    if (value.hasTitle) {
+      titledCount += 1;
+    }
+    if (value.hasNav) {
+      navCount += 1;
+    }
+  }
+
+  return {
+    rawLinks,
+    candidateCount: dedup.size,
+    titledCount,
+    navCount,
+  };
+}
+
+function isBetterSnapshot(candidate: RawLinksSnapshot, currentBest: RawLinksSnapshot): boolean {
+  if (candidate.candidateCount !== currentBest.candidateCount) {
+    return candidate.candidateCount > currentBest.candidateCount;
+  }
+  if (candidate.titledCount !== currentBest.titledCount) {
+    return candidate.titledCount > currentBest.titledCount;
+  }
+  if (candidate.navCount !== currentBest.navCount) {
+    return candidate.navCount > currentBest.navCount;
+  }
+  return false;
 }
 
 export async function discoverCoreRoutes(options: DiscoverCoreRoutesOptions): Promise<RouteDiscoveryResult> {
@@ -354,7 +469,13 @@ export async function discoverCoreRoutes(options: DiscoverCoreRoutesOptions): Pr
   const page = await context.newPage();
 
   try {
-    const rawLinks = await collectRawLinks(page, options.entryUrl, options.waitUntil, options.onNavigationFallback);
+    const rawLinks = await collectRawLinks(
+      page,
+      options.entryUrl,
+      options.waitUntil,
+      options.onNavigationFallback,
+      options.onDiscoverySettle,
+    );
     const redirectCache = new Map<string, Promise<string | null>>();
     const dedup = new Map<string, RouteDiscoveryTarget>();
 
@@ -429,5 +550,7 @@ export function __testables() {
     pathMatches,
     isAllowedBrandHost,
     scoreDiscoveredRoute,
+    buildRawLinksSnapshot,
+    isBetterSnapshot,
   };
 }

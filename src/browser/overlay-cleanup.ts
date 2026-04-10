@@ -23,6 +23,9 @@ export interface OverlaySnapshot {
   height: number;
   viewportWidth: number;
   viewportHeight: number;
+  acceptActionCount: number;
+  rejectActionCount: number;
+  closeActionCount: number;
 }
 
 export interface OverlayClassification {
@@ -58,6 +61,7 @@ const CONSENT_KEYWORDS = [
   "preferences",
   "necessary cookies",
   "cookie policy",
+  "cookie settings",
 ];
 
 const PROMO_KEYWORDS = [
@@ -137,6 +141,9 @@ const OVERLAY_CANDIDATE_SELECTOR = [
   '[class*="trustarc" i]',
 ].join(", ");
 
+const ACTIONABLE_SELECTOR =
+  'button, [role="button"], input[type="button"], input[type="submit"], a';
+
 function normalizeText(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 }
@@ -161,7 +168,14 @@ function isOverlayGeometry(snapshot: OverlaySnapshot): boolean {
     snapshot.role === "dialog";
   const largeEnough = snapshot.width >= 180 && snapshot.height >= 60;
   const visibleInViewport = snapshot.width <= snapshot.viewportWidth * 1.05;
-  return positionAnchored && largeEnough && visibleInViewport;
+  const inlineConsentCard =
+    snapshot.acceptActionCount > 0 &&
+    (snapshot.rejectActionCount > 0 || snapshot.closeActionCount > 0) &&
+    snapshot.width >= 260 &&
+    snapshot.height >= 120 &&
+    snapshot.width <= snapshot.viewportWidth * 0.9 &&
+    snapshot.height <= Math.max(Math.round(snapshot.viewportHeight * 0.75), 260);
+  return (positionAnchored && largeEnough && visibleInViewport) || inlineConsentCard;
 }
 
 export function classifyOverlaySnapshot(snapshot: OverlaySnapshot): OverlayClassification | null {
@@ -186,8 +200,10 @@ export function classifyOverlaySnapshot(snapshot: OverlaySnapshot): OverlayClass
 }
 
 async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
+  // Keep the evaluate callback free of named local helpers.
+  // tsx/esbuild injects __name() for them in dev, which breaks browser-side execution.
   return page.evaluate(
-    ({ attrName, selector }) => {
+    ({ attrName, selector, actionSelector, rejectLabels, closeLabels, acceptWords, consentKeywords, vendorNeedles }) => {
       const nodes = Array.from(document.querySelectorAll<HTMLElement>(selector));
       const seen = new Set<string>();
       const snapshots: OverlaySnapshot[] = [];
@@ -219,6 +235,35 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
         }
         seen.add(overlayId);
 
+        let acceptActionCount = 0;
+        let rejectActionCount = 0;
+        let closeActionCount = 0;
+        const actions = Array.from(node.querySelectorAll<HTMLElement>(actionSelector));
+        for (const action of actions) {
+          const text = [
+            action.textContent,
+            action.getAttribute("aria-label"),
+            action.getAttribute("title"),
+            action.getAttribute("value"),
+          ]
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
+          if (!text) {
+            continue;
+          }
+          if (acceptWords.some((word) => text.includes(word))) {
+            acceptActionCount += 1;
+          }
+          if (rejectLabels.some((word) => text.includes(word))) {
+            rejectActionCount += 1;
+          }
+          if (closeLabels.some((word) => text.includes(word))) {
+            closeActionCount += 1;
+          }
+        }
+
         snapshots.push({
           overlayId,
           tagName: node.tagName,
@@ -232,12 +277,146 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           height: Math.round(rect.height),
           viewportWidth: window.innerWidth,
           viewportHeight: window.innerHeight,
+          acceptActionCount,
+          rejectActionCount,
+          closeActionCount,
         });
+      }
+
+      const actionElements = Array.from(document.querySelectorAll<HTMLElement>(actionSelector));
+      for (const actionElement of actionElements) {
+        const actionText = [
+          actionElement.textContent,
+          actionElement.getAttribute("aria-label"),
+          actionElement.getAttribute("title"),
+          actionElement.getAttribute("value"),
+        ]
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+        if (
+          !actionText ||
+          ![...acceptWords, ...rejectLabels, ...closeLabels].some((word) => actionText.includes(word))
+        ) {
+          continue;
+        }
+
+        let current = actionElement.parentElement;
+        while (current && current !== document.body && current !== document.documentElement) {
+          if (!current.isConnected) {
+            break;
+          }
+
+          const style = window.getComputedStyle(current);
+          const rect = current.getBoundingClientRect();
+          const visible =
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            Number.parseFloat(style.opacity || "1") > 0.02 &&
+            rect.width > 0 &&
+            rect.height > 0;
+          if (!visible) {
+            current = current.parentElement;
+            continue;
+          }
+
+          const text = [
+            current.id,
+            current.className,
+            current.getAttribute("aria-label"),
+            current.textContent,
+          ]
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
+
+          let acceptActionCount = 0;
+          let rejectActionCount = 0;
+          let closeActionCount = 0;
+          const actions = Array.from(current.querySelectorAll<HTMLElement>(actionSelector));
+          for (const action of actions) {
+            const candidateText = [
+              action.textContent,
+              action.getAttribute("aria-label"),
+              action.getAttribute("title"),
+              action.getAttribute("value"),
+            ]
+              .join(" ")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+            if (!candidateText) {
+              continue;
+            }
+            if (acceptWords.some((word) => candidateText.includes(word))) {
+              acceptActionCount += 1;
+            }
+            if (rejectLabels.some((word) => candidateText.includes(word))) {
+              rejectActionCount += 1;
+            }
+            if (closeLabels.some((word) => candidateText.includes(word))) {
+              closeActionCount += 1;
+            }
+          }
+
+          const actionable =
+            acceptActionCount > 0 && (rejectActionCount > 0 || closeActionCount > 0);
+          const likelyConsent =
+            consentKeywords.some((word) => text.includes(word)) ||
+            vendorNeedles.some((word) => text.includes(word));
+          const plausibleCard =
+            rect.width >= 260 &&
+            rect.height >= 120 &&
+            rect.width <= window.innerWidth * 0.9 &&
+            rect.height <= Math.max(window.innerHeight * 0.75, 260);
+
+          if (actionable && likelyConsent && plausibleCard) {
+            let overlayId = current.getAttribute(attrName);
+            if (!overlayId) {
+              overlayId = `overlay-${Math.random().toString(36).slice(2, 10)}`;
+              current.setAttribute(attrName, overlayId);
+            }
+            if (!seen.has(overlayId)) {
+              seen.add(overlayId);
+              snapshots.push({
+                overlayId,
+                tagName: current.tagName,
+                role: current.getAttribute("role"),
+                ariaLabel: current.getAttribute("aria-label"),
+                id: current.id,
+                className: current.className,
+                text: (current.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 400),
+                position: style.position,
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+                viewportWidth: window.innerWidth,
+                viewportHeight: window.innerHeight,
+                acceptActionCount,
+                rejectActionCount,
+                closeActionCount,
+              });
+            }
+            break;
+          }
+
+          current = current.parentElement;
+        }
       }
 
       return snapshots.sort((left, right) => right.width * right.height - left.width * left.height);
     },
-    { attrName: OVERLAY_ATTR, selector: OVERLAY_CANDIDATE_SELECTOR },
+    {
+      attrName: OVERLAY_ATTR,
+      selector: OVERLAY_CANDIDATE_SELECTOR,
+      actionSelector: ACTIONABLE_SELECTOR,
+      rejectLabels: REJECT_LABELS,
+      closeLabels: CLOSE_LABELS,
+      acceptWords: ACCEPT_WORDS,
+      consentKeywords: CONSENT_KEYWORDS,
+      vendorNeedles: KNOWN_VENDOR_MARKERS.flatMap((marker) => marker.needles),
+    },
   );
 }
 
@@ -366,7 +545,15 @@ async function handleOverlayCandidate(
 
   const container = page.locator(`[${OVERLAY_ATTR}="${snapshot.overlayId}"]`).first();
   if (!(await isLocatorVisible(container))) {
-    return false;
+    const hidden = await hideOverlayById(page, snapshot.overlayId);
+    if (hidden) {
+      await page.waitForTimeout(POST_ACTION_SETTLE_MS);
+      log?.(
+        "info",
+        `overlay_action action=hide_dom_offscreen type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
+      );
+    }
+    return hidden;
   }
 
   const clickPlans =

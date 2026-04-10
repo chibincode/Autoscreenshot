@@ -8,6 +8,9 @@ import {
 const folders: EagleFolderOption[] = [
   { id: "pricing", name: "Page_Pricing", path: "Pages/Page_Pricing" },
   { id: "general", name: "Page_General", path: "Pages/Page_General" },
+  { id: "gerneral-legacy", name: "Page_Gerneral", path: "Pages/Page_Gerneral" },
+  { id: "project-list", name: "Page_Project list", path: "Pages/Page_Project list" },
+  { id: "project-detail-legacy", name: "Page_Projiect Detail", path: "Pages/Page_Projiect Detail" },
   { id: "section-c", name: "Section_C", path: "Pages/Page_General/Section_C" },
   { id: "cta", name: "Section_CTA", path: "Sections/Section_CTA" },
 ];
@@ -24,7 +27,10 @@ describe("folder picker helpers", () => {
     expect(result).toEqual([
       "Pages/Page_General/Section_C",
       "Pages/Page_General",
+      "Pages/Page_Gerneral",
       "Pages/Page_Pricing",
+      "Pages/Page_Project list",
+      "Pages/Page_Projiect Detail",
       "Sections/Section_CTA",
     ]);
   });
@@ -44,8 +50,17 @@ describe("folder picker helpers", () => {
 
     expect(result).toEqual([
       "Pages/Page_General",
+      "Pages/Page_Gerneral",
       "Pages/Page_General/Section_C",
     ]);
+  });
+
+  it("matches known historical typos when searching for project and general folders", () => {
+    const projectResult = filterAndRankFolders(folders, "project", null, null).map((item) => item.folder.id);
+    const generalResult = filterAndRankFolders(folders, "general", null, null).map((item) => item.folder.id);
+
+    expect(projectResult).toEqual(["project-list", "project-detail-legacy"]);
+    expect(generalResult).toEqual(["general", "section-c", "gerneral-legacy"]);
   });
 
   it("compacts long folder paths for single-line card display", () => {

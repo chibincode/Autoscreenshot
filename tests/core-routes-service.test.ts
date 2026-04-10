@@ -164,6 +164,13 @@ describe("core-routes-service", () => {
         to: "domcontentloaded",
         errorMessage: "page.goto: Timeout 75000ms exceeded.",
       });
+      options.onDiscoverySettle?.({
+        triggered: "fallback",
+        initialCandidateCount: 1,
+        finalCandidateCount: 4,
+        polls: 4,
+        actualWaitUntil: "domcontentloaded",
+      });
       options.onRedirectResolved?.({
         from: "https://example.io/redirect?n=pricing",
         to: "https://example.com/pricing",
@@ -214,6 +221,9 @@ describe("core-routes-service", () => {
     );
     expect(logs).toContain(
       "core_routes_redirect_resolved from=https://example.io/redirect?n=pricing to=https://example.com/pricing",
+    );
+    expect(logs).toContain(
+      "core_routes_discovery_settle triggered=fallback initial=1 final=4 polls=4 actualWaitUntil=domcontentloaded",
     );
     expect(logs).toContain(
       "route_wait_fallback phase=capture url=https://example.com/ from=networkidle to=domcontentloaded reason=page.goto: Timeout 60000ms exceeded.",
@@ -309,6 +319,27 @@ describe("core-routes-service", () => {
           priorityScore: 950,
         },
         {
+          url: "https://example.com/projects",
+          path: "/projects",
+          source: "nav",
+          depth: 0,
+          priorityScore: 951,
+        },
+        {
+          url: "https://example.com/projects/atlas",
+          path: "/projects/atlas",
+          source: "link",
+          depth: 1,
+          priorityScore: 944,
+        },
+        {
+          url: "https://example.com/work/apollo",
+          path: "/work/apollo",
+          source: "link",
+          depth: 1,
+          priorityScore: 943,
+        },
+        {
           url: "https://example.com/contact-sales",
           path: "/contact-sales",
           source: "nav",
@@ -380,15 +411,19 @@ describe("core-routes-service", () => {
     expect(result.routes.filter((route) => route.path === "/use-cases/robotics")).toHaveLength(1);
     expect(result.routes.filter((route) => route.path === "/customers/polymath")).toHaveLength(0);
     expect(result.routes.filter((route) => route.path === "/customers")).toHaveLength(1);
+    expect(result.routes.filter((route) => route.path === "/projects")).toHaveLength(1);
+    expect(result.routes.filter((route) => route.path === "/projects/atlas")).toHaveLength(1);
+    expect(result.routes.filter((route) => route.path === "/work/apollo")).toHaveLength(0);
     expect(result.routes.filter((route) => route.path === "/contact-sales")).toHaveLength(1);
-    expect(result.routes.filter((route) => route.url === "https://blog.example.com/")).toHaveLength(1);
-    expect(result.routes.filter((route) => route.url === "https://blog.example.com/post-one")).toHaveLength(1);
+    expect(result.routes.filter((route) => route.url === "https://blog.example.com/")).toHaveLength(0);
+    expect(result.routes.filter((route) => route.url === "https://blog.example.com/post-one")).toHaveLength(0);
     expect(result.routes.filter((route) => route.url === "https://blog.example.com/post-two")).toHaveLength(0);
     expect(result.routes.filter((route) => route.path === "/about")).toHaveLength(0);
-    expect(logs).toContain("core_routes_discovered_raw count=14");
+    expect(logs).toContain("core_routes_discovered_raw count=17");
     expect(logs).toContain("core_routes_planned count=9");
     expect(logs).toContain("core_routes_pruned family=blog_detail kept=/post-one pruned=1");
     expect(logs).toContain("core_routes_pruned family=customer_detail kept=/use-cases/robotics pruned=1");
+    expect(logs).toContain("core_routes_pruned family=project_detail kept=/projects/atlas pruned=1");
 
     await fs.rm(tmpDir, { recursive: true, force: true });
   });

@@ -14,6 +14,14 @@ const rules = normalizeEagleFolderRules({
       folderId: "customer-detail-id",
       pathRules: ["/customers/:slug", "/use-cases/:slug"],
     },
+    projects_list: {
+      folderId: "projects-list-id",
+      pathRules: ["/project", "/projects", "/work", "/portfolio"],
+    },
+    project_detail: {
+      folderId: "project-detail-id",
+      pathRules: ["/project/:slug", "/projects/:slug", "/work/:slug", "/portfolio/:slug"],
+    },
     products_list: {
       folderId: "products-list-id",
       pathRules: ["/product", "/products", "/feature", "/features", "/solutions"],
@@ -94,6 +102,23 @@ describe("classifyFullPageType", () => {
     );
     expect(classifyFullPageType("https://example.com/use-cases/robotics", rules).type).toBe(
       "customer_detail",
+    );
+  });
+
+  it("classifies project overview and detail pages", () => {
+    expect(classifyFullPageType("https://example.com/projects", rules).type).toBe("projects_list");
+    expect(classifyFullPageType("https://example.com/project", rules).type).toBe("projects_list");
+    expect(classifyFullPageType("https://example.com/work", rules).type).toBe("projects_list");
+    expect(classifyFullPageType("https://example.com/portfolio", rules).type).toBe("projects_list");
+    expect(classifyFullPageType("https://example.com/projects/atlas", rules).type).toBe(
+      "project_detail",
+    );
+    expect(classifyFullPageType("https://example.com/project/atlas", rules).type).toBe(
+      "project_detail",
+    );
+    expect(classifyFullPageType("https://example.com/work/atlas", rules).type).toBe("project_detail");
+    expect(classifyFullPageType("https://example.com/portfolio/atlas", rules).type).toBe(
+      "project_detail",
     );
   });
 
