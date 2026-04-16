@@ -7,9 +7,10 @@
     "autosnap": "dist/src/cli.js"
   },
   "scripts": {
-    "build": "npm run build:server && npm run build:web",
+    "build": "npm run build:server && npm run build:web && npm run build:extension",
     "build:server": "tsc -p tsconfig.json",
     "build:web": "vite build --config web/vite.config.ts",
+    "build:extension": "vite build --config extension/vite.config.ts",
     "start": "node dist/src/server/index.js",
     "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "tsx watch src/server/index.ts",

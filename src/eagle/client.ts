@@ -16,6 +16,20 @@ interface EagleFolderListData {
   folders?: EagleFolderNode[];
 }
 
+interface EagleItemRecord {
+  id?: string;
+  name?: string;
+  url?: string;
+  mtime?: number;
+}
+
+interface EagleItemSummary {
+  id: string;
+  name: string;
+  url: string;
+  mtime: number | null;
+}
+
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
 }
@@ -161,6 +175,52 @@ export class EagleClient {
         error: String(error instanceof Error ? error.message : error),
       };
     }
+  }
+
+  async listItemsByUrl(url: string, limit = 5): Promise<EagleItemSummary[]> {
+    const endpoint = `/api/item/list?limit=${encodeURIComponent(String(limit))}&url=${encodeURIComponent(url)}`;
+    const response = await this.request<EagleResponse<EagleItemRecord[]>>(endpoint, "GET");
+    if (!response.ok || !response.json) {
+      throw new Error("Eagle API /api/item/list failed");
+    }
+
+    if (response.json.status && response.json.status !== "success") {
+      throw new Error(response.json.message ?? "Eagle item list request failed");
+    }
+
+    const data = Array.isArray(response.json.data) ? response.json.data : [];
+    return data
+      .filter((item): item is Required<Pick<EagleItemRecord, "id" | "name" | "url">> & EagleItemRecord =>
+        typeof item.id === "string" &&
+        typeof item.name === "string" &&
+        typeof item.url === "string",
+      )
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        url: item.url,
+        mtime: typeof item.mtime === "number" ? item.mtime : null,
+      }));
+  }
+
+  async listItemsByUrls(urls: string[], limit = 5): Promise<EagleItemSummary[]> {
+    const uniqueUrls = [...new Set(urls.filter((value) => value.trim().length > 0))];
+    if (uniqueUrls.length === 0) {
+      return [];
+    }
+
+    const merged = new Map<string, EagleItemSummary>();
+    for (const url of uniqueUrls) {
+      const items = await this.listItemsByUrl(url, limit);
+      for (const item of items) {
+        const existing = merged.get(item.id);
+        if (!existing || (item.mtime ?? 0) > (existing.mtime ?? 0)) {
+          merged.set(item.id, item);
+        }
+      }
+    }
+
+    return [...merged.values()].sort((left, right) => (right.mtime ?? 0) - (left.mtime ?? 0));
   }
 
   private withToken<T extends Record<string, unknown>>(payload: T): T & { token?: string } {

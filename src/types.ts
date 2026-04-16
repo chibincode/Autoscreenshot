@@ -27,6 +27,8 @@ export type FullPageType =
   | "project_detail"
   | "blog_list"
   | "blog_detail"
+  | "changelog_list"
+  | "changelog_detail"
   | "news"
   | "help"
   | "login"
@@ -413,6 +415,45 @@ export interface JobSummary {
   importFailedCount: number;
   sourceUrl: string | null;
   archivedAt: string | null;
+}
+
+export interface PluginContextHistoryJob {
+  id: string;
+  status: JobStatus;
+  createdAt: string;
+  mode: JobMode;
+  assetCount: number;
+}
+
+export interface PluginContextEagleItem {
+  id: string;
+  name: string;
+  url: string;
+  mtime: number | null;
+  jobId?: string;
+  assetId?: number;
+  clickable: boolean;
+}
+
+export interface PluginContextResponse {
+  requestUrl: string;
+  normalizedUrl: string;
+  runtime: {
+    serverHealthy: true;
+    playwrightHealthy: boolean;
+    eagleHealthy: boolean;
+    messages: string[];
+  };
+  history: {
+    hitCount: number;
+    recentJobs: PluginContextHistoryJob[];
+  };
+  eagle: {
+    available: boolean;
+    hitCount: number;
+    recentItems: PluginContextEagleItem[];
+  };
+  defaults: JobExecutionOptions;
 }
 
 export interface JobDetail {

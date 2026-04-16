@@ -4,6 +4,7 @@
 
 - Web 控制台（本地 `localhost`）：任务提交、队列、历史筛选、详情、日志、重试导入
 - CLI：`autosnap "<instruction>"` 与 `autosnap retry-import <manifestPath>`
+- Chromium 浏览器插件（`extension/dist`）：对当前页面一键发起 `Sections` 或 `Core Routes`，并先查本地历史与 Eagle 重复命中
 
 截图能力仍基于 Playwright，导入能力仍基于 Eagle 本地 API。
 
@@ -44,6 +45,16 @@ npm start
 
 - `http://127.0.0.1:8787`
 
+单独构建浏览器插件：
+
+```bash
+npm run build:extension
+```
+
+产物目录：
+
+- `extension/dist`
+
 ## 核心特性
 
 - 默认截图输出 `JPG`，可配置质量（默认 `92`）
@@ -65,6 +76,7 @@ npm start
 ## API (v1)
 
 - `GET /api/config`
+- `GET /api/plugin/context?url=<http(s)>`
 - `POST /api/jobs`
 - `GET /api/jobs`
 - `GET /api/jobs/:jobId`
@@ -100,6 +112,12 @@ npm run autosnap -- retry-import ./output/<run_id>/manifest.json
 - `NOTION_RULES_DATABASE_TITLE`（默认 `Autoscreenshot Rules Registry`）
 - `NOTION_RULES_OWNER_USER_ID`（可选）
 - `NOTION_RULES_JSON_PATH`（默认 `./output/rules/rules-registry.json`）
+
+浏览器插件默认连接：
+
+- `http://127.0.0.1:8787`
+
+可在插件 popup 里改成本机其它地址，保存后会写入 `chrome.storage.sync`
 
 Eagle 文件夹映射配置：
 
@@ -145,6 +163,33 @@ npm test
 ```bash
 RUN_E2E_CAPTURE=1 npm test
 ```
+
+## 浏览器插件
+
+构建：
+
+```bash
+npm run build:extension
+```
+
+在 Chromium 浏览器里加载：
+
+1. 打开 `chrome://extensions`、`arc://extensions` 或 `edge://extensions`
+2. 开启 `Developer mode`
+3. 点击 `Load unpacked`
+4. 选择 `extension/dist`
+
+插件前置条件：
+
+- 本地 Autoscreenshot 服务可访问
+- 如果要做 Eagle 重复校验，Eagle 本地 API 也要在线
+
+插件行为：
+
+- `Sections`：对当前 tab URL 发起自动 section 截图
+- `Core Routes`：对当前 tab URL 发起核心路由截图
+- 发起前会检查本地历史任务和 Eagle 是否已存在同 URL
+- 命中重复时只提示，不阻止继续执行
 
 ## 排障
 

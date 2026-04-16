@@ -22,6 +22,7 @@ const FORCED_VIEWPORT = { width: 1920, height: 1080 } as const;
 const CORE_ROUTE_TYPE_LIMITS: Partial<Record<Exclude<FullPageType, "unmatched">, number>> = {
   home: 1,
   blog_detail: 1,
+  changelog_detail: 1,
   customer_detail: 1,
   project_detail: 1,
   product_detail: 1,
@@ -41,6 +42,8 @@ const COVERAGE_FAMILY_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "contact",
   "blog_list",
   "blog_detail",
+  "changelog_list",
+  "changelog_detail",
   "about",
   "careers",
   "news",
@@ -51,6 +54,7 @@ const KNOWN_DETAIL_FAMILIES = new Set<Exclude<FullPageType, "unmatched">>([
   "customer_detail",
   "project_detail",
   "blog_detail",
+  "changelog_detail",
   "product_detail",
   "download_detail",
 ]);

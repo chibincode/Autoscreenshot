@@ -137,6 +137,44 @@ describe("folder resolver", () => {
     });
   });
 
+  it("routes explicit changelog page types to their mapped Eagle folders", () => {
+    const rules = normalizeEagleFolderRules({
+      fullPage: {
+        changelog_list: {
+          folderId: "changelog-list-id",
+          pathRules: ["/changelog"],
+        },
+        changelog_detail: {
+          folderId: "changelog-detail-id",
+          pathRules: ["/changelog/:slug"],
+        },
+      },
+    });
+    const folderIndex = buildFolderIndex([
+      {
+        id: "changelog-list-id",
+        name: "Page_Changelog list",
+        path: "作品包装/网站/Page_Document/Page_Changelog list",
+      },
+      {
+        id: "changelog-detail-id",
+        name: "Page_Changelog Detail",
+        path: "作品包装/网站/Page_Document/Page_Changelog Detail",
+      },
+    ]);
+
+    expect(resolveFullPageFolder("changelog_list", rules, folderIndex)).toEqual({
+      folderId: "changelog-list-id",
+      resolvedBy: "explicit",
+      reason: "mapped",
+    });
+    expect(resolveFullPageFolder("changelog_detail", rules, folderIndex)).toEqual({
+      folderId: "changelog-detail-id",
+      resolvedBy: "explicit",
+      reason: "mapped",
+    });
+  });
+
   it("does not send classified sections to general when explicit mapping is broken", () => {
     const rules = normalizeEagleFolderRules({
       sections: {

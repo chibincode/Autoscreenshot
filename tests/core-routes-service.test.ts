@@ -523,6 +523,110 @@ describe("core-routes-service", () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
+  it("treats changelog as explicit list/detail families in planning", async () => {
+    resolveJobOptionsMock.mockReturnValue({
+      quality: 92,
+      dpr: "auto",
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      mode: "core-routes",
+      maxRoutes: 4,
+      outputDir: "./output",
+    });
+
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-core-routes-changelog-"));
+    const outputDir = path.join(tmpDir, "run");
+    const manifestPath = path.join(outputDir, "manifest.json");
+    const logs: string[] = [];
+
+    discoverCoreRoutesMock.mockResolvedValue({
+      entryUrl: "https://example.com",
+      routes: [
+        {
+          url: "https://example.com/",
+          path: "/",
+          source: "nav",
+          depth: 0,
+          priorityScore: 1000,
+        },
+        {
+          url: "https://example.com/pricing",
+          path: "/pricing",
+          source: "nav",
+          depth: 0,
+          priorityScore: 990,
+        },
+        {
+          url: "https://example.com/changelog",
+          path: "/changelog",
+          source: "nav",
+          depth: 0,
+          priorityScore: 980,
+        },
+        {
+          url: "https://example.com/changelog/alpha",
+          path: "/changelog/alpha",
+          source: "link",
+          depth: 1,
+          priorityScore: 970,
+        },
+        {
+          url: "https://example.com/changelog/beta",
+          path: "/changelog/beta",
+          source: "link",
+          depth: 1,
+          priorityScore: 960,
+        },
+        {
+          url: "https://example.com/about",
+          path: "/about",
+          source: "nav",
+          depth: 0,
+          priorityScore: 950,
+        },
+      ],
+    });
+
+    captureTaskMock.mockImplementation(async (task: any) => ({
+      assets: [
+        {
+          kind: "fullPage",
+          label: "full_page",
+          filePath: path.join(outputDir, `${encodeURIComponent(task.url)}.jpg`),
+          fileName: `${encodeURIComponent(task.url)}.jpg`,
+          sourceUrl: task.url,
+          quality: 92,
+          dpr: 2,
+          capturedAt: new Date().toISOString(),
+        },
+      ],
+    }));
+
+    const result = await executeCoreRoutesInstruction({
+      instruction: "open https://example.com",
+      options: { mode: "core-routes" },
+      runId: "job-core-changelog",
+      outputDir,
+      manifestPath,
+      log: (_level, message) => {
+        logs.push(message);
+      },
+    });
+
+    expect(result.routes.map((route) => route.path)).toEqual([
+      "/",
+      "/pricing",
+      "/changelog",
+      "/changelog/alpha",
+    ]);
+    expect(result.routes.filter((route) => route.path === "/changelog/beta")).toHaveLength(0);
+    expect(result.routes.filter((route) => route.path === "/about")).toHaveLength(0);
+    expect(logs).toContain("core_routes_pruned family=changelog_detail kept=/changelog/alpha pruned=1");
+    expect(logs).toContain("core_routes_planned count=4");
+
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
   it("retries a route once after browser crash and keeps the route successful", async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-core-routes-crash-"));
     const outputDir = path.join(tmpDir, "run");

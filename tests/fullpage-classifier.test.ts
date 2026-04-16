@@ -38,6 +38,8 @@ const rules = normalizeEagleFolderRules({
     },
     blog_list: { folderId: "blog-list-id", pathRules: ["/blog", "/blog/page/*", "/blog/tag/*"] },
     blog_detail: { folderId: "blog-detail-id", pathRules: ["/blog/:slug"] },
+    changelog_list: { folderId: "changelog-list-id", pathRules: ["/changelog"] },
+    changelog_detail: { folderId: "changelog-detail-id", pathRules: ["/changelog/:slug"] },
     help: {
       folderId: "page-document-id",
       pathRules: [
@@ -54,6 +56,10 @@ const rules = normalizeEagleFolderRules({
         "/api",
         "/api/*",
       ],
+    },
+    login: {
+      folderId: "login-id",
+      pathRules: ["/login", "/signin", "/sign-in", "/log-in"],
     },
   },
 });
@@ -94,6 +100,15 @@ describe("classifyFullPageType", () => {
     );
   });
 
+  it("strictly distinguishes changelog list and detail", () => {
+    expect(classifyFullPageType("https://example.com/changelog", rules).type).toBe(
+      "changelog_list",
+    );
+    expect(classifyFullPageType("https://example.com/changelog/dublin", rules).type).toBe(
+      "changelog_detail",
+    );
+  });
+
   it("classifies customers overview and detail pages", () => {
     expect(classifyFullPageType("https://example.com/customers", rules).type).toBe("customers_list");
     expect(classifyFullPageType("https://example.com/use-cases", rules).type).toBe("customers_list");
@@ -128,6 +143,12 @@ describe("classifyFullPageType", () => {
     expect(classifyFullPageType("https://example.com/solutions/robotics", rules).type).toBe(
       "product_detail",
     );
+  });
+
+  it("classifies signin aliases as login pages", () => {
+    expect(classifyFullPageType("https://example.com/signin", rules).type).toBe("login");
+    expect(classifyFullPageType("https://example.com/sign-in", rules).type).toBe("login");
+    expect(classifyFullPageType("https://example.com/log-in", rules).type).toBe("login");
   });
 
   it("classifies docs, guides, and api routes as help/documentation pages", () => {

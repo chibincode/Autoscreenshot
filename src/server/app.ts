@@ -37,6 +37,11 @@ import {
   type ExecuteCoreRoutesParams,
   type ExecuteCoreRoutesResult,
 } from "../core/core-routes-service.js";
+import {
+  buildEquivalentUrlQueries,
+  isHttpUrl,
+  normalizeUrlForComparison,
+} from "../core/url-normalization.js";
 import { EagleClient } from "../eagle/client.js";
 import { readManifest, writeManifestToPath } from "../utils/manifest.js";
 import type {
@@ -51,6 +56,8 @@ import type {
   JobStatus,
   JobMode,
   JobRecord,
+  PluginContextEagleItem,
+  PluginContextResponse,
   RouteTargetSummary,
   RunManifest,
 } from "../types.js";
@@ -537,6 +544,99 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
         fallback: rulesState.rules.policy.missingFolderBehavior,
       },
     };
+  });
+
+  app.get<{ Querystring: { url?: string } }>("/api/plugin/context", async (request, reply) => {
+    const requestUrl = request.query.url?.trim() ?? "";
+    if (!requestUrl || !isHttpUrl(requestUrl)) {
+      reply.code(400);
+      return {
+        error: "Only regular http(s) page URLs are supported for plugin capture",
+      };
+    }
+
+    const rulesState = await loadEagleFolderRules(process.cwd());
+    const normalizedUrl = normalizeUrlForComparison(requestUrl, rulesState.rules.urlNormalization);
+    if (!normalizedUrl) {
+      reply.code(400);
+      return {
+        error: "Only regular http(s) page URLs are supported for plugin capture",
+      };
+    }
+
+    const playwrightState = await playwrightRuntimeService.check();
+    const runtimeMessages: string[] = [];
+    if (!playwrightState.healthy && playwrightState.message) {
+      runtimeMessages.push(playwrightState.message);
+    }
+
+    const recentJobs = repo.findRecentJobsBySourceUrl({
+      normalizedUrl,
+      urlNormalization: rulesState.rules.urlNormalization,
+      limit: 3,
+    });
+
+    let eagleHealthy = false;
+    let eagleAvailable = false;
+    let eagleItems: PluginContextEagleItem[] = [];
+    try {
+      const eagle = new EagleClient(
+        process.env.EAGLE_API_BASE_URL ?? "http://localhost:41595",
+        process.env.EAGLE_API_TOKEN,
+      );
+      eagleHealthy = await eagle.healthCheck();
+      eagleAvailable = eagleHealthy;
+      if (eagleHealthy) {
+        const eagleQueryUrls = buildEquivalentUrlQueries(requestUrl, rulesState.rules.urlNormalization);
+        const candidates = await eagle.listItemsByUrls(eagleQueryUrls, 20);
+        eagleItems = candidates
+          .filter((item) => normalizeUrlForComparison(item.url, rulesState.rules.urlNormalization) === normalizedUrl)
+          .slice(0, 3)
+          .map((item) => {
+            const linkedAsset = repo.findMostRecentAssetByEagleId(item.id);
+            return {
+              ...item,
+              clickable: Boolean(linkedAsset),
+              ...(linkedAsset
+                ? {
+                    jobId: linkedAsset.jobId,
+                    assetId: linkedAsset.assetId,
+                  }
+                : {}),
+            };
+          });
+      } else {
+        runtimeMessages.push("Eagle duplicate check unavailable");
+      }
+    } catch (error) {
+      eagleAvailable = false;
+      eagleHealthy = false;
+      runtimeMessages.push(
+        error instanceof Error ? `Eagle duplicate check unavailable: ${error.message}` : "Eagle duplicate check unavailable",
+      );
+    }
+
+    const response: PluginContextResponse = {
+      requestUrl,
+      normalizedUrl,
+      runtime: {
+        serverHealthy: true,
+        playwrightHealthy: playwrightState.healthy,
+        eagleHealthy,
+        messages: runtimeMessages,
+      },
+      history: {
+        hitCount: recentJobs.length,
+        recentJobs,
+      },
+      eagle: {
+        available: eagleAvailable,
+        hitCount: eagleItems.length,
+        recentItems: eagleItems,
+      },
+      defaults: DEFAULT_JOB_OPTIONS,
+    };
+    return response;
   });
 
   app.get("/api/eagle/folders", async (_request, reply) => {

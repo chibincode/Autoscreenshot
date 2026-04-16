@@ -613,6 +613,254 @@ describe("server api", () => {
     expect(data.eagleImportPolicy?.fallback).toBe("root");
   });
 
+  it("returns plugin context with history and Eagle duplicate hits", async () => {
+    repo.createJob({
+      id: "plugin-hit-job",
+      instruction: "open https://www.example.com/en/pricing?ref=promo#hero",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir: "./output",
+      },
+    });
+    repo.replaceAssets("plugin-hit-job", {
+      runId: "plugin-hit-job",
+      instruction: "open https://www.example.com/en/pricing?ref=promo#hero",
+      createdAt: "2026-04-13T12:00:00.000Z",
+      task: {
+        url: "https://www.example.com/en/pricing?ref=promo#hero",
+        waitUntil: "networkidle",
+        captures: [{ mode: "fullPage" }],
+        image: { format: "jpg", quality: 92, dpr: "auto" },
+        viewport: { width: 1920, height: 1080 },
+        tags: [],
+        eagle: {},
+      },
+      sectionScope: "classic",
+      outputDir: "./output/plugin-hit-job",
+      assets: [
+        {
+          kind: "fullPage",
+          label: "Pricing",
+          filePath: "/tmp/plugin-hit-job.jpg",
+          fileName: "plugin-hit-job.jpg",
+          sourceUrl: "https://www.example.com/en/pricing?ref=promo#hero",
+          quality: 92,
+          dpr: 2,
+          capturedAt: "2026-04-13T12:00:00.000Z",
+          import: { ok: true, selected: true, status: "imported", eagleId: "eagle-item-1" },
+        },
+      ],
+    });
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/library/info")) {
+        return new Response(JSON.stringify({ status: "success", data: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/item/list?")) {
+        return new Response(
+          JSON.stringify({
+            status: "success",
+            data: [
+              {
+                id: "eagle-item-1",
+                name: "Example Pricing",
+                url: "https://example.com/pricing#pricing",
+                mtime: 1776062400000,
+              },
+              {
+                id: "eagle-item-2",
+                name: "Ignore About",
+                url: "https://example.com/about",
+                mtime: 1776061400000,
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/plugin/context?url=https://example.com/pricing",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const data = response.json() as RunManifest & {
+      normalizedUrl: string;
+      history: { hitCount: number; recentJobs: Array<{ id: string }> };
+      eagle: {
+        available: boolean;
+        hitCount: number;
+        recentItems: Array<{ id: string; clickable: boolean; jobId?: string; assetId?: number }>;
+      };
+      runtime: { serverHealthy: boolean; eagleHealthy: boolean; playwrightHealthy: boolean };
+    };
+    expect(data.normalizedUrl).toBe("https://example.com/pricing");
+    expect(data.history.hitCount).toBe(1);
+    expect(data.history.recentJobs[0]?.id).toBe("plugin-hit-job");
+    expect(data.eagle.available).toBe(true);
+    expect(data.eagle.hitCount).toBe(1);
+    expect(data.eagle.recentItems[0]?.id).toBe("eagle-item-1");
+    expect(data.eagle.recentItems[0]?.clickable).toBe(true);
+    expect(data.eagle.recentItems[0]?.jobId).toBe("plugin-hit-job");
+    expect(typeof data.eagle.recentItems[0]?.assetId).toBe("number");
+    expect(data.runtime.serverHealthy).toBe(true);
+    expect(data.runtime.playwrightHealthy).toBe(true);
+    expect(data.runtime.eagleHealthy).toBe(true);
+  });
+
+  it("marks unmatched Eagle hits as non-clickable", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/library/info")) {
+        return new Response(JSON.stringify({ status: "success", data: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/item/list?")) {
+        return new Response(
+          JSON.stringify({
+            status: "success",
+            data: [
+              {
+                id: "orphan-eagle-item",
+                name: "Orphan item",
+                url: "https://example.com/pricing",
+                mtime: 1776062400000,
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/plugin/context?url=https://example.com/pricing",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const data = response.json() as {
+      eagle: { recentItems: Array<{ id: string; clickable: boolean; jobId?: string; assetId?: number }> };
+    };
+    expect(data.eagle.recentItems[0]).toMatchObject({
+      id: "orphan-eagle-item",
+      clickable: false,
+    });
+    expect(data.eagle.recentItems[0]?.jobId).toBeUndefined();
+    expect(data.eagle.recentItems[0]?.assetId).toBeUndefined();
+  });
+
+  it("finds Eagle hits when only the www variant is returned by Eagle search", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/library/info")) {
+        return new Response(JSON.stringify({ status: "success", data: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.includes("/api/item/list?")) {
+        const parsedUrl = new URL(url);
+        const candidateUrl = parsedUrl.searchParams.get("url");
+        return new Response(
+          JSON.stringify({
+            status: "success",
+            data:
+              candidateUrl === "https://www.example.com/pricing"
+                ? [
+                    {
+                      id: "eagle-item-www-only",
+                      name: "Pricing Page",
+                      url: "https://www.example.com/pricing",
+                      mtime: 1776063400000,
+                    },
+                  ]
+                : [],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/plugin/context?url=https://example.com/pricing",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const data = response.json() as {
+      normalizedUrl: string;
+      eagle: { hitCount: number; recentItems: Array<{ id: string; url: string; clickable: boolean }> };
+    };
+    expect(data.normalizedUrl).toBe("https://example.com/pricing");
+    expect(data.eagle.hitCount).toBe(1);
+    expect(data.eagle.recentItems[0]).toMatchObject({
+      id: "eagle-item-www-only",
+      url: "https://www.example.com/pricing",
+      clickable: false,
+    });
+  });
+
+  it("returns plugin context when Eagle duplicate check is unavailable", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/api/library/info") || url.endsWith("/api/application/info")) {
+        throw new Error("connect ECONNREFUSED");
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/plugin/context?url=https://example.com/pricing",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const data = response.json() as {
+      eagle: { available: boolean; hitCount: number };
+      runtime: { eagleHealthy: boolean; messages: string[] };
+    };
+    expect(data.eagle.available).toBe(false);
+    expect(data.eagle.hitCount).toBe(0);
+    expect(data.runtime.eagleHealthy).toBe(false);
+    expect(data.runtime.messages.some((message) => message.includes("Eagle duplicate check unavailable"))).toBe(true);
+  });
+
+  it("rejects plugin context for non-http pages", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/plugin/context?url=chrome://new-tab-page",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toContain("Only regular http(s) page URLs are supported");
+  });
+
   it("returns flattened Eagle folders sorted by path", async () => {
     mockEagleFolderList([
       {
@@ -1258,8 +1506,8 @@ describe("server api", () => {
     });
 
     const rawDb = new Database(isolatedDbPath);
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run("2026-03-20T00:00:00.000Z", oldJobId);
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run("2026-03-31T00:00:00.000Z", recentJobId);
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run("2026-04-01T00:00:00.000Z", oldJobId);
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run("2026-04-10T00:00:00.000Z", recentJobId);
     rawDb.close();
 
     const isolatedApp = await buildServer({

@@ -1,4 +1,9 @@
 import type { EagleFolderRules, FullPageType } from "../types.js";
+import {
+  normalizeHostname,
+  normalizePathname,
+  stripLocalePrefix,
+} from "./url-normalization.js";
 
 const FULL_PAGE_MATCH_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "home",
@@ -12,6 +17,8 @@ const FULL_PAGE_MATCH_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "project_detail",
   "blog_list",
   "blog_detail",
+  "changelog_list",
+  "changelog_detail",
   "news",
   "help",
   "login",
@@ -23,24 +30,8 @@ const FULL_PAGE_MATCH_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "integration",
 ];
 
-function normalizeHostname(hostname: string): string {
-  return hostname.replace(/^www\./i, "").trim().toLowerCase();
-}
-
 function isBrandBlogHost(hostname: string): boolean {
   return /^blog\./i.test(normalizeHostname(hostname));
-}
-
-function normalizePathname(pathname: string): string {
-  if (!pathname) {
-    return "/";
-  }
-  const withLeadingSlash = pathname.startsWith("/") ? pathname : `/${pathname}`;
-  const collapsed = withLeadingSlash.replace(/\/{2,}/g, "/");
-  if (collapsed.length > 1 && collapsed.endsWith("/")) {
-    return collapsed.slice(0, -1);
-  }
-  return collapsed;
 }
 
 export function normalizePathnameForClassification(
@@ -66,14 +57,7 @@ export function normalizePathnameForClassification(
     return pathname;
   }
 
-  const localePrefixPattern = /^\/([a-z]{2}(?:-[a-z]{2})?)(?=\/|$)/i;
-  const localeMatch = pathname.match(localePrefixPattern);
-  if (!localeMatch) {
-    return pathname;
-  }
-
-  const stripped = pathname.slice(localeMatch[0].length) || "/";
-  return normalizePathname(stripped);
+  return stripLocalePrefix(pathname);
 }
 
 function escapeRegExp(input: string): string {

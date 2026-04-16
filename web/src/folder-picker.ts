@@ -33,6 +33,21 @@ function fallbackCompactPath(path: string, maxLength: number): string {
   return `${path.slice(0, headLength)}...${path.slice(-tailLength)}`;
 }
 
+export function formatFolderNameForCard(path: string | null | undefined, maxLength = 22): string {
+  const trimmedPath = path?.trim() ?? "";
+  if (!trimmedPath) {
+    return "";
+  }
+
+  const segments = trimmedPath.split("/").filter(Boolean);
+  const lastSegment = segments[segments.length - 1] ?? trimmedPath;
+  if (lastSegment.length <= maxLength) {
+    return lastSegment;
+  }
+
+  return fallbackCompactPath(lastSegment, maxLength);
+}
+
 export function formatFolderPathForCard(path: string | null | undefined, maxLength = 32): string {
   const trimmedPath = path?.trim() ?? "";
   if (!trimmedPath) {

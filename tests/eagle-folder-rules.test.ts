@@ -11,6 +11,16 @@ import {
 describe("eagle-folder-rules", () => {
   it("applies defaults for partial config", () => {
     const rules = normalizeEagleFolderRules({
+      fullPage: {
+        changelog_list: {
+          folderId: "changelog-list-id",
+          pathRules: ["/changelog"],
+        },
+        changelog_detail: {
+          folderId: "changelog-detail-id",
+          pathRules: ["/changelog/:slug"],
+        },
+      },
       sections: {
         hero: {
           folderId: "hero-folder",
@@ -22,6 +32,14 @@ describe("eagle-folder-rules", () => {
     expect(rules.policy.missingFolderBehavior).toBe("root");
     expect(rules.urlNormalization.stripLocalePrefix).toBe(true);
     expect(rules.sections.hero?.folderId).toBe("hero-folder");
+    expect(rules.fullPage.changelog_list).toEqual({
+      folderId: "changelog-list-id",
+      pathRules: ["/changelog"],
+    });
+    expect(rules.fullPage.changelog_detail).toEqual({
+      folderId: "changelog-detail-id",
+      pathRules: ["/changelog/:slug"],
+    });
     expect(rules.fullPage.home).toBeUndefined();
   });
 

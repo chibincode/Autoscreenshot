@@ -30,6 +30,8 @@ const FULL_PAGE_KEYS: Array<Exclude<FullPageType, "unmatched">> = [
   "project_detail",
   "blog_list",
   "blog_detail",
+  "changelog_list",
+  "changelog_detail",
   "news",
   "help",
   "login",

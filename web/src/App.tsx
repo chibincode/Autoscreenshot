@@ -24,6 +24,7 @@ import { ActionToast, type ActionToastTone } from "./ActionToast";
 import { FolderPickerDialog } from "./FolderPickerDialog";
 import {
   filterAndRankFolders,
+  formatFolderNameForCard,
   formatFolderPathForCard,
   type EagleFolderOption,
   type RankedEagleFolderOption,
@@ -31,6 +32,11 @@ import {
 import { deriveRouteProgress, isActiveStatus } from "./job-progress";
 import { getNextSelectedJobId } from "./job-selection";
 import { canRetryRoute } from "./route-retry";
+import {
+  readSelectedAssetIdFromSearch,
+  readSelectedJobIdFromSearch,
+  syncSelectionToUrl,
+} from "./job-location";
 
 type JobStatus =
   | "queued"
@@ -896,7 +902,9 @@ const AssetFolderControl = memo(function AssetFolderControl({
 }) {
   const isImported = asset.importStatus === "imported";
   const currentPath = asset.targetEagleFolderPath ?? "";
-  const displayPath = currentPath ? formatFolderPathForCard(currentPath) : "";
+  const displayName = currentPath ? formatFolderNameForCard(currentPath) : "";
+  const displayPath = currentPath ? formatFolderPathForCard(currentPath, 38) : "";
+  const showSecondaryPath = Boolean(displayPath) && displayPath !== displayName;
   const needsFolderSelection =
     asset.selectedForImport && !isImported && asset.folderSelectionSource === "missing";
 
@@ -910,9 +918,14 @@ const AssetFolderControl = memo(function AssetFolderControl({
       </div>
       {isImported ? (
         <div className="asset-folder-readonly" title={currentPath || undefined}>
-          <span className={cx("asset-folder-path", !displayPath && "asset-folder-path-empty")}>
-            {displayPath || "—"}
-          </span>
+          {displayName ? (
+            <div className="asset-folder-path-stack">
+              <span className="asset-folder-path-primary">{displayName}</span>
+              {showSecondaryPath ? <span className="asset-folder-path-secondary">{displayPath}</span> : null}
+            </div>
+          ) : (
+            <span className="asset-folder-path asset-folder-path-empty">—</span>
+          )}
         </div>
       ) : (
         <button
@@ -922,9 +935,14 @@ const AssetFolderControl = memo(function AssetFolderControl({
           onClick={() => onOpenFolderPicker(asset.id)}
           title={currentPath || undefined}
         >
-          <span className={cx("asset-folder-path", !displayPath && "asset-folder-path-empty")}>
-            {displayPath || "搜索并选择 Eagle 文件夹"}
-          </span>
+          {displayName ? (
+            <span className="asset-folder-path-stack">
+              <span className="asset-folder-path-primary">{displayName}</span>
+              {showSecondaryPath ? <span className="asset-folder-path-secondary">{displayPath}</span> : null}
+            </span>
+          ) : (
+            <span className="asset-folder-path asset-folder-path-empty">搜索并选择 Eagle 文件夹</span>
+          )}
           <span className="asset-folder-trigger-chevron" aria-hidden="true">
             v
           </span>
@@ -1728,6 +1746,8 @@ const PreviewModal = memo(function PreviewModal({
 });
 
 export function App() {
+  const initialSelectedJobId = readSelectedJobIdFromSearch(window.location.search);
+  const initialSelectedAssetId = readSelectedAssetIdFromSearch(window.location.search);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [eagleFolders, setEagleFolders] = useState<EagleFolderOption[]>([]);
   const [eagleFoldersError, setEagleFoldersError] = useState<string | null>(null);
@@ -1742,7 +1762,7 @@ export function App() {
 
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [totalJobs, setTotalJobs] = useState(0);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(initialSelectedJobId);
   const [selectedJobDetail, setSelectedJobDetail] = useState<JobDetail | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [keywordFilter, setKeywordFilter] = useState("");
@@ -1775,6 +1795,8 @@ export function App() {
   const [manifestExpanded, setManifestExpanded] = useState(false);
   const sseRefreshTimerRef = useRef<number | null>(null);
   const selectedJobDetailRef = useRef<JobDetail | null>(null);
+  const pinnedJobIdRef = useRef<string | null>(initialSelectedJobId);
+  const pendingAssetIdRef = useRef<number | null>(initialSelectedAssetId);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(totalJobs / pageSize)), [pageSize, totalJobs]);
   const runningJobId = config?.queue.runningJobId ?? null;
@@ -2068,6 +2090,11 @@ export function App() {
     }
   }
 
+  const selectJob = useCallback((jobId: string | null): void => {
+    pinnedJobIdRef.current = jobId;
+    setSelectedJobId(jobId);
+  }, []);
+
   const loadJobs = useCallback(async (preferredSelectedJobId?: string | null): Promise<void> => {
     const params = new URLSearchParams();
     if (statusFilter) {
@@ -2088,9 +2115,18 @@ export function App() {
     startTransition(() => {
       setJobs((currentJobs) => (areJobSummariesEqual(currentJobs, result.items) ? currentJobs : result.items));
       setTotalJobs((currentTotal) => (currentTotal === result.total ? currentTotal : result.total));
-      setSelectedJobId((currentSelectedJobId) =>
-        getNextSelectedJobId(preferredSelectedJobId ?? currentSelectedJobId, result.items),
-      );
+      setSelectedJobId((currentSelectedJobId) => {
+        const pinnedJobId = pinnedJobIdRef.current;
+        const preferredJobId = preferredSelectedJobId ?? currentSelectedJobId;
+        if (
+          pinnedJobId &&
+          (preferredJobId === pinnedJobId || currentSelectedJobId === pinnedJobId) &&
+          !result.items.some((job) => job.id === pinnedJobId)
+        ) {
+          return pinnedJobId;
+        }
+        return getNextSelectedJobId(preferredJobId, result.items);
+      });
     });
   }, [archivedOnly, keywordFilter, page, pageSize, statusFilter]);
 
@@ -2114,6 +2150,17 @@ export function App() {
   useEffect(() => {
     selectedJobDetailRef.current = selectedJobDetail;
   }, [selectedJobDetail]);
+
+  useEffect(() => {
+    window.history.replaceState(
+      null,
+      "",
+      syncSelectionToUrl(window.location.href, {
+        jobId: selectedJobId,
+        assetId: previewAssetId,
+      }),
+    );
+  }, [previewAssetId, selectedJobId]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -2153,6 +2200,26 @@ export function App() {
       setErrorText(error instanceof Error ? error.message : "Failed loading job detail");
     });
   }, [loadEagleFolders, loadJobDetail, selectedJobId]);
+
+  useEffect(() => {
+    if (!selectedJobDetail) {
+      return;
+    }
+    const pendingAssetId = pendingAssetIdRef.current;
+    if (pendingAssetId === null) {
+      return;
+    }
+
+    const targetAsset = selectedJobDetail.assets.find((asset) => asset.id === pendingAssetId) ?? null;
+    pendingAssetIdRef.current = null;
+    if (!targetAsset) {
+      return;
+    }
+
+    setSelectedAssetId(targetAsset.id);
+    setPreviewAssetId(targetAsset.id);
+    setCopyFeedbackState(null);
+  }, [selectedJobDetail]);
 
   useEffect(() => {
     setSelectedAssetId(null);
@@ -2294,7 +2361,7 @@ export function App() {
         body: JSON.stringify(payload),
       });
       setInstruction("");
-      setSelectedJobId(result.jobId);
+      selectJob(result.jobId);
       await loadJobs(result.jobId);
       await loadJobDetail(result.jobId);
     } catch (error) {
@@ -2574,6 +2641,7 @@ export function App() {
   }, []);
 
   const openPreview = useCallback((assetId: number): void => {
+    setSelectedAssetId(assetId);
     setPreviewAssetId(assetId);
     setCopyFeedbackState(null);
   }, []);
@@ -2866,7 +2934,7 @@ export function App() {
             runningJobId={runningJobId}
             totalPages={totalPages}
             page={page}
-            onSelectJob={setSelectedJobId}
+            onSelectJob={selectJob}
             onArchiveJob={archiveJob}
             onPreviousPage={() => setPage((prev) => Math.max(1, prev - 1))}
             onNextPage={() => setPage((prev) => Math.min(totalPages, prev + 1))}

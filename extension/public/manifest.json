@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Autoscreenshot",
+  "version": "0.1.0",
+  "description": "One-click section and core route capture with URL duplicate checks.",
+  "permissions": ["tabs", "storage"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Autoscreenshot",
+    "default_popup": "popup.html"
+  }
+}

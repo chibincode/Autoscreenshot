@@ -90,6 +90,14 @@
       "folderId": "K09RVEOJXWLA9",
       "pathRules": ["/blog/:slug"]
     },
+    "changelog_list": {
+      "folderId": "KEK5UISMJ0V1J",
+      "pathRules": ["/changelog"]
+    },
+    "changelog_detail": {
+      "folderId": "LR6CS3D06MVIZ",
+      "pathRules": ["/changelog/:slug"]
+    },
     "news": {
       "folderId": "KDXA85NDSDOVK",
       "pathRules": ["/news"]
@@ -113,7 +121,7 @@
     },
     "login": {
       "folderId": "JZR6M1QFMZYMN",
-      "pathRules": ["/login"]
+      "pathRules": ["/login", "/signin", "/sign-in", "/log-in"]
     },
     "signup": {
       "folderId": "JZR6MFOA465XT",

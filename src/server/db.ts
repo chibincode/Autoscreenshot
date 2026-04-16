@@ -7,15 +7,19 @@ import {
   LEGACY_PENDING_IMPORT_ERROR,
   normalizeImportResult,
 } from "../core/import-state.js";
+import { extractNormalizedHostname, normalizeUrlForComparison } from "../core/url-normalization.js";
 import type {
   AssetRecord,
   AssetImportStatus,
+  EagleFolderRules,
   JobDetail,
   JobExecutionOptions,
   JobLogRecord,
+  JobMode,
   JobRecord,
   JobStatus,
   JobSummary,
+  PluginContextHistoryJob,
   RouteDiscoveryTarget,
   RouteTargetRecord,
   RouteTargetStatus,
@@ -109,6 +113,20 @@ interface RouteTargetSummaryRow extends RouteTargetRow {
   last_executed_at: string | null;
 }
 
+interface HistoryLookupRow {
+  id: string;
+  status: JobStatus;
+  created_at: string;
+  options_json: string;
+  latest_captured_at: string;
+}
+
+interface AssetByEagleIdRow {
+  id: number;
+  job_id: string;
+  captured_at: string;
+}
+
 function toJobRecord(row: JobRow): JobRecord {
   return {
     id: row.id,
@@ -195,6 +213,15 @@ function extractSourceUrl(taskJson: string | null): string | null {
     return typeof parsed.url === "string" ? parsed.url : null;
   } catch {
     return null;
+  }
+}
+
+function parseJobMode(optionsJson: string): JobMode {
+  try {
+    const parsed = JSON.parse(optionsJson) as { mode?: unknown };
+    return parsed.mode === "core-routes" ? "core-routes" : "single";
+  } catch {
+    return "single";
   }
 }
 
@@ -842,6 +869,75 @@ export class JobsRepository {
     };
   }
 
+  findRecentJobsBySourceUrl(params: {
+    normalizedUrl: string;
+    urlNormalization: EagleFolderRules["urlNormalization"];
+    limit?: number;
+  }): PluginContextHistoryJob[] {
+    const limit = Math.max(1, params.limit ?? 3);
+    const hostname = extractNormalizedHostname(params.normalizedUrl);
+    if (!hostname) {
+      return [];
+    }
+
+    const candidates = this.db
+      .prepare(
+        `
+      SELECT
+        j.id,
+        j.status,
+        j.created_at,
+        j.options_json,
+        MAX(a.captured_at) AS latest_captured_at
+      FROM jobs j
+      INNER JOIN assets a ON a.job_id = j.id
+      WHERE (
+        a.source_url LIKE @httpsHost
+        OR a.source_url LIKE @httpHost
+        OR a.source_url LIKE @httpsWwwHost
+        OR a.source_url LIKE @httpWwwHost
+      )
+      GROUP BY j.id
+      ORDER BY latest_captured_at DESC
+      LIMIT 50
+    `,
+      )
+      .all({
+        httpsHost: `https://${hostname}%`,
+        httpHost: `http://${hostname}%`,
+        httpsWwwHost: `https://www.${hostname}%`,
+        httpWwwHost: `http://www.${hostname}%`,
+      }) as HistoryLookupRow[];
+
+    const matchedJobs: PluginContextHistoryJob[] = [];
+    for (const candidate of candidates) {
+      const assets = this.getAssets(candidate.id);
+      const hasMatch = assets.some((asset) => {
+        const normalizedSourceUrl = normalizeUrlForComparison(
+          asset.sourceUrl,
+          params.urlNormalization,
+        );
+        return normalizedSourceUrl === params.normalizedUrl;
+      });
+      if (!hasMatch) {
+        continue;
+      }
+
+      matchedJobs.push({
+        id: candidate.id,
+        status: candidate.status,
+        createdAt: candidate.created_at,
+        mode: parseJobMode(candidate.options_json),
+        assetCount: assets.length,
+      });
+      if (matchedJobs.length >= limit) {
+        break;
+      }
+    }
+
+    return matchedJobs;
+  }
+
   getJobDetail(jobId: string): JobDetail | null {
     const job = this.getJob(jobId);
     if (!job) {
@@ -862,5 +958,28 @@ export class JobsRepository {
   getAssetById(assetId: number): AssetRecord | null {
     const row = this.db.prepare("SELECT * FROM assets WHERE id = ?").get(assetId) as AssetRow | undefined;
     return row ? toAssetRecord(row) : null;
+  }
+
+  findMostRecentAssetByEagleId(eagleId: string): { jobId: string; assetId: number } | null {
+    const row = this.db
+      .prepare(
+        `
+      SELECT id, job_id, captured_at
+      FROM assets
+      WHERE eagle_id = ?
+      ORDER BY captured_at DESC, id DESC
+      LIMIT 1
+    `,
+      )
+      .get(eagleId) as AssetByEagleIdRow | undefined;
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      jobId: row.job_id,
+      assetId: row.id,
+    };
   }
 }
