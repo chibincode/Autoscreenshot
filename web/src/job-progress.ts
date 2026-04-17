@@ -50,25 +50,25 @@ export function describeCompletedCoreRoutesStatus(params: {
 
   if (status === "awaiting_confirmation") {
     if (selectedPendingMissingFolderCount > 0) {
-      return `核心路由已完成 · ${routeProgress.success} 条成功 · ${selectedPendingMissingFolderCount} 张待指定文件夹`;
+      return `Core routes done · ${routeProgress.success} ok · ${selectedPendingMissingFolderCount} folders needed`;
     }
-    return `核心路由已完成 · ${routeProgress.success} 条成功 · ${selectedPending} 张已预选，待确认导入`;
+    return `Core routes done · ${routeProgress.success} ok · ${selectedPending} pending import`;
   }
 
   if (status === "partial_success") {
-    const routeSummary = `核心路由已完成 · ${routeProgress.success} 条成功 / ${routeProgress.failed} 条失败`;
+    const routeSummary = `Core routes done · ${routeProgress.success} ok / ${routeProgress.failed} failed`;
     if (selectedPending > 0) {
-      return `${routeSummary} · 当前还没有导入到 Eagle`;
+      return `${routeSummary} · not imported yet`;
     }
     return routeSummary;
   }
 
   if (status === "success") {
-    return `核心路由已完成 · ${routeProgress.success} 条成功`;
+    return `Core routes done · ${routeProgress.success} ok`;
   }
 
   if (status === "failed") {
-    return `核心路由失败 · ${routeProgress.failed} 条失败`;
+    return `Core routes failed · ${routeProgress.failed} failed`;
   }
 
   return null;

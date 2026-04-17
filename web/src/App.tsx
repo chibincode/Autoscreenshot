@@ -391,6 +391,7 @@ const LOG_ROW_HEIGHT = 42;
 const ASSET_VIRTUALIZE_THRESHOLD = 36;
 const ASSET_GRID_ROW_HEIGHT = 336;
 const ASSET_GRID_OVERSCAN_ROWS = 2;
+const ARCHIVE_EXIT_MS = 220;
 
 function getAssetGridColumns(width: number): number {
   if (width >= 960) {
@@ -465,6 +466,22 @@ function formatDate(input: string | null): string {
     return "—";
   }
   return new Date(input).toLocaleString();
+}
+
+function normalizeComparableUrl(value: string | null): string {
+  if (!value) {
+    return "";
+  }
+  return value.trim().replace(/\/+$/, "");
+}
+
+function shouldShowJobInstruction(job: Pick<JobSummary, "instruction" | "sourceUrl">): boolean {
+  const instruction = normalizeComparableUrl(job.instruction);
+  if (!instruction) {
+    return false;
+  }
+  const sourceUrl = normalizeComparableUrl(job.sourceUrl);
+  return !sourceUrl || instruction !== sourceUrl;
 }
 
 function areJobSummariesEqual(left: JobSummary[], right: JobSummary[]): boolean {
@@ -887,11 +904,11 @@ const AssetThumbnail = memo(function AssetThumbnail({
 function formatFolderSelectionSourceLabel(source: FolderSelectionSource): string {
   switch (source) {
     case "manual":
-      return "手动确认";
+      return "Manual";
     case "auto":
-      return "自动建议";
+      return "Auto";
     default:
-      return "待确认";
+      return "Pending";
   }
 }
 
@@ -923,7 +940,7 @@ const AssetFolderControl = memo(function AssetFolderControl({
   return (
     <div className={cx("asset-folder-field", needsFolderSelection && "asset-folder-field-missing")}>
       <div className="asset-folder-field-header">
-        <span className="asset-folder-label">目标文件夹</span>
+        <span className="asset-folder-label">Folder</span>
         <span className={cx("asset-folder-source", `asset-folder-source-${asset.folderSelectionSource}`)}>
           {formatFolderSelectionSourceLabel(asset.folderSelectionSource)}
         </span>
@@ -953,7 +970,7 @@ const AssetFolderControl = memo(function AssetFolderControl({
               {showSecondaryPath ? <span className="asset-folder-path-secondary">{displayPath}</span> : null}
             </span>
           ) : (
-            <span className="asset-folder-path asset-folder-path-empty">搜索并选择 Eagle 文件夹</span>
+            <span className="asset-folder-path asset-folder-path-empty">Choose an Eagle folder</span>
           )}
           <span className="asset-folder-trigger-chevron" aria-hidden="true">
             v
@@ -963,13 +980,13 @@ const AssetFolderControl = memo(function AssetFolderControl({
       {asset.folderSelectionSource === "manual" &&
       asset.resolvedEagleFolderPath &&
       asset.resolvedEagleFolderPath !== currentPath ? (
-        <div className="asset-folder-hint">系统建议：{asset.resolvedEagleFolderPath}</div>
+        <div className="asset-folder-hint">Suggested: {asset.resolvedEagleFolderPath}</div>
       ) : null}
       {asset.folderSelectionSource === "missing" ? (
         <div className="asset-folder-hint asset-folder-hint-warning">
           {asset.selectedForImport
-            ? "已勾选资产必须先指定一个现有 Eagle 文件夹。"
-            : "当前没有匹配到可用 Eagle 文件夹，可以先手动指定。"}
+            ? "Selected assets need an existing Eagle folder first."
+            : "No matching Eagle folder yet. Pick one manually."}
         </div>
       ) : null}
     </div>
@@ -1018,7 +1035,7 @@ const AssetCard = memo(function AssetCard({
           disabled={assetActionsDisabled}
           onChange={(event) => void onToggleSelection(asset.id, event.target.checked)}
         />
-        <span>导入</span>
+        <span>Import</span>
       </label>
       <button
         type="button"
@@ -1028,11 +1045,13 @@ const AssetCard = memo(function AssetCard({
         <AssetThumbnail asset={asset} alt={asset.fileName} />
       </button>
       <div className={compact ? "route-asset-meta" : "asset-meta"}>
-        <strong>{asset.label}</strong>
-        <span>
-          {asset.kind}
-          {asset.sectionType ? ` · ${asset.sectionType}` : ""}
-        </span>
+        {!compact ? <strong>{asset.label}</strong> : null}
+        {!compact ? (
+          <span>
+            {asset.kind}
+            {asset.sectionType ? ` · ${asset.sectionType}` : ""}
+          </span>
+        ) : null}
         {!compact ? <span>q{asset.quality} · dpr{asset.dpr}</span> : null}
         <span>{formatAssetImportStatus(asset.importStatus, asset.selectedForImport, asset.importError)}</span>
       </div>
@@ -1046,12 +1065,12 @@ const AssetCard = memo(function AssetCard({
       <div className={compact ? "route-asset-actions" : "asset-card-actions"}>
         {!compact ? (
           <button type="button" onClick={() => onOpenPreview(asset.id)}>
-            打开预览
+            Preview
           </button>
         ) : null}
         {canFocusDebugAsset(asset, hasSectionDebug) ? (
           <button type="button" onClick={() => onFocusDebug(asset)}>
-            Debug 聚焦
+            Focus Debug
           </button>
         ) : null}
       </div>
@@ -1063,6 +1082,7 @@ const JobsListPanel = memo(function JobsListPanel({
   jobs,
   selectedJobId,
   runningJobId,
+  exitingJobIds,
   totalPages,
   page,
   onSelectJob,
@@ -1073,6 +1093,7 @@ const JobsListPanel = memo(function JobsListPanel({
   jobs: JobSummary[];
   selectedJobId: string | null;
   runningJobId: string | null;
+  exitingJobIds: ReadonlySet<string>;
   totalPages: number;
   page: number;
   onSelectJob: (jobId: string) => void;
@@ -1086,77 +1107,84 @@ const JobsListPanel = memo(function JobsListPanel({
         const jobIsLive = runningJobId === job.id || isActiveStatus(job.status);
         const showQuickArchive = canQuickArchiveJob(job);
         const nextArchivedState = !Boolean(job.archivedAt);
+        const isExiting = exitingJobIds.has(job.id);
         return (
-          <article
-            key={job.id}
-            className={cx(
-              "job-card",
-              selectedJobId === job.id && "selected",
-              jobIsLive && "job-card-live",
-              showQuickArchive && "job-card-has-action",
-            )}
-            role="button"
-            tabIndex={0}
-            aria-pressed={selectedJobId === job.id}
-            onClick={() => onSelectJob(job.id)}
-            onKeyDown={(event) => {
-              if (event.target !== event.currentTarget) {
-                return;
-              }
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                onSelectJob(job.id);
-              }
-            }}
-          >
-            <div className="job-top">
-              <div className="job-top-left">
-                <StatusBadge status={job.status} />
-                {job.archivedAt ? <span className="job-archived-pill">archived</span> : null}
+          <div key={job.id} className={cx("job-card-shell", isExiting && "job-card-shell-exiting")}>
+            <article
+              className={cx(
+                "job-card",
+                selectedJobId === job.id && "selected",
+                jobIsLive && "job-card-live",
+                showQuickArchive && "job-card-has-action",
+                isExiting && "job-card-exiting",
+              )}
+              role="button"
+              tabIndex={0}
+              aria-pressed={selectedJobId === job.id}
+              onClick={() => onSelectJob(job.id)}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) {
+                  return;
+                }
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelectJob(job.id);
+                }
+              }}
+            >
+              <div className="job-top">
+                <div className="job-top-left">
+                  <StatusBadge status={job.status} />
+                  {job.archivedAt ? <span className="job-archived-pill">archived</span> : null}
+                </div>
               </div>
-              <span className="job-time">{formatDate(job.createdAt)}</span>
-            </div>
-            <div className="job-title">
-              {job.sourceUrl ? <ExternalLink href={job.sourceUrl} label={job.sourceUrl} /> : "未解析 URL"}
-            </div>
-            <div className="job-instruction">
-              <LinkifiedText text={job.instruction} />
-            </div>
-            <div className="job-stats">
-              <span>资产 {job.assetCount}</span>
-              <span>待确认 {job.pendingConfirmationCount}</span>
-              <span>导入成功 {job.importSuccessCount}</span>
-              <span>导入失败 {job.importFailedCount}</span>
-            </div>
-            {runningJobId === job.id ? <div className="job-live-note">队列执行中</div> : null}
-            {job.archivedAt ? <div className="job-archived-note">已归档 · {formatDate(job.archivedAt)}</div> : null}
-            {showQuickArchive ? (
-              <button
-                type="button"
-                className="job-card-quick-action"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onArchiveJob(job.id, nextArchivedState);
-                }}
-                aria-label={nextArchivedState ? "归档任务" : "取消归档"}
-              >
-                {nextArchivedState ? "归档" : "取消归档"}
-              </button>
-            ) : null}
-          </article>
+              <div className="job-title">
+                {job.sourceUrl ? <ExternalLink href={job.sourceUrl} label={job.sourceUrl} /> : "No URL"}
+              </div>
+              {shouldShowJobInstruction(job) ? (
+                <div className="job-instruction">
+                  <LinkifiedText text={job.instruction} />
+                </div>
+              ) : null}
+              <div className="job-stats">
+                <span>Assets {job.assetCount}</span>
+                <span>Pending {job.pendingConfirmationCount}</span>
+                <span>Imported {job.importSuccessCount}</span>
+                <span>Failed {job.importFailedCount}</span>
+              </div>
+              <div className="job-meta-row">
+                <span className="job-time">{formatDate(job.createdAt)}</span>
+                {job.archivedAt ? <div className="job-archived-note">Archived · {formatDate(job.archivedAt)}</div> : null}
+              </div>
+              {runningJobId === job.id ? <div className="job-live-note">Running</div> : null}
+              {showQuickArchive ? (
+                <button
+                  type="button"
+                  className="job-card-quick-action"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onArchiveJob(job.id, nextArchivedState);
+                  }}
+                  aria-label={nextArchivedState ? "Archive job" : "Unarchive job"}
+                >
+                  {nextArchivedState ? "Archive" : "Unarchive"}
+                </button>
+              ) : null}
+            </article>
+          </div>
         );
       })}
-      {jobs.length === 0 ? <div className="empty-text">暂无任务</div> : null}
+      {jobs.length === 0 ? <div className="empty-text">No jobs</div> : null}
 
       <div className="pagination">
         <button type="button" disabled={page <= 1} onClick={onPreviousPage}>
-          上一页
+          Prev
         </button>
         <span>
-          第 {page} / {totalPages} 页
+          {page} / {totalPages}
         </span>
         <button type="button" disabled={page >= totalPages} onClick={onNextPage}>
-          下一页
+          Next
         </button>
       </div>
     </section>
@@ -1198,7 +1226,7 @@ const JobDetailSummary = memo(function JobDetailSummary({
     <>
       <div className="detail-header">
         <div>
-          <h3>{detail.job.id}</h3>
+          <h3>Detail</h3>
           <p>
             <LinkifiedText text={detail.job.instruction} />
           </p>
@@ -1212,34 +1240,39 @@ const JobDetailSummary = memo(function JobDetailSummary({
       <div className="detail-actions">
         {canCancel ? (
           <button type="button" className="danger-button" onClick={() => onCancel(detail.job.id)}>
-            取消任务
+            Cancel
           </button>
         ) : null}
         {canArchive ? (
           <button type="button" onClick={() => onArchive(detail.job.id, !Boolean(detail.job.archivedAt))}>
-            {detail.job.archivedAt ? "取消归档" : "归档任务"}
+            {detail.job.archivedAt ? "Unarchive" : "Archive"}
           </button>
         ) : null}
-        <button type="button" disabled={!canImportSelected} onClick={() => void onImportSelected(detail.job.id)}>
-          {importingSelected ? "加入队列中..." : "导入已勾选"}
+        <button
+          type="button"
+          className="primary-button"
+          disabled={!canImportSelected}
+          onClick={() => void onImportSelected(detail.job.id)}
+        >
+          {importingSelected ? "Queueing..." : "Import selected"}
         </button>
         {assetImportSummary.failed > 0 ? (
           <button type="button" disabled={!canRetryFailedImport} onClick={() => void onRetryImport(detail.job.id)}>
-            {retryingFailedImport ? "重试排队中..." : "重试失败导入"}
+            {retryingFailedImport ? "Queueing retry..." : "Retry failed"}
           </button>
         ) : null}
-        <span>待确认: {assetImportSummary.pending}</span>
+        <span>Pending: {assetImportSummary.pending}</span>
         {assetImportSummary.selectedPendingMissingFolderCount > 0 ? (
-          <span>待确认文件夹: {assetImportSummary.selectedPendingMissingFolderCount}</span>
+          <span>Pending folders: {assetImportSummary.selectedPendingMissingFolderCount}</span>
         ) : null}
         {assetImportSummary.selectedFailedMissingFolderCount > 0 ? (
-          <span>失败项待确认文件夹: {assetImportSummary.selectedFailedMissingFolderCount}</span>
+          <span>Retry folders: {assetImportSummary.selectedFailedMissingFolderCount}</span>
         ) : null}
-        <span>导入成功: {assetImportSummary.imported}</span>
-        <span>导入失败: {assetImportSummary.failed}</span>
-        <span>开始: {formatDate(detail.job.startedAt)}</span>
-        <span>完成: {formatDate(detail.job.finishedAt)}</span>
-        {detail.job.archivedAt ? <span>归档于: {formatDate(detail.job.archivedAt)}</span> : null}
+        <span>Imported: {assetImportSummary.imported}</span>
+        <span>Failed: {assetImportSummary.failed}</span>
+        <span>Started: {formatDate(detail.job.startedAt)}</span>
+        <span>Finished: {formatDate(detail.job.finishedAt)}</span>
+        {detail.job.archivedAt ? <span>Archived: {formatDate(detail.job.archivedAt)}</span> : null}
       </div>
     </>
   );
@@ -1274,7 +1307,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
 }) {
   return detail.routes.length > 0 ? (
     <div className="route-list-panel">
-      <h4>核心路由卡片</h4>
+      <h4>Core routes</h4>
       <div className="core-route-card-list">
         {detail.routes.map((route) => {
           const asset = findAssetForRouteFromIndex(route, assetLookup);
@@ -1303,7 +1336,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                 <div className="core-route-card-actions">
                   {asset && canFocusDebugAsset(asset, hasSectionDebug) ? (
                     <button type="button" onClick={() => onFocusDebug(asset)}>
-                      Debug 聚焦
+                      Focus Debug
                     </button>
                   ) : null}
                   {canRetryRoute(detail.job.status, route.status) ? (
@@ -1312,7 +1345,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                       disabled={browserActionsDisabled}
                       onClick={() => void onRetryRoute(detail.job.id, route.id)}
                     >
-                      重试该路由
+                      Retry route
                     </button>
                   ) : null}
                 </div>
@@ -1340,17 +1373,17 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                   <div className={cx("route-preview-placeholder", `route-preview-${previewState}`)}>
                     <strong className="route-preview-title">
                       {previewState === "pending"
-                        ? "等待截图"
+                        ? "Waiting for capture"
                         : previewState === "failed"
-                          ? "截图失败"
-                          : "暂无封面"}
+                          ? "Capture failed"
+                          : "No preview"}
                     </strong>
                     <span className="route-preview-copy">
                       {previewState === "pending"
-                        ? "仍在执行或排队"
+                        ? "Still running or queued"
                         : previewState === "failed"
-                          ? "没有成功产物"
-                          : "无匹配封面"}
+                          ? "No successful output"
+                          : "No matching preview"}
                     </span>
                   </div>
                 )}
@@ -1804,6 +1837,7 @@ export function App() {
   const [selectionSaving, setSelectionSaving] = useState(false);
   const [importingSelected, setImportingSelected] = useState(false);
   const [retryingFailedImport, setRetryingFailedImport] = useState(false);
+  const [exitingJobIds, setExitingJobIds] = useState<Set<string>>(() => new Set());
   const [pendingQueueAction, setPendingQueueAction] = useState<{
     jobId: string;
     kind: PendingQueueActionKind;
@@ -1854,20 +1888,20 @@ export function App() {
       return null;
     }
     if (selectedPendingQueueActionKind === "import-selected") {
-      return "正在提交 Eagle 导入请求...";
+      return "Sending Eagle import request...";
     }
     if (selectedPendingQueueActionKind === "retry-import") {
-      return "正在提交 Eagle 重试请求...";
+      return "Sending Eagle retry request...";
     }
     if (selectedJobMode === "core-routes") {
       if (routeProgress.total === 0) {
-        return selectedJobIsRunning ? "实时执行中 · 正在发现核心路由" : "等待核心路由列表";
+        return selectedJobIsRunning ? "Live · discovering core routes" : "Waiting for core routes";
       }
       if (selectedJobIsRunning) {
         if (routeProgress.currentRouteLabel) {
-          return `实时执行中 · 当前路由 ${routeProgress.currentRouteLabel}`;
+          return `Live · ${routeProgress.currentRouteLabel}`;
         }
-        return `实时执行中 · 进度 ${routeProgress.done} / ${routeProgress.total}`;
+        return `Live · ${routeProgress.done} / ${routeProgress.total}`;
       }
       const completedStatusCopy = describeCompletedCoreRoutesStatus({
         status: selectedJobDetail.job.status,
@@ -1878,16 +1912,16 @@ export function App() {
       if (completedStatusCopy) {
         return completedStatusCopy;
       }
-      return `核心路由进度 ${routeProgress.done} / ${routeProgress.total}`;
+      return `Core route progress · ${routeProgress.done} / ${routeProgress.total}`;
     }
     if (selectedJobIsRunning) {
-      return "实时执行中 · 正在采集页面";
+      return "Live · capturing page";
     }
     if (selectedJobDetail.job.status === "awaiting_confirmation") {
       if (assetImportSummary.selectedPendingMissingFolderCount > 0) {
-        return `待确认文件夹 ${assetImportSummary.selectedPendingMissingFolderCount} 张`;
+        return `${assetImportSummary.selectedPendingMissingFolderCount} folders needed`;
       }
-      return `待确认导入 ${assetImportSummary.selectedPending} 张`;
+      return `${assetImportSummary.selectedPending} pending import`;
     }
     return null;
   }, [
@@ -2654,6 +2688,7 @@ export function App() {
   }, [executeCancelJob]);
 
   const executeArchiveJob = useCallback(async (jobId: string, archived: boolean): Promise<void> => {
+    let animatedRemoval = false;
     try {
       await apiFetch<{ archivedAt: string | null }>(`/api/jobs/${jobId}/archive`, {
         method: "POST",
@@ -2661,6 +2696,15 @@ export function App() {
       });
       const selectedJobWasArchived = selectedJobId === jobId;
       const hiddenByCurrentFilter = archived ? !archivedOnly : archivedOnly;
+      if (hiddenByCurrentFilter) {
+        animatedRemoval = true;
+        setExitingJobIds((current) => {
+          const next = new Set(current);
+          next.add(jobId);
+          return next;
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, ARCHIVE_EXIT_MS));
+      }
       await loadJobs(selectedJobWasArchived && !hiddenByCurrentFilter ? jobId : null);
       if (selectedJobWasArchived && hiddenByCurrentFilter) {
         setSelectedJobDetail(null);
@@ -2671,19 +2715,19 @@ export function App() {
       showToast(archived ? "任务已归档" : "任务已取消归档");
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : archived ? "归档任务失败" : "取消归档失败");
+    } finally {
+      if (animatedRemoval) {
+        setExitingJobIds((current) => {
+          const next = new Set(current);
+          next.delete(jobId);
+          return next;
+        });
+      }
     }
   }, [archivedOnly, loadJobDetail, loadJobs, selectedJobId, showToast]);
 
   const archiveJob = useCallback((jobId: string, archived: boolean): void => {
-    setActionDialog({
-      title: archived ? "归档任务" : "取消归档",
-      description: archived
-        ? "归档后默认不会出现在任务队列里，但任务记录和截图仍会保留。"
-        : "取消归档后，这个任务会重新显示在主队列中。",
-      confirmLabel: archived ? "确认归档" : "确认取消归档",
-      cancelLabel: archived ? "暂不归档" : "保留归档",
-      onConfirm: () => executeArchiveJob(jobId, archived),
-    });
+    void executeArchiveJob(jobId, archived);
   }, [executeArchiveJob]);
 
   function closeActionDialog(): void {
@@ -2834,42 +2878,20 @@ export function App() {
       <aside className="panel panel-create">
         <div className="panel-header">
           <h1>Autoscreenshot</h1>
-          <p>本地 Web 控制台 · Eagle 导入</p>
         </div>
 
         <label className="field-label" htmlFor="instruction">
-          截图指令
+          Prompt
         </label>
         <textarea
           id="instruction"
           className="instruction-input"
           value={instruction}
           onChange={(event) => setInstruction(event.target.value)}
-          placeholder="例如：打开 https://stripe.com，抓 full page 和 hero/testimonial，标签: landing,marketing"
+          placeholder="Open https://stripe.com and capture full page plus hero/testimonial. Tags: landing, marketing"
         />
 
-        <div className="field-grid">
-          <label className="field">
-            <span>JPG 质量</span>
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={quality}
-              onChange={(event) => setQuality(Math.max(1, Math.min(100, Number(event.target.value) || 92)))}
-            />
-          </label>
-          <label className="field">
-            <span>DPR</span>
-            <select value={String(dpr)} onChange={(event) => {
-              const value = event.target.value;
-              setDpr(value === "auto" ? "auto" : value === "1" ? 1 : 2);
-            }}>
-              <option value="auto">auto</option>
-              <option value="1">1</option>
-              <option value="2">2</option>
-            </select>
-          </label>
+        <div className="field-grid field-grid-primary">
           <div className="field field-mode">
             <span>Mode</span>
             <div className="segmented-control" role="tablist" aria-label="Capture mode">
@@ -2893,28 +2915,6 @@ export function App() {
               </button>
             </div>
           </div>
-          <label className="field">
-            <span>Section Scope</span>
-            <select value={sectionScope} onChange={(event) => setSectionScope(event.target.value as SectionScope)}>
-              <option value="classic">classic</option>
-              <option value="all-top-level">all-top-level</option>
-              <option value="manual">manual</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Classic Max</span>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={classicMaxSections}
-              onChange={(event) =>
-                setClassicMaxSections(
-                  Math.max(1, Math.min(20, Number(event.target.value) || 10)),
-                )
-              }
-            />
-          </label>
           {mode === "core-routes" ? (
             <label className="field">
               <span>Max Routes</span>
@@ -2933,10 +2933,58 @@ export function App() {
           ) : null}
         </div>
 
-        <label className="field">
-          <span>输出目录</span>
-          <input value={outputDir} onChange={(event) => setOutputDir(event.target.value)} />
-        </label>
+        <details className="advanced-panel">
+          <summary>Advanced</summary>
+          <div className="field-grid field-grid-advanced">
+            <label className="field">
+              <span>JPG Quality</span>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={quality}
+                onChange={(event) => setQuality(Math.max(1, Math.min(100, Number(event.target.value) || 92)))}
+              />
+            </label>
+            <label className="field">
+              <span>DPR</span>
+              <select value={String(dpr)} onChange={(event) => {
+                const value = event.target.value;
+                setDpr(value === "auto" ? "auto" : value === "1" ? 1 : 2);
+              }}>
+                <option value="auto">auto</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Section Scope</span>
+              <select value={sectionScope} onChange={(event) => setSectionScope(event.target.value as SectionScope)}>
+                <option value="classic">classic</option>
+                <option value="all-top-level">all-top-level</option>
+                <option value="manual">manual</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Classic Max</span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={classicMaxSections}
+                onChange={(event) =>
+                  setClassicMaxSections(
+                    Math.max(1, Math.min(20, Number(event.target.value) || 10)),
+                  )
+                }
+              />
+            </label>
+            <label className="field field-output">
+              <span>Output Dir</span>
+              <input value={outputDir} onChange={(event) => setOutputDir(event.target.value)} />
+            </label>
+          </div>
+        </details>
 
         <button
           className="submit-btn"
@@ -2944,33 +2992,33 @@ export function App() {
           onClick={() => void submitJob()}
           disabled={submitting || !config || browserActionsDisabled}
         >
-          {submitting ? "提交中..." : "提交任务"}
+          {submitting ? "Submitting..." : "Run"}
         </button>
 
         {errorText ? <div className="error-text">{errorText}</div> : null}
 
         <div className="meta-lines">
-          <div>默认值：quality {config?.defaults.quality ?? "..."}</div>
-          <div>默认模式：{config?.defaults.mode ?? "single"}</div>
-          <div>max routes：{config?.defaults.maxRoutes ?? "..."}</div>
-          <div>classic max：{config?.defaults.classicMaxSections ?? "..."}</div>
-          <div>实时连接：{liveConnected ? "已连接" : "未连接"}</div>
+          <div>Default quality: {config?.defaults.quality ?? "..."}</div>
+          <div>Default mode: {config?.defaults.mode ?? "single"}</div>
+          <div>Max routes: {config?.defaults.maxRoutes ?? "..."}</div>
+          <div>Classic max: {config?.defaults.classicMaxSections ?? "..."}</div>
+          <div>Live: {liveConnected ? "connected" : "offline"}</div>
           <div>
-            Eagle 文件夹策略：
-            {config?.eagleImportPolicy?.allowCreateFolder ? "允许创建" : "仅复用已有文件夹"}
+            Folder policy:
+            {config?.eagleImportPolicy?.allowCreateFolder ? " create allowed" : " reuse only"}
           </div>
         </div>
       </aside>
 
       <main className="panel panel-main">
         <div className="toolbar">
-          <h2>任务队列</h2>
+          <h2>Queue</h2>
           <div className="filters">
             <select value={statusFilter} onChange={(event) => {
               setStatusFilter(event.target.value);
               setPage(1);
             }}>
-              <option value="">全部状态</option>
+              <option value="">All</option>
               <option value="queued">queued</option>
               <option value="running">running</option>
               <option value="awaiting_confirmation">awaiting_confirmation</option>
@@ -2979,7 +3027,7 @@ export function App() {
               <option value="failed">failed</option>
             </select>
             <input
-              placeholder="搜索指令关键词"
+              placeholder="Search prompt"
               value={keywordFilter}
               onChange={(event) => {
                 setKeywordFilter(event.target.value);
@@ -2995,7 +3043,10 @@ export function App() {
                   setPage(1);
                 }}
               />
-              <span>归档</span>
+              <span className="filter-toggle-indicator" aria-hidden="true">
+                <span className="filter-toggle-knob" />
+              </span>
+              <span>Archived</span>
             </label>
           </div>
         </div>
@@ -3005,6 +3056,7 @@ export function App() {
             jobs={jobs}
             selectedJobId={selectedJobId}
             runningJobId={runningJobId}
+            exitingJobIds={exitingJobIds}
             totalPages={totalPages}
             page={page}
             onSelectJob={selectJob}
@@ -3015,7 +3067,7 @@ export function App() {
 
           <section className="job-detail">
             {!selectedJobDetail ? (
-              <div className="empty-text">选择一个任务查看详情</div>
+              <div className="empty-text">Select a job</div>
             ) : (
               <>
                 <JobDetailSummary
@@ -3040,20 +3092,20 @@ export function App() {
                   <div className={cx("progress-panel", selectedJobIsRunning && "progress-panel-live")}>
                     <div className="progress-panel-top">
                       <div>
-                        <div className="progress-kicker">核心路由进度</div>
+                        <div className="progress-kicker">Core route progress</div>
                         <strong>
-                          进度 {routeProgress.done} / {routeProgress.total || 0}
+                          {routeProgress.done} / {routeProgress.total || 0}
                         </strong>
                         <p>
                           {routeProgress.total === 0
                             ? selectedJobIsRunning
-                              ? "正在发现核心路由..."
-                              : "尚未生成核心路由"
+                              ? "Discovering core routes..."
+                              : "No core routes yet"
                             : routeProgress.currentRouteLabel
-                              ? `当前路由 ${routeProgress.currentRouteLabel}`
+                              ? `Current route: ${routeProgress.currentRouteLabel}`
                               : routeProgress.done === routeProgress.total
-                                ? "全部路由已处理"
-                                : `等待中 ${routeProgress.queued} 条`}
+                                ? "All routes processed"
+                                : `${routeProgress.queued} queued`}
                         </p>
                       </div>
                       <div className="progress-counters">
