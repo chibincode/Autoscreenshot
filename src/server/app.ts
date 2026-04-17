@@ -1652,7 +1652,6 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     await app.register(fastifyStatic, {
       root: webDistDir,
       prefix: "/",
-      wildcard: false,
     });
 
     app.setNotFoundHandler(async (request, reply) => {

@@ -1604,7 +1604,7 @@ summary:focus-visible {
 
 .assets-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -2583,6 +2583,10 @@ summary:focus-visible {
     padding: 14px;
   }
 
+  .assets-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .folder-picker-modal-backdrop {
     padding: 14px;
   }
@@ -2608,6 +2612,10 @@ summary:focus-visible {
 
   .folder-picker-option-tags {
     justify-content: flex-start;
+  }
+
+  .assets-grid {
+    grid-template-columns: 1fr;
   }
 }
 

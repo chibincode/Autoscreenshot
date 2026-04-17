@@ -386,10 +386,18 @@ const PLAYWRIGHT_RUNTIME_POLL_MS = 30_000;
 const LOG_VIRTUALIZE_THRESHOLD = 80;
 const LOG_ROW_HEIGHT = 42;
 const ASSET_VIRTUALIZE_THRESHOLD = 36;
-const ASSET_GRID_MIN_COLUMN_WIDTH = 188;
-const ASSET_GRID_GAP = 12;
 const ASSET_GRID_ROW_HEIGHT = 336;
 const ASSET_GRID_OVERSCAN_ROWS = 2;
+
+function getAssetGridColumns(width: number): number {
+  if (width >= 960) {
+    return 3;
+  }
+  if (width >= 640) {
+    return 2;
+  }
+  return 1;
+}
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -1372,19 +1380,11 @@ const AssetGridPanel = memo(function AssetGridPanel({
   onOpenPreview: (assetId: number) => void;
   onFocusDebug: (asset: JobAsset) => void;
 }) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const { width, height } = useElementSize(scrollRef);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const { width, height } = useElementSize(containerRef);
   const [scrollTop, setScrollTop] = useState(0);
   const shouldVirtualize = assets.length > ASSET_VIRTUALIZE_THRESHOLD;
-  const columns = useMemo(() => {
-    if (!shouldVirtualize || width === 0) {
-      return 1;
-    }
-    return Math.max(
-      1,
-      Math.floor((width + ASSET_GRID_GAP) / (ASSET_GRID_MIN_COLUMN_WIDTH + ASSET_GRID_GAP)),
-    );
-  }, [shouldVirtualize, width]);
+  const columns = useMemo(() => getAssetGridColumns(width), [width]);
 
   const virtualWindow = useMemo(() => {
     if (!shouldVirtualize) {
@@ -1423,7 +1423,11 @@ const AssetGridPanel = memo(function AssetGridPanel({
 
   if (!shouldVirtualize) {
     return (
-      <div className="assets-grid">
+      <div
+        ref={containerRef}
+        className="assets-grid"
+        style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+      >
         {assets.map((asset) => (
           <AssetCard
             key={asset.id}
@@ -1443,7 +1447,11 @@ const AssetGridPanel = memo(function AssetGridPanel({
   }
 
   return (
-    <div className="assets-grid-scroll" ref={scrollRef} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
+    <div
+      className="assets-grid-scroll"
+      ref={containerRef}
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+    >
       <div className="assets-grid-virtual-spacer" style={{ height: `${virtualWindow.totalHeight}px` }}>
         <div
           className="assets-grid assets-grid-virtual"
