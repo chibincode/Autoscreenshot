@@ -55,6 +55,20 @@ export interface AssetLookupIndex {
   latestAssetBySourceUrl: Map<string, AssetFeedbackAsset>;
 }
 
+export function formatPendingImportLabel(selectedForImport: boolean): string {
+  return selectedForImport ? "已预选，待确认导入" : "未加入导入";
+}
+
+export function buildJobStatusHint(job: AssetFeedbackJob): string | null {
+  if (job.mode === "core-routes" && job.status === "partial_success") {
+    return "For core-routes jobs, partial_success means some routes succeeded and others failed or were skipped. It does not mean Eagle import has already happened.";
+  }
+  if (job.status === "awaiting_confirmation") {
+    return "awaiting_confirmation means assets are only selected for import and still need confirmation before Eagle import starts.";
+  }
+  return null;
+}
+
 function compareAssets(left: AssetFeedbackAsset, right: AssetFeedbackAsset): number {
   if (left.kind !== right.kind) {
     return left.kind === "fullPage" ? -1 : 1;
@@ -168,6 +182,7 @@ export function buildFeedbackContext(params: {
     `job_id=${job.id}`,
     `job_mode=${job.mode}`,
     `job_status=${job.status}`,
+    `job_status_hint=${buildJobStatusHint(job) ?? "-"}`,
     `asset_id=${asset.id}`,
     `asset_file=${asset.fileName}`,
     `asset_label=${asset.label}`,
@@ -180,6 +195,8 @@ export function buildFeedbackContext(params: {
     `asset_captured_at=${asset.capturedAt}`,
     `asset_selected_for_import=${asset.selectedForImport ? "yes" : "no"}`,
     `asset_import_status=${asset.importStatus}`,
+    `asset_import_display=${formatPendingImportLabel(asset.selectedForImport)}`,
+    `asset_import_started=${asset.importStatus === "pending_confirmation" ? "no" : "yes"}`,
     `asset_import_error=${asset.importError ?? "-"}`,
     `asset_eagle_id=${asset.eagleId ?? "-"}`,
   ];

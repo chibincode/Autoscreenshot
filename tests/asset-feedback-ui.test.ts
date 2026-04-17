@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   buildFeedbackContext,
   buildAssetLookupIndex,
+  buildJobStatusHint,
   canFocusDebugAsset,
   findAssetForRoute,
   findAssetForRouteFromIndex,
+  formatPendingImportLabel,
   getCoreRoutePreviewState,
 } from "../web/src/asset-feedback.js";
 
@@ -127,6 +129,21 @@ describe("asset feedback ui helpers", () => {
     expect(canFocusDebugAsset({ kind: "section", sectionType: "hero" }, false)).toBe(false);
   });
 
+  it("describes pending imports as preselected instead of already imported", () => {
+    expect(formatPendingImportLabel(true)).toBe("已预选，待确认导入");
+    expect(formatPendingImportLabel(false)).toBe("未加入导入");
+  });
+
+  it("explains that core-routes partial_success is about route execution, not Eagle import", () => {
+    expect(
+      buildJobStatusHint({
+        id: "job_123",
+        mode: "core-routes",
+        status: "partial_success",
+      }),
+    ).toContain("does not mean Eagle import has already happened");
+  });
+
   it("builds a copyable feedback payload with route and asset context", () => {
     const context = buildFeedbackContext({
       job: {
@@ -166,9 +183,12 @@ describe("asset feedback ui helpers", () => {
 
     expect(context).toContain("job_id=job_123");
     expect(context).toContain("job_mode=core-routes");
+    expect(context).toContain("job_status_hint=For core-routes jobs, partial_success means some routes succeeded and others failed or were skipped. It does not mean Eagle import has already happened.");
     expect(context).toContain("asset_id=22");
     expect(context).toContain("asset_preview_url=http://127.0.0.1:5173/api/assets/22/file");
     expect(context).toContain("asset_selected_for_import=yes");
+    expect(context).toContain("asset_import_display=已预选，待确认导入");
+    expect(context).toContain("asset_import_started=yes");
     expect(context).toContain("asset_import_status=failed");
     expect(context).toContain("route_path=/pricing");
     expect(context).toContain("route_error=timeout");

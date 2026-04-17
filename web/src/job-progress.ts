@@ -40,6 +40,40 @@ export function getCurrentRunningRouteLabel(routes: readonly RouteProgressRoute[
   return route.path || route.url;
 }
 
+export function describeCompletedCoreRoutesStatus(params: {
+  status: ActivityStatus;
+  routeProgress: Pick<RouteProgressSummary, "success" | "failed" | "done" | "total">;
+  selectedPending: number;
+  selectedPendingMissingFolderCount: number;
+}): string | null {
+  const { routeProgress, selectedPending, selectedPendingMissingFolderCount, status } = params;
+
+  if (status === "awaiting_confirmation") {
+    if (selectedPendingMissingFolderCount > 0) {
+      return `核心路由已完成 · ${routeProgress.success} 条成功 · ${selectedPendingMissingFolderCount} 张待指定文件夹`;
+    }
+    return `核心路由已完成 · ${routeProgress.success} 条成功 · ${selectedPending} 张已预选，待确认导入`;
+  }
+
+  if (status === "partial_success") {
+    const routeSummary = `核心路由已完成 · ${routeProgress.success} 条成功 / ${routeProgress.failed} 条失败`;
+    if (selectedPending > 0) {
+      return `${routeSummary} · 当前还没有导入到 Eagle`;
+    }
+    return routeSummary;
+  }
+
+  if (status === "success") {
+    return `核心路由已完成 · ${routeProgress.success} 条成功`;
+  }
+
+  if (status === "failed") {
+    return `核心路由失败 · ${routeProgress.failed} 条失败`;
+  }
+
+  return null;
+}
+
 export function deriveRouteProgress(routes: readonly RouteProgressRoute[]): RouteProgressSummary {
   const summary: RouteProgressSummary = {
     total: routes.length,

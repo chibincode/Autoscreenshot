@@ -1505,9 +1505,13 @@ describe("server api", () => {
       taskJson: JSON.stringify({ url: "https://example.com/recent" }),
     });
 
+    const now = Date.now();
+    const oldFinishedAt = new Date(now - 20 * 24 * 60 * 60 * 1000).toISOString();
+    const recentFinishedAt = new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString();
+
     const rawDb = new Database(isolatedDbPath);
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run("2026-04-01T00:00:00.000Z", oldJobId);
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run("2026-04-10T00:00:00.000Z", recentJobId);
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, oldJobId);
+    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(recentFinishedAt, recentJobId);
     rawDb.close();
 
     const isolatedApp = await buildServer({
@@ -1924,6 +1928,143 @@ describe("server api", () => {
     };
     expect(detailData.assets[0].importStatus).toBe("imported");
     expect(detailData.assets[0].eagleId).toBe("eagle-item-import-selected");
+  });
+
+  it("returns 202 before a slow selected import finishes in the background", async () => {
+    const isolatedTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-import-queue-"));
+    const isolatedDbPath = path.join(isolatedTmpDir, "jobs.db");
+    const isolatedRepo = new JobsRepository(isolatedDbPath);
+    const isolatedQueue = new JobQueue();
+    const jobId = "slow-import-job";
+    const outputDir = path.join(isolatedTmpDir, jobId);
+    await fs.mkdir(outputDir, { recursive: true });
+    const imagePath = path.join(outputDir, "sample.jpg");
+    await writeTestJpeg(imagePath, 1280, 960);
+
+    const manifest: RunManifest = {
+      runId: jobId,
+      instruction: "open https://example.com/pricing and import",
+      createdAt: new Date().toISOString(),
+      task: {
+        url: "https://example.com/pricing",
+        waitUntil: "networkidle",
+        captures: [{ mode: "fullPage" }],
+        image: { format: "jpg", quality: 92, dpr: 2 },
+        viewport: { width: 1920, height: 1080 },
+        tags: [],
+        eagle: {},
+      },
+      sectionScope: "classic",
+      outputDir,
+      assets: [
+        {
+          kind: "fullPage",
+          label: "full_page",
+          filePath: imagePath,
+          fileName: "sample.jpg",
+          sourceUrl: "https://example.com/pricing",
+          quality: 92,
+          dpr: 2,
+          capturedAt: new Date().toISOString(),
+          folderOverrideId: "page-pricing-id",
+          import: createPendingImportResult(),
+        },
+      ],
+      routes: [],
+      scrollSceneDebug: [],
+    };
+    const manifestPath = path.join(outputDir, "manifest.json");
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+
+    isolatedRepo.createJob({
+      id: jobId,
+      instruction: manifest.instruction,
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir,
+      },
+    });
+    isolatedRepo.replaceAssets(jobId, manifest);
+    isolatedRepo.setJobResult({
+      jobId,
+      status: "awaiting_confirmation",
+      taskJson: JSON.stringify(manifest.task),
+      manifestPath,
+      outputDir,
+      error: null,
+    });
+
+    let releaseImport = (): void => {
+      // replaced when the blocking promise is created
+    };
+    const importBlocked = new Promise<void>((resolve) => {
+      releaseImport = () => resolve();
+    });
+    const slowImportSelectedFn = async (inputManifestPath: string): Promise<RunManifest> => {
+      const existing = JSON.parse(await fs.readFile(inputManifestPath, "utf8")) as RunManifest;
+      await importBlocked;
+      const updated: RunManifest = {
+        ...existing,
+        assets: existing.assets.map((asset) => ({
+          ...asset,
+          import: {
+            ok: true,
+            selected: true,
+            status: "imported",
+            eagleId: "slow-import-eagle-id",
+          },
+        })),
+      };
+      await fs.writeFile(inputManifestPath, JSON.stringify(updated, null, 2), "utf8");
+      return updated;
+    };
+
+    const isolatedApp = await buildServer({
+      repo: isolatedRepo,
+      queue: isolatedQueue,
+      webDistDir: path.join(isolatedTmpDir, "no-ui"),
+      importSelectedFn: slowImportSelectedFn,
+    });
+    await isolatedApp.ready();
+
+    try {
+      mockEagleFolderList();
+      const importResponse = await isolatedApp.inject({
+        method: "POST",
+        url: `/api/jobs/${jobId}/import-selected`,
+      });
+
+      expect(importResponse.statusCode).toBe(202);
+
+      const detailWhileBlockedResponse = await isolatedApp.inject({
+        method: "GET",
+        url: `/api/jobs/${jobId}`,
+      });
+      const detailWhileBlockedData = detailWhileBlockedResponse.json() as {
+        job: { status: string };
+        assets: Array<{ importStatus: string }>;
+      };
+      expect(detailWhileBlockedData.job.status === "queued" || detailWhileBlockedData.job.status === "running").toBe(
+        true,
+      );
+      expect(detailWhileBlockedData.assets[0].importStatus).toBe("pending_confirmation");
+
+      releaseImport();
+      const finalStatus = await waitForNextTerminalStatus(
+        isolatedApp,
+        jobId,
+        detailWhileBlockedData.job.status,
+      );
+      expect(finalStatus).toBe("success");
+    } finally {
+      await isolatedApp.close();
+      await fs.rm(isolatedTmpDir, { recursive: true, force: true });
+    }
   });
 
   it("retries only selected failed assets", async () => {

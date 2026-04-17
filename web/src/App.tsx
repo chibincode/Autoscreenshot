@@ -15,6 +15,7 @@ import {
   buildFeedbackContext,
   buildAssetLookupIndex,
   canFocusDebugAsset,
+  formatPendingImportLabel,
   findAssetForRouteFromIndex,
   findAssetsForRouteFromIndex,
   getCoreRoutePreviewState,
@@ -29,7 +30,7 @@ import {
   type EagleFolderOption,
   type RankedEagleFolderOption,
 } from "./folder-picker";
-import { deriveRouteProgress, isActiveStatus } from "./job-progress";
+import { deriveRouteProgress, describeCompletedCoreRoutesStatus, isActiveStatus } from "./job-progress";
 import { getNextSelectedJobId } from "./job-selection";
 import { canRetryRoute } from "./route-retry";
 import {
@@ -235,6 +236,8 @@ interface ActionToastState {
   message: string;
   tone?: ActionToastTone;
 }
+
+type PendingQueueActionKind = "import-selected" | "retry-import";
 
 interface AppConfig {
   defaults: {
@@ -727,13 +730,14 @@ function parseJobMode(optionsJson: string | null): JobMode {
 
 function formatAssetImportStatus(
   status: AssetImportStatus,
+  selectedForImport: boolean,
   error: string | null,
 ): string {
   if (status === "imported") {
     return "Eagle 导入成功";
   }
   if (status === "pending_confirmation") {
-    return "待确认导入";
+    return formatPendingImportLabel(selectedForImport);
   }
   return `导入失败: ${error ?? "未知错误"}`;
 }
@@ -1030,7 +1034,7 @@ const AssetCard = memo(function AssetCard({
           {asset.sectionType ? ` · ${asset.sectionType}` : ""}
         </span>
         {!compact ? <span>q{asset.quality} · dpr{asset.dpr}</span> : null}
-        <span>{formatAssetImportStatus(asset.importStatus, asset.importError)}</span>
+        <span>{formatAssetImportStatus(asset.importStatus, asset.selectedForImport, asset.importError)}</span>
       </div>
       <div className={compact ? "route-asset-folder-wrap" : "asset-folder-wrap"}>
         <AssetFolderControl
@@ -1217,11 +1221,11 @@ const JobDetailSummary = memo(function JobDetailSummary({
           </button>
         ) : null}
         <button type="button" disabled={!canImportSelected} onClick={() => void onImportSelected(detail.job.id)}>
-          {importingSelected ? "导入中..." : "导入已勾选"}
+          {importingSelected ? "加入队列中..." : "导入已勾选"}
         </button>
         {assetImportSummary.failed > 0 ? (
           <button type="button" disabled={!canRetryFailedImport} onClick={() => void onRetryImport(detail.job.id)}>
-            {retryingFailedImport ? "重试中..." : "重试失败导入"}
+            {retryingFailedImport ? "重试排队中..." : "重试失败导入"}
           </button>
         ) : null}
         <span>待确认: {assetImportSummary.pending}</span>
@@ -1719,7 +1723,11 @@ const PreviewModal = memo(function PreviewModal({
               <div>
                 <dt>Import</dt>
                 <dd>
-                  {formatAssetImportStatus(previewAsset.importStatus, previewAsset.importError)}
+                  {formatAssetImportStatus(
+                    previewAsset.importStatus,
+                    previewAsset.selectedForImport,
+                    previewAsset.importError,
+                  )}
                   {previewAsset.importStatus === "imported" && previewAsset.eagleId
                     ? ` · Eagle ${previewAsset.eagleId}`
                     : ""}
@@ -1796,6 +1804,10 @@ export function App() {
   const [selectionSaving, setSelectionSaving] = useState(false);
   const [importingSelected, setImportingSelected] = useState(false);
   const [retryingFailedImport, setRetryingFailedImport] = useState(false);
+  const [pendingQueueAction, setPendingQueueAction] = useState<{
+    jobId: string;
+    kind: PendingQueueActionKind;
+  } | null>(null);
   const [folderSavingAssetIds, setFolderSavingAssetIds] = useState<Set<number>>(() => new Set());
   const [folderPickerState, setFolderPickerState] = useState<FolderPickerState | null>(null);
   const [folderPickerSaving, setFolderPickerSaving] = useState(false);
@@ -1817,6 +1829,12 @@ export function App() {
     () => parseJobMode(selectedJobDetail?.job.optionsJson ?? null),
     [selectedJobDetail?.job.optionsJson],
   );
+  const selectedPendingQueueActionKind = useMemo<PendingQueueActionKind | null>(() => {
+    if (!selectedJobDetail || !pendingQueueAction) {
+      return null;
+    }
+    return pendingQueueAction.jobId === selectedJobDetail.job.id ? pendingQueueAction.kind : null;
+  }, [pendingQueueAction, selectedJobDetail]);
   const assetImportSummary = useMemo(
     () => summarizeAssets(selectedJobDetail?.assets ?? []),
     [selectedJobDetail?.assets],
@@ -1835,6 +1853,12 @@ export function App() {
     if (!selectedJobDetail) {
       return null;
     }
+    if (selectedPendingQueueActionKind === "import-selected") {
+      return "正在提交 Eagle 导入请求...";
+    }
+    if (selectedPendingQueueActionKind === "retry-import") {
+      return "正在提交 Eagle 重试请求...";
+    }
     if (selectedJobMode === "core-routes") {
       if (routeProgress.total === 0) {
         return selectedJobIsRunning ? "实时执行中 · 正在发现核心路由" : "等待核心路由列表";
@@ -1844,6 +1868,15 @@ export function App() {
           return `实时执行中 · 当前路由 ${routeProgress.currentRouteLabel}`;
         }
         return `实时执行中 · 进度 ${routeProgress.done} / ${routeProgress.total}`;
+      }
+      const completedStatusCopy = describeCompletedCoreRoutesStatus({
+        status: selectedJobDetail.job.status,
+        routeProgress,
+        selectedPending: assetImportSummary.selectedPending,
+        selectedPendingMissingFolderCount: assetImportSummary.selectedPendingMissingFolderCount,
+      });
+      if (completedStatusCopy) {
+        return completedStatusCopy;
       }
       return `核心路由进度 ${routeProgress.done} / ${routeProgress.total}`;
     }
@@ -1867,6 +1900,7 @@ export function App() {
     selectedJobDetail,
     selectedJobIsRunning,
     selectedJobMode,
+    selectedPendingQueueActionKind,
   ]);
   const canCancelSelectedJob = useMemo(() => {
     if (!selectedJobDetail) {
@@ -2342,6 +2376,20 @@ export function App() {
     setActionToast({ message, tone });
   }, []);
 
+  const refreshJobSoon = useCallback((jobId: string): void => {
+    const delays = [0, 300, 1200];
+    for (const delay of delays) {
+      window.setTimeout(() => {
+        void loadJobs(jobId).catch(() => {
+          // no-op
+        });
+        void loadJobDetail(jobId).catch(() => {
+          // no-op
+        });
+      }, delay);
+    }
+  }, [loadJobDetail, loadJobs]);
+
   async function submitJob(): Promise<void> {
     if (!instruction.trim()) {
       setErrorText("请输入截图指令");
@@ -2387,19 +2435,27 @@ export function App() {
 
   const retryImport = useCallback(async (jobId: string): Promise<void> => {
     setRetryingFailedImport(true);
+    setPendingQueueAction({ jobId, kind: "retry-import" });
     try {
       await apiFetch(`/api/jobs/${jobId}/retry-import`, {
         method: "POST",
       });
-      await loadJobs();
-      await loadJobDetail(jobId);
-      showToast("已重新尝试导入失败项", "info");
+      showToast("已加入重试队列，正在重新导入到 Eagle", "info");
+      refreshJobSoon(jobId);
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "重试导入失败");
+      setErrorText(error instanceof Error ? error.message : "提交重试导入请求失败");
+      setPendingQueueAction((current) =>
+        current?.jobId === jobId && current.kind === "retry-import" ? null : current,
+      );
     } finally {
       setRetryingFailedImport(false);
+      window.setTimeout(() => {
+        setPendingQueueAction((current) =>
+          current?.jobId === jobId && current.kind === "retry-import" ? null : current,
+        );
+      }, 1500);
     }
-  }, [loadJobDetail, loadJobs, showToast]);
+  }, [refreshJobSoon, showToast]);
 
   const saveAssetSelection = useCallback(async (jobId: string, selectedAssetIds: number[]): Promise<void> => {
     setSelectionSaving(true);
@@ -2521,18 +2577,27 @@ export function App() {
 
   const importSelected = useCallback(async (jobId: string): Promise<void> => {
     setImportingSelected(true);
+    setPendingQueueAction({ jobId, kind: "import-selected" });
     try {
       await apiFetch(`/api/jobs/${jobId}/import-selected`, {
         method: "POST",
       });
-      await loadJobs();
-      await loadJobDetail(jobId);
+      showToast("已加入导入队列，正在导入到 Eagle", "info");
+      refreshJobSoon(jobId);
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "导入已勾选失败");
+      setErrorText(error instanceof Error ? error.message : "提交导入请求失败");
+      setPendingQueueAction((current) =>
+        current?.jobId === jobId && current.kind === "import-selected" ? null : current,
+      );
     } finally {
       setImportingSelected(false);
+      window.setTimeout(() => {
+        setPendingQueueAction((current) =>
+          current?.jobId === jobId && current.kind === "import-selected" ? null : current,
+        );
+      }, 1500);
     }
-  }, [loadJobDetail, loadJobs]);
+  }, [refreshJobSoon, showToast]);
 
   const retryRoute = useCallback(async (jobId: string, routeId: number): Promise<void> => {
     if (browserActionsDisabled) {

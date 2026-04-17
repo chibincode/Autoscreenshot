@@ -29,6 +29,9 @@ npx playwright install chromium
 npm run dev
 ```
 
+Mac 上如果你不想每次手动切 Node 版本，可以直接双击仓库根目录的 `dev.command`。
+它会自动切到 Node 20，再启动前后端开发服务。
+
 打开：
 
 - Web 控制台: `http://127.0.0.1:5173`（Vite 开发服务器）
