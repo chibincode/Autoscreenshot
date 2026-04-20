@@ -1,6 +1,7 @@
 import type { Locator, Page } from "playwright";
 
 type OverlayType = "consent" | "promo";
+type OverlayCleanupPhase = "pre_capture" | "tile_capture" | "scroll_scene_sampling";
 type OverlayVendor =
   | "osano"
   | "onetrust"
@@ -8,6 +9,7 @@ type OverlayVendor =
   | "usercentrics"
   | "didomi"
   | "trustarc"
+  | "transcend"
   | "generic";
 
 export interface OverlaySnapshot {
@@ -26,6 +28,9 @@ export interface OverlaySnapshot {
   acceptActionCount: number;
   rejectActionCount: number;
   closeActionCount: number;
+  confirmActionCount: number;
+  checkboxLikeControlCount: number;
+  hostSignalCount: number;
 }
 
 export interface OverlayClassification {
@@ -35,6 +40,8 @@ export interface OverlayClassification {
 
 interface OverlayCleanupOptions {
   log?: (level: "info" | "warn", message: string) => void;
+  phase?: OverlayCleanupPhase;
+  maxPasses?: number;
 }
 
 const OVERLAY_ATTR = "data-autosnap-overlay-id";
@@ -50,6 +57,14 @@ const KNOWN_VENDOR_MARKERS: Array<{ vendor: Exclude<OverlayVendor, "generic">; n
   { vendor: "usercentrics", needles: ["usercentrics"] },
   { vendor: "didomi", needles: ["didomi"] },
   { vendor: "trustarc", needles: ["trustarc", "truste"] },
+  { vendor: "transcend", needles: ["transcend"] },
+];
+
+const CONSENT_HOST_KEYWORDS = [
+  "transcend",
+  "consent-manager",
+  "cookie-manager",
+  "privacy-manager",
 ];
 
 const CONSENT_KEYWORDS = [
@@ -58,10 +73,10 @@ const CONSENT_KEYWORDS = [
   "privacy",
   "gdpr",
   "tracking",
-  "preferences",
   "necessary cookies",
   "cookie policy",
   "cookie settings",
+  "sale of personal information",
 ];
 
 const PROMO_KEYWORDS = [
@@ -100,6 +115,13 @@ const CLOSE_LABELS = [
 ];
 
 const ACCEPT_WORDS = ["accept", "agree", "allow all", "yes, i agree"];
+const CONFIRM_LABELS = [
+  "confirm",
+  "save preferences",
+  "save settings",
+  "submit",
+  "save and continue",
+];
 
 const OVERLAY_CANDIDATE_SELECTOR = [
   '[role="dialog"]',
@@ -139,6 +161,14 @@ const OVERLAY_CANDIDATE_SELECTOR = [
   '[class*="usercentrics" i]',
   '[id*="trustarc" i]',
   '[class*="trustarc" i]',
+  '[id*="transcend" i]',
+  '[class*="transcend" i]',
+  '[id*="consent-manager" i]',
+  '[class*="consent-manager" i]',
+  '[id*="cookie-manager" i]',
+  '[class*="cookie-manager" i]',
+  '[id*="privacy-manager" i]',
+  '[class*="privacy-manager" i]',
 ].join(", ");
 
 const ACTIONABLE_SELECTOR =
@@ -166,16 +196,18 @@ function isOverlayGeometry(snapshot: OverlaySnapshot): boolean {
     snapshot.position === "fixed" ||
     snapshot.position === "sticky" ||
     snapshot.role === "dialog";
+  const hostConsentManager = positionAnchored && snapshot.hostSignalCount > 0;
   const largeEnough = snapshot.width >= 180 && snapshot.height >= 60;
   const visibleInViewport = snapshot.width <= snapshot.viewportWidth * 1.05;
   const inlineConsentCard =
-    snapshot.acceptActionCount > 0 &&
-    (snapshot.rejectActionCount > 0 || snapshot.closeActionCount > 0) &&
+    ((snapshot.acceptActionCount > 0 &&
+      (snapshot.rejectActionCount > 0 || snapshot.closeActionCount > 0)) ||
+      (snapshot.confirmActionCount > 0 && snapshot.checkboxLikeControlCount > 0)) &&
     snapshot.width >= 260 &&
     snapshot.height >= 120 &&
     snapshot.width <= snapshot.viewportWidth * 0.9 &&
     snapshot.height <= Math.max(Math.round(snapshot.viewportHeight * 0.75), 260);
-  return (positionAnchored && largeEnough && visibleInViewport) || inlineConsentCard;
+  return hostConsentManager || (positionAnchored && largeEnough && visibleInViewport) || inlineConsentCard;
 }
 
 export function classifyOverlaySnapshot(snapshot: OverlaySnapshot): OverlayClassification | null {
@@ -188,7 +220,11 @@ export function classifyOverlaySnapshot(snapshot: OverlaySnapshot): OverlayClass
   );
   const vendor = detectVendor(haystack);
 
-  if (vendor !== "generic" || includesAny(haystack, CONSENT_KEYWORDS)) {
+  if (
+    vendor !== "generic" ||
+    includesAny(haystack, CONSENT_KEYWORDS) ||
+    snapshot.hostSignalCount > 0
+  ) {
     return { type: "consent", vendor };
   }
 
@@ -203,10 +239,23 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
   // Keep the evaluate callback free of named local helpers.
   // tsx/esbuild injects __name() for them in dev, which breaks browser-side execution.
   return page.evaluate(
-    ({ attrName, selector, actionSelector, rejectLabels, closeLabels, acceptWords, consentKeywords, vendorNeedles }) => {
+    ({
+      attrName,
+      selector,
+      actionSelector,
+      rejectLabels,
+      closeLabels,
+      acceptWords,
+      confirmLabels,
+      consentKeywords,
+      consentHostKeywords,
+      vendorNeedles,
+    }) => {
       const nodes = Array.from(document.querySelectorAll<HTMLElement>(selector));
       const seen = new Set<string>();
       const snapshots: OverlaySnapshot[] = [];
+      const checkboxSelector =
+        'input[type="checkbox"], [role="checkbox"], [role="switch"], [aria-checked="true"], [aria-checked="false"]';
 
       for (const node of nodes) {
         if (!node.isConnected) {
@@ -215,13 +264,29 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
 
         const style = window.getComputedStyle(node);
         const rect = node.getBoundingClientRect();
+        const hostHaystack = [
+          node.id,
+          node.className,
+          node.getAttribute("aria-label"),
+          node.getAttribute("role"),
+        ]
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+        const hostSignalCount = consentHostKeywords.filter((word) => hostHaystack.includes(word)).length;
+        const hostCandidate =
+          hostSignalCount > 0 &&
+          (style.position === "fixed" ||
+            style.position === "sticky" ||
+            Number.parseFloat(style.zIndex || "0") >= 1000);
         const visible =
           style.display !== "none" &&
           style.visibility !== "hidden" &&
           Number.parseFloat(style.opacity || "1") > 0.02 &&
           rect.width > 0 &&
           rect.height > 0;
-        if (!visible) {
+        if (!visible && !hostCandidate) {
           continue;
         }
 
@@ -238,6 +303,7 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
         let acceptActionCount = 0;
         let rejectActionCount = 0;
         let closeActionCount = 0;
+        let confirmActionCount = 0;
         const actions = Array.from(node.querySelectorAll<HTMLElement>(actionSelector));
         for (const action of actions) {
           const text = [
@@ -262,7 +328,11 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           if (closeLabels.some((word) => text.includes(word))) {
             closeActionCount += 1;
           }
+          if (confirmLabels.some((word) => text.includes(word))) {
+            confirmActionCount += 1;
+          }
         }
+        const checkboxLikeControlCount = node.querySelectorAll(checkboxSelector).length;
 
         snapshots.push({
           overlayId,
@@ -280,6 +350,9 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           acceptActionCount,
           rejectActionCount,
           closeActionCount,
+          confirmActionCount,
+          checkboxLikeControlCount,
+          hostSignalCount,
         });
       }
 
@@ -297,7 +370,9 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           .toLowerCase();
         if (
           !actionText ||
-          ![...acceptWords, ...rejectLabels, ...closeLabels].some((word) => actionText.includes(word))
+          ![...acceptWords, ...rejectLabels, ...closeLabels, ...confirmLabels].some((word) =>
+            actionText.includes(word),
+          )
         ) {
           continue;
         }
@@ -335,6 +410,7 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           let acceptActionCount = 0;
           let rejectActionCount = 0;
           let closeActionCount = 0;
+          let confirmActionCount = 0;
           const actions = Array.from(current.querySelectorAll<HTMLElement>(actionSelector));
           for (const action of actions) {
             const candidateText = [
@@ -359,10 +435,16 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
             if (closeLabels.some((word) => candidateText.includes(word))) {
               closeActionCount += 1;
             }
+            if (confirmLabels.some((word) => candidateText.includes(word))) {
+              confirmActionCount += 1;
+            }
           }
+          const checkboxLikeControlCount = current.querySelectorAll(checkboxSelector).length;
+          const hostSignalCount = consentHostKeywords.filter((word) => text.includes(word)).length;
 
           const actionable =
-            acceptActionCount > 0 && (rejectActionCount > 0 || closeActionCount > 0);
+            (acceptActionCount > 0 && (rejectActionCount > 0 || closeActionCount > 0)) ||
+            (confirmActionCount > 0 && checkboxLikeControlCount > 0);
           const likelyConsent =
             consentKeywords.some((word) => text.includes(word)) ||
             vendorNeedles.some((word) => text.includes(word));
@@ -396,6 +478,9 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
                 acceptActionCount,
                 rejectActionCount,
                 closeActionCount,
+                confirmActionCount,
+                checkboxLikeControlCount,
+                hostSignalCount,
               });
             }
             break;
@@ -414,7 +499,9 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
       rejectLabels: REJECT_LABELS,
       closeLabels: CLOSE_LABELS,
       acceptWords: ACCEPT_WORDS,
+      confirmLabels: CONFIRM_LABELS,
       consentKeywords: CONSENT_KEYWORDS,
+      consentHostKeywords: CONSENT_HOST_KEYWORDS,
       vendorNeedles: KNOWN_VENDOR_MARKERS.flatMap((marker) => marker.needles),
     },
   );
@@ -536,11 +623,12 @@ async function handleOverlayCandidate(
   page: Page,
   snapshot: OverlaySnapshot,
   classification: OverlayClassification,
+  phase: OverlayCleanupPhase,
   log?: OverlayCleanupOptions["log"],
 ): Promise<boolean> {
   log?.(
     "info",
-    `overlay_detected type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
+    `overlay_detected phase=${phase} type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
   );
 
   const container = page.locator(`[${OVERLAY_ATTR}="${snapshot.overlayId}"]`).first();
@@ -550,7 +638,7 @@ async function handleOverlayCandidate(
       await page.waitForTimeout(POST_ACTION_SETTLE_MS);
       log?.(
         "info",
-        `overlay_action action=hide_dom_offscreen type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
+        `overlay_action phase=${phase} action=hide_dom_offscreen type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
       );
     }
     return hidden;
@@ -561,6 +649,7 @@ async function handleOverlayCandidate(
       ? [
           { labels: REJECT_LABELS, action: "click_reject" },
           { labels: CLOSE_LABELS, action: "click_close" },
+          { labels: CONFIRM_LABELS, action: "click_confirm" },
         ]
       : [{ labels: CLOSE_LABELS, action: "click_close" }];
 
@@ -572,7 +661,7 @@ async function handleOverlayCandidate(
     await page.waitForTimeout(POST_ACTION_SETTLE_MS);
     log?.(
       "info",
-      `overlay_action action=${plan.action} type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
+      `overlay_action phase=${phase} action=${plan.action} type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
     );
     if (!(await isLocatorVisible(container))) {
       return true;
@@ -584,7 +673,7 @@ async function handleOverlayCandidate(
     await page.waitForTimeout(POST_ACTION_SETTLE_MS);
     log?.(
       "info",
-      `overlay_action action=hide_dom_fallback type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
+      `overlay_action phase=${phase} action=hide_dom_fallback type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
     );
   }
   return hidden;
@@ -594,9 +683,11 @@ export async function cleanupCaptureOverlays(
   page: Page,
   options: OverlayCleanupOptions = {},
 ): Promise<{ handled: number }> {
+  const phase = options.phase ?? "pre_capture";
+  const maxPasses = Math.max(1, options.maxPasses ?? MAX_CLEANUP_PASSES);
   let handled = 0;
 
-  for (let pass = 0; pass < MAX_CLEANUP_PASSES; pass += 1) {
+  for (let pass = 0; pass < maxPasses; pass += 1) {
     const snapshots = await collectOverlaySnapshots(page);
     let handledThisPass = 0;
 
@@ -605,7 +696,7 @@ export async function cleanupCaptureOverlays(
       if (!classification) {
         continue;
       }
-      const didHandle = await handleOverlayCandidate(page, snapshot, classification, options.log);
+      const didHandle = await handleOverlayCandidate(page, snapshot, classification, phase, options.log);
       if (didHandle) {
         handled += 1;
         handledThisPass += 1;
@@ -618,6 +709,6 @@ export async function cleanupCaptureOverlays(
     await page.waitForTimeout(POST_PASS_SETTLE_MS);
   }
 
-  options.log?.("info", `overlay_cleanup_summary handled=${handled}`);
+  options.log?.("info", `overlay_cleanup_summary phase=${phase} handled=${handled}`);
   return { handled };
 }

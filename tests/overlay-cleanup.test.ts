@@ -21,6 +21,9 @@ function makeSnapshot(partial: Partial<OverlaySnapshot>): OverlaySnapshot {
     acceptActionCount: 0,
     rejectActionCount: 0,
     closeActionCount: 0,
+    confirmActionCount: 0,
+    checkboxLikeControlCount: 0,
+    hostSignalCount: 0,
     ...partial,
   };
 }
@@ -65,6 +68,35 @@ describe("overlay cleanup classification", () => {
     expect(result).toEqual({ type: "consent", vendor: "generic" });
   });
 
+  it("classifies confirm-only consent cards when they expose cookie preferences", () => {
+    const result = classifyOverlaySnapshot(
+      makeSnapshot({
+        position: "fixed",
+        width: 520,
+        height: 260,
+        text: "What can we use data collected by cookies for? Essential Functional Analytics Advertising",
+        confirmActionCount: 1,
+        checkboxLikeControlCount: 5,
+      }),
+    );
+
+    expect(result).toEqual({ type: "consent", vendor: "generic" });
+  });
+
+  it("classifies consent manager hosts even when they expose no readable text", () => {
+    const result = classifyOverlaySnapshot(
+      makeSnapshot({
+        id: "transcend-consent-manager",
+        width: 0,
+        height: 0,
+        text: "",
+        hostSignalCount: 2,
+      }),
+    );
+
+    expect(result).toEqual({ type: "consent", vendor: "transcend" });
+  });
+
   it("classifies newsletter modals as promo overlays", () => {
     const result = classifyOverlaySnapshot(
       makeSnapshot({
@@ -85,6 +117,22 @@ describe("overlay cleanup classification", () => {
         height: 420,
         className: "legal-footer",
         text: "Read our cookie policy and privacy terms",
+      }),
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not classify generic settings forms that are not consent overlays", () => {
+    const result = classifyOverlaySnapshot(
+      makeSnapshot({
+        position: "static",
+        width: 620,
+        height: 380,
+        className: "settings-form",
+        text: "Notification preferences Choose which account alerts you want to receive.",
+        confirmActionCount: 1,
+        checkboxLikeControlCount: 4,
       }),
     );
 

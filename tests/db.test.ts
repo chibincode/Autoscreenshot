@@ -252,4 +252,17 @@ describe("jobs repository route targets", () => {
     expect(matches.every((job) => job.mode === "single")).toBe(true);
     expect(matches[0]?.assetCount).toBe(1);
   });
+
+  it("falls back to instruction url in job summaries when task_json is still empty", () => {
+    repo.createJob({
+      id: "job-summary-fallback",
+      instruction: "open https://example.com/pricing and capture full page",
+      options: DEFAULT_OPTIONS,
+    });
+
+    const jobs = repo.listJobs({});
+    const summary = jobs.items.find((job) => job.id === "job-summary-fallback");
+
+    expect(summary?.sourceUrl).toBe("https://example.com/pricing");
+  });
 });

@@ -662,10 +662,12 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     try {
       const { instruction, options: jobOptions } = normalizeCreateJobRequest(request.body);
       const jobId = nanoid(12);
+      const parsedUrl = extractFirstHttpUrl(instruction);
       repo.createJob({
         id: jobId,
         instruction,
         options: jobOptions,
+        taskJson: parsedUrl ? JSON.stringify({ url: parsedUrl }) : null,
       });
       repo.addLog(jobId, "info", "Job created");
 

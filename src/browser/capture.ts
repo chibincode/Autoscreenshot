@@ -28,6 +28,8 @@ export const DPR_PIXEL_THRESHOLD = 120_000_000;
 const FULLPAGE_INITIAL_SETTLE_MS = 2500;
 const FULLPAGE_SINGLE_CAPTURE_MAX_HEIGHT_PX = 16_000;
 const FULLPAGE_TILE_CSS_HEIGHT = 4_000;
+const OVERLAY_SWEEP_SETTLE_MS = 120;
+const CAPTURE_PHASE_ATTR = "data-autosnap-capture-phase";
 
 interface CaptureTaskOptions {
   outputDir: string;
@@ -75,6 +77,40 @@ function emitLog(
   }
 }
 
+async function sweepCaptureOverlays(params: {
+  page: import("playwright").Page;
+  log?: CaptureTaskOptions["log"];
+  phase: "pre_capture" | "tile_capture";
+  maxPasses?: number;
+}): Promise<number> {
+  await params.page
+    .evaluate(
+      ({ attrName, phase }) => {
+        document.documentElement?.setAttribute(attrName, phase);
+      },
+      { attrName: CAPTURE_PHASE_ATTR, phase: params.phase },
+    )
+    .catch(() => undefined);
+
+  try {
+    const result = await cleanupCaptureOverlays(params.page, {
+      log: params.log,
+      phase: params.phase,
+      maxPasses: params.maxPasses,
+    });
+    if (result.handled > 0) {
+      await params.page.waitForTimeout(OVERLAY_SWEEP_SETTLE_MS);
+    }
+    return result.handled;
+  } finally {
+    await params.page
+      .evaluate((attrName) => {
+        document.documentElement?.removeAttribute(attrName);
+      }, CAPTURE_PHASE_ATTR)
+      .catch(() => undefined);
+  }
+}
+
 async function getPageDimensions(page: import("playwright").Page): Promise<{
   width: number;
   height: number;
@@ -106,6 +142,7 @@ async function captureFullPageByTiles(params: {
   pageHeight: number;
   dpr: number;
   log?: CaptureTaskOptions["log"];
+  beforeSliceCapture?: () => Promise<void>;
 }): Promise<Buffer> {
   const client = await params.page.context().newCDPSession(params.page);
   const tileHeight = Math.max(1, Math.min(FULLPAGE_TILE_CSS_HEIGHT, Math.round(params.pageHeight)));
@@ -116,6 +153,7 @@ async function captureFullPageByTiles(params: {
   try {
     let sliceCount = 0;
     for (let top = 0; top < params.pageHeight; top += tileHeight) {
+      await params.beforeSliceCapture?.();
       const height = Math.max(1, Math.min(tileHeight, Math.round(params.pageHeight - top)));
       const screenshot = await client.send("Page.captureScreenshot", {
         format: "png",
@@ -169,6 +207,7 @@ async function captureFullPageImage(params: {
   pageHeight: number;
   dpr: number;
   log?: CaptureTaskOptions["log"];
+  beforeTileCapture?: () => Promise<void>;
 }): Promise<Buffer> {
   const physicalHeight = Math.max(1, Math.round(params.pageHeight * params.dpr));
   if (physicalHeight <= FULLPAGE_SINGLE_CAPTURE_MAX_HEIGHT_PX) {
@@ -184,7 +223,10 @@ async function captureFullPageImage(params: {
   }
 
   try {
-    return await captureFullPageByTiles(params);
+    return await captureFullPageByTiles({
+      ...params,
+      beforeSliceCapture: params.beforeTileCapture,
+    });
   } catch (error) {
     emitLog(
       params.log,
@@ -332,7 +374,11 @@ async function captureOnce(
     });
     const hasFullPageCapture = task.captures.some((item) => item.mode === "fullPage");
     await page.waitForTimeout(hasFullPageCapture ? FULLPAGE_INITIAL_SETTLE_MS : 400);
-    await cleanupCaptureOverlays(page, { log: options.log });
+    await sweepCaptureOverlays({
+      page,
+      log: options.log,
+      phase: "pre_capture",
+    });
     if (hasFullPageCapture) {
       const earlyScrollScenes = await detectScrollSceneCandidates(page);
       if (earlyScrollScenes.length === 0) {
@@ -345,11 +391,14 @@ async function captureOnce(
       await warmupLazyLoad(page);
       await page.waitForTimeout(400);
     }
-    await cleanupCaptureOverlays(page, { log: options.log });
+    await sweepCaptureOverlays({
+      page,
+      log: options.log,
+      phase: "pre_capture",
+    });
 
     const pageTitle = (await page.title()).trim() || undefined;
-
-    const pageSize = await getPageDimensions(page);
+    let pageSize = await getPageDimensions(page);
     const domain = sanitizeLabel(extractDomain(task.url));
     const timestamp = timestampForFile();
     const assets: CaptureRunResult["assets"] = [];
@@ -358,6 +407,12 @@ async function captureOnce(
 
     if (hasFullPageCapture) {
       await stabilizeFullPageViewport(page, task.url, options.log);
+      await sweepCaptureOverlays({
+        page,
+        log: options.log,
+        phase: "pre_capture",
+      });
+      pageSize = await getPageDimensions(page);
       const fullName = buildFileName(
         domain,
         timestamp,
@@ -373,6 +428,14 @@ async function captureOnce(
         pageHeight: pageSize.height,
         dpr: forcedDpr,
         log: options.log,
+        beforeTileCapture: async () => {
+          await sweepCaptureOverlays({
+            page,
+            log: options.log,
+            phase: "tile_capture",
+            maxPasses: 1,
+          });
+        },
       });
       const scrollSceneResult = await captureScrollSceneReplacements({
         baseImage: rawFullPageBuffer,

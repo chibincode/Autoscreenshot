@@ -254,6 +254,147 @@ function scrollScenePageTemplate(): string {
   `;
 }
 
+function scrollSceneOverlayPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Scroll Scene Overlay Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #111827;
+            color: white;
+          }
+          .intro,
+          footer {
+            min-height: 720px;
+            padding: 48px;
+            box-sizing: border-box;
+          }
+          .intro {
+            background: linear-gradient(180deg, #111827, #1f2937);
+          }
+          .scroll-scene {
+            position: relative;
+            height: 4200px;
+            padding: 0 48px;
+            box-sizing: border-box;
+            background: #020617;
+          }
+          .scene-window {
+            position: sticky;
+            top: 80px;
+            height: 520px;
+            width: min(100%, 1180px);
+            margin: 0 auto;
+            border-radius: 24px;
+            overflow: hidden;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+          }
+          .scene-frame {
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 72px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+          }
+          .scene-consent-card {
+            position: fixed;
+            top: 180px;
+            left: 50%;
+            width: 520px;
+            padding: 24px;
+            border-radius: 18px;
+            transform: translateX(-50%);
+            background: #fffdfa;
+            color: #161616;
+            box-shadow: 0 28px 64px rgba(15, 23, 42, 0.32);
+            z-index: 9999;
+          }
+          .scene-consent-card__options {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px 16px;
+            margin-top: 16px;
+            font-size: 15px;
+          }
+          .scene-consent-card button {
+            margin-top: 18px;
+            border: 0;
+            border-radius: 12px;
+            padding: 12px 18px;
+            background: #111827;
+            color: #fffdfa;
+          }
+          footer {
+            background: #0f172a;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="intro"><h1>Intro</h1><p>Scroll down for the scene.</p></div>
+        <section class="scroll-scene" id="scroll-scene">
+          <div class="scene-window">
+            <div class="scene-frame" id="scene-frame">FRAME 1</div>
+          </div>
+        </section>
+        <footer><h2>Footer</h2></footer>
+        <script>
+          const frame = document.getElementById('scene-frame');
+          const section = document.getElementById('scroll-scene');
+          const palette = [
+            ['FRAME 1', '#ef4444'],
+            ['FRAME 2', '#f59e0b'],
+            ['FRAME 3', '#10b981'],
+            ['FRAME 4', '#3b82f6'],
+          ];
+          let overlayShown = false;
+
+          function renderScene() {
+            const start = section.offsetTop;
+            const end = start + section.offsetHeight - window.innerHeight;
+            const progress = Math.max(0, Math.min(0.9999, (window.scrollY - start) / Math.max(1, end - start)));
+            const index = Math.min(palette.length - 1, Math.floor(progress * palette.length));
+            frame.textContent = palette[index][0];
+            frame.style.background = palette[index][1];
+          }
+
+          function maybeShowConsentOverlay() {
+            if (overlayShown || window.scrollY < section.offsetTop + 420) {
+              return;
+            }
+            overlayShown = true;
+            const overlay = document.createElement('div');
+            overlay.className = 'scene-consent-card';
+            overlay.innerHTML = [
+              '<strong>What can we use data collected by cookies for?</strong>',
+              '<div class="scene-consent-card__options">',
+              '<label><input type="checkbox" checked> Essential</label>',
+              '<label><input type="checkbox"> Functional</label>',
+              '<label><input type="checkbox"> Analytics</label>',
+              '<label><input type="checkbox"> Advertising</label>',
+              '</div>',
+              '<button type="button">Confirm</button>',
+            ].join('');
+            overlay.querySelector('button').addEventListener('click', () => overlay.remove());
+            document.body.appendChild(overlay);
+          }
+
+          window.addEventListener('scroll', () => {
+            renderScene();
+            maybeShowConsentOverlay();
+          }, { passive: true });
+          renderScene();
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 function consentBannerPageTemplate(): string {
   return `
     <html>
@@ -508,6 +649,214 @@ function inlineConsentCardPageTemplate(): string {
         <section class="footer">
           <h2>Footer</h2>
         </section>
+      </body>
+    </html>
+  `;
+}
+
+function transcendHostConsentPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Transcend Host Consent Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #2563eb;
+            color: white;
+          }
+          main {
+            min-height: 2400px;
+            padding: 72px;
+            box-sizing: border-box;
+            background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
+          }
+          h1 {
+            margin: 0;
+            font-size: 72px;
+            line-height: 1.05;
+          }
+          p {
+            max-width: 720px;
+            font-size: 24px;
+            line-height: 1.5;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1>Closed shadow consent host</h1>
+          <p>This fixture mimics consent managers that only expose a fixed host element in the light DOM while rendering the visible card inside a closed shadow root.</p>
+        </main>
+        <div id="transcend-consent-manager" style="position: fixed; z-index: 2147483647;"></div>
+        <script>
+          const host = document.getElementById('transcend-consent-manager');
+          const root = host.attachShadow({ mode: 'closed' });
+          const style = document.createElement('style');
+          style.textContent = [
+            '.transcend-card {',
+            '  position: fixed;',
+            '  top: 240px;',
+            '  left: 50%;',
+            '  width: 520px;',
+            '  padding: 24px;',
+            '  border-radius: 18px;',
+            '  transform: translateX(-50%);',
+            '  background: #fffdfa;',
+            '  color: #18181b;',
+            '  box-shadow: 0 30px 60px rgba(15, 23, 42, 0.22);',
+            '  z-index: 2147483647;',
+            '}',
+            '.transcend-card__options {',
+            '  display: grid;',
+            '  grid-template-columns: repeat(2, minmax(0, 1fr));',
+            '  gap: 12px 16px;',
+            '  margin-top: 16px;',
+            '  font-size: 15px;',
+            '}',
+            '.transcend-card button {',
+            '  margin-top: 18px;',
+            '  border: 0;',
+            '  border-radius: 12px;',
+            '  padding: 12px 18px;',
+            '  background: #111827;',
+            '  color: #fffdfa;',
+            '}',
+          ].join('');
+          const card = document.createElement('div');
+          card.className = 'transcend-card';
+          card.innerHTML = [
+            '<strong>What can we use data collected by cookies for?</strong>',
+            '<div class="transcend-card__options">',
+            '<label><input type="checkbox" checked> Essential</label>',
+            '<label><input type="checkbox"> Functional</label>',
+            '<label><input type="checkbox"> Analytics</label>',
+            '<label><input type="checkbox"> Advertising</label>',
+            '</div>',
+            '<button type="button">Confirm</button>',
+          ].join('');
+          root.append(style, card);
+        </script>
+      </body>
+    </html>
+  `;
+}
+
+function tiledLateConsentPageTemplate(): string {
+  const palette = [
+    { title: "SEGMENT 1", background: "#f3f4f6", color: "#111827" },
+    { title: "SEGMENT 2", background: "#35b56e", color: "#f8fafc" },
+    { title: "SEGMENT 3", background: "#3b82f6", color: "#f8fafc" },
+    { title: "SEGMENT 4", background: "#f59e0b", color: "#111827" },
+    { title: "SEGMENT 5", background: "#0f766e", color: "#f8fafc" },
+    { title: "SEGMENT 6", background: "#7c3aed", color: "#f8fafc" },
+    { title: "SEGMENT 7", background: "#be123c", color: "#f8fafc" },
+    { title: "SEGMENT 8", background: "#0891b2", color: "#f8fafc" },
+  ];
+
+  const sections = palette
+    .map(
+      (segment, index) => `
+        <section class="tile-band" style="background:${segment.background};color:${segment.color}">
+          <div>
+            <h2>${segment.title}</h2>
+            <p>Tile band ${index + 1} keeps a stable color so repeated fixed overlays are easy to detect.</p>
+          </div>
+        </section>
+      `,
+    )
+    .join("");
+
+  return `
+    <html>
+      <head>
+        <title>Tiled Late Consent Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #ffffff;
+          }
+          .tile-band {
+            min-height: 4000px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            box-sizing: border-box;
+          }
+          .tile-band h2 {
+            margin: 0;
+            font-size: 96px;
+            letter-spacing: 0.08em;
+          }
+          .tile-band p {
+            margin-top: 24px;
+            font-size: 28px;
+          }
+          .late-consent-card {
+            position: fixed;
+            top: 220px;
+            left: 50%;
+            width: 520px;
+            padding: 24px;
+            border-radius: 18px;
+            transform: translateX(-50%);
+            background: #fffdfa;
+            color: #18181b;
+            box-shadow: 0 30px 60px rgba(15, 23, 42, 0.22);
+            z-index: 9999;
+          }
+          .late-consent-card__options {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px 16px;
+            margin-top: 16px;
+            font-size: 15px;
+          }
+          .late-consent-card button {
+            margin-top: 18px;
+            border: 0;
+            border-radius: 12px;
+            padding: 12px 18px;
+            background: #111827;
+            color: #fffdfa;
+          }
+        </style>
+      </head>
+      <body>
+        <main>${sections}</main>
+        <script>
+          let overlayShown = false;
+
+          function maybeShowOverlay() {
+            if (overlayShown || document.documentElement.dataset.autosnapCapturePhase !== 'tile_capture') {
+              return;
+            }
+            overlayShown = true;
+            const overlay = document.createElement('div');
+            overlay.className = 'late-consent-card';
+            overlay.innerHTML = [
+              '<strong>What can we use data collected by cookies for?</strong>',
+              '<div class="late-consent-card__options">',
+              '<label><input type="checkbox" checked> Essential</label>',
+              '<label><input type="checkbox"> Functional</label>',
+              '<label><input type="checkbox"> Analytics</label>',
+              '<label><input type="checkbox"> Advertising</label>',
+              '</div>',
+              '<button type="button">Confirm</button>',
+            ].join('');
+            overlay.querySelector('button').addEventListener('click', () => overlay.remove());
+            document.body.appendChild(overlay);
+          }
+
+          new MutationObserver(() => maybeShowOverlay()).observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['data-autosnap-capture-phase'],
+          });
+          maybeShowOverlay();
+        </script>
       </body>
     </html>
   `;
@@ -895,6 +1244,11 @@ beforeAll(async () => {
       res.end(smoothScrollPageTemplate());
       return;
     }
+    if (pathname.startsWith("/scroll-scene-overlay")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(scrollSceneOverlayPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/scroll-scene")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(scrollScenePageTemplate());
@@ -918,6 +1272,16 @@ beforeAll(async () => {
     if (pathname.startsWith("/inline-consent-card")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(inlineConsentCardPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/transcend-host-consent")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(transcendHostConsentPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/tiled-late-consent")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(tiledLateConsentPageTemplate());
       return;
     }
     if (pathname.startsWith("/very-tall")) {
@@ -1062,6 +1426,46 @@ describe("fullPage tiled capture", () => {
     expect(sample[1]).toBeLessThan(40);
     expect(sample[2]).toBeLessThan(60);
   }, 20_000);
+
+  it("removes consent overlays that appear after pre-capture cleanup while tiling", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-tiled-late-consent-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/tiled-late-consent`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(result.fullPageSize.height).toBeGreaterThan(16_000);
+    expect(logs.some((message) => message.includes("overlay_action phase=tile_capture"))).toBe(true);
+
+    const greenBandSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 4370, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const orangeBandSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 12410, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(greenBandSample[1]).toBeGreaterThan(greenBandSample[0] + 40);
+    expect(greenBandSample[1]).toBeGreaterThan(greenBandSample[2] + 40);
+    expect(orangeBandSample[0]).toBeGreaterThan(orangeBandSample[1] + 40);
+    expect(orangeBandSample[1]).toBeGreaterThan(orangeBandSample[2] + 20);
+  }, 30_000);
 });
 
 describe("split scroll scene preservation", () => {
@@ -1261,6 +1665,51 @@ describe("scroll scene unfolding", () => {
     const uniqueColors = new Set(samples.map((sample) => `${sample[0]}-${sample[1]}-${sample[2]}`));
     expect(uniqueColors.size).toBeGreaterThanOrEqual(Math.min(3, firstScene.distinctFrameCount));
   }, 20_000);
+
+  it("removes overlays that appear during scroll-scene frame sampling", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-scroll-scene-overlay-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/scroll-scene-overlay`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    const firstScene = result.scrollSceneDebug?.[0];
+    expect(fullPageAsset).toBeTruthy();
+    expect(firstScene?.layoutMode).toBe("sticky_only_unfold");
+    expect(logs.some((message) => message.includes("overlay_action phase=scroll_scene_sampling"))).toBe(true);
+
+    const gap = 24;
+    const sampleOffsets = Array.from({ length: firstScene!.distinctFrameCount }, (_value, index) =>
+      Math.round(firstScene!.outerTop + index * (firstScene!.stickyHeight + gap) + 300),
+    );
+    const samples = await Promise.all(
+      sampleOffsets.map(async (top) =>
+        sharp(fullPageAsset!.filePath)
+          .extract({ left: 720, top, width: 1, height: 1 })
+          .raw()
+          .toBuffer(),
+      ),
+    );
+
+    for (const sample of samples) {
+      expect(sample[0] + sample[1] + sample[2]).toBeLessThan(650);
+    }
+    expect(new Set(samples.map((sample) => `${sample[0]}-${sample[1]}-${sample[2]}`)).size).toBeGreaterThanOrEqual(3);
+  }, 20_000);
 });
 
 describe("overlay cleanup", () => {
@@ -1292,8 +1741,8 @@ describe("overlay cleanup", () => {
       .toBuffer();
 
     expect(sample[0]).toBeGreaterThan(220);
-    expect(logs.some((message) => message.includes("overlay_detected type=consent vendor=osano"))).toBe(true);
-    expect(logs.some((message) => message.includes("overlay_cleanup_summary handled="))).toBe(true);
+    expect(logs.some((message) => message.includes("overlay_detected phase=pre_capture type=consent vendor=osano"))).toBe(true);
+    expect(logs.some((message) => message.includes("overlay_cleanup_summary phase=pre_capture handled="))).toBe(true);
   }, 20_000);
 
   it("dismisses promo modals before full-page capture", async () => {
@@ -1352,7 +1801,7 @@ describe("overlay cleanup", () => {
       .toBuffer();
 
     expect(sample[0]).toBeGreaterThan(220);
-    expect(logs.some((message) => message.includes("overlay_action action="))).toBe(true);
+    expect(logs.some((message) => message.includes("overlay_action phase=pre_capture action="))).toBe(true);
   }, 30_000);
 
   it("removes inline consent cards that become offscreen before the second cleanup pass", async () => {
@@ -1385,9 +1834,42 @@ describe("overlay cleanup", () => {
     expect(sample[0]).toBeGreaterThan(220);
     expect(sample[1]).toBeGreaterThan(100);
     expect(sample[2]).toBeLessThan(90);
-    expect(logs.some((message) => message.includes("overlay_detected type=consent vendor=generic"))).toBe(true);
-    expect(logs.some((message) => message.includes("overlay_action action=hide_dom_offscreen"))).toBe(true);
+    expect(logs.some((message) => message.includes("overlay_detected phase=pre_capture type=consent vendor=generic"))).toBe(true);
+    expect(logs.some((message) => message.includes("overlay_action phase=pre_capture action="))).toBe(true);
   }, 30_000);
+
+  it("removes consent managers that only expose a fixed host node in light DOM", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-transcend-host-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/transcend-host-consent`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    const sample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 420, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(sample[2]).toBeGreaterThan(sample[1] + 40);
+    expect(sample[2]).toBeGreaterThan(sample[0] + 60);
+    expect(logs.some((message) => message.includes("overlay_detected phase=pre_capture type=consent vendor=transcend"))).toBe(true);
+    expect(logs.some((message) => message.includes("overlay_action phase=pre_capture action=hide_dom_offscreen"))).toBe(true);
+  }, 20_000);
 });
 
 describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {

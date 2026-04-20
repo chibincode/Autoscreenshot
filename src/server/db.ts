@@ -216,6 +216,15 @@ function extractSourceUrl(taskJson: string | null): string | null {
   }
 }
 
+function extractSourceUrlFromInstruction(instruction: string): string | null {
+  const match = instruction.match(/https?:\/\/[^\s"'，,]+/i);
+  return match?.[0] ?? null;
+}
+
+function resolveJobSourceUrl(row: Pick<JobRow, "task_json" | "instruction">): string | null {
+  return extractSourceUrl(row.task_json) ?? extractSourceUrlFromInstruction(row.instruction);
+}
+
 function parseJobMode(optionsJson: string): JobMode {
   try {
     const parsed = JSON.parse(optionsJson) as { mode?: unknown };
@@ -367,18 +376,20 @@ export class JobsRepository {
     id: string;
     instruction: string;
     options: JobExecutionOptions;
+    taskJson?: string | null;
   }): JobRecord {
     const now = new Date().toISOString();
     this.db
       .prepare(
         `
-      INSERT INTO jobs (id, instruction, status, options_json, created_at, updated_at)
-      VALUES (@id, @instruction, 'queued', @optionsJson, @createdAt, @updatedAt)
+      INSERT INTO jobs (id, instruction, status, task_json, options_json, created_at, updated_at)
+      VALUES (@id, @instruction, 'queued', @taskJson, @optionsJson, @createdAt, @updatedAt)
     `,
       )
       .run({
         id: params.id,
         instruction: params.instruction,
+        taskJson: params.taskJson ?? null,
         optionsJson: JSON.stringify(params.options),
         createdAt: now,
         updatedAt: now,
@@ -859,7 +870,7 @@ export class JobsRepository {
       pendingConfirmationCount: Number(row.pending_confirmation_count) || 0,
       importSuccessCount: Number(row.import_success_count) || 0,
       importFailedCount: Number(row.import_failed_count) || 0,
-      sourceUrl: extractSourceUrl(row.task_json),
+      sourceUrl: resolveJobSourceUrl(row),
       archivedAt: row.archived_at,
     }));
 

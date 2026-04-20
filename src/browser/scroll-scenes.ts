@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import type { Page } from "playwright";
+import { cleanupCaptureOverlays } from "./overlay-cleanup.js";
 import type { ScrollSceneLayoutMode, ScrollSceneReplacementDebug } from "../types.js";
 
 const SCENE_ATTR = "data-autosnap-scroll-scene";
@@ -25,6 +26,7 @@ const SPLIT_CONTENT_MAX_SAMPLE_COUNT = 6;
 const DIVIDER_MAX_WIDTH_PX = 12;
 const DIVIDER_MAX_WIDTH_RATIO = 0.05;
 const DIVIDER_MIN_HEIGHT_RATIO = 0.8;
+const OVERLAY_SWEEP_SETTLE_MS = 120;
 
 interface ScrollSceneContentBlock {
   top: number;
@@ -874,11 +876,27 @@ async function settleSceneScroll(page: Page, targetScrollY: number): Promise<num
   return settledScrollY;
 }
 
+async function sweepScrollSceneSamplingOverlays(params: {
+  page: Page;
+  log?: (level: "info" | "warn", message: string) => void;
+}): Promise<number> {
+  const result = await cleanupCaptureOverlays(params.page, {
+    log: params.log,
+    phase: "scroll_scene_sampling",
+    maxPasses: 1,
+  });
+  if (result.handled > 0) {
+    await params.page.waitForTimeout(OVERLAY_SWEEP_SETTLE_MS);
+  }
+  return result.handled;
+}
+
 async function captureSceneFrames(params: {
   page: Page;
   candidate: ScrollSceneGeometry;
   documentHeight: number;
   viewportHeight: number;
+  log?: (level: "info" | "warn", message: string) => void;
 }): Promise<SampledSceneFrame[]> {
   const splitTargets = params.candidate.splitLayout
     ? sampleSplitSceneScrollTargets({
@@ -904,6 +922,10 @@ async function captureSceneFrames(params: {
   const frames: SampledSceneFrame[] = [];
   for (const target of scrollTargets) {
     const settledScrollY = await settleSceneScroll(params.page, target.scrollY);
+    await sweepScrollSceneSamplingOverlays({
+      page: params.page,
+      log: params.log,
+    });
 
     const clip = await params.page.evaluate(
       ({ sceneId, stickyAttr }) => {
@@ -1002,6 +1024,7 @@ export async function captureScrollSceneReplacements(params: {
         candidate,
         documentHeight: params.documentHeight,
         viewportHeight: params.viewportHeight,
+        log: params.log,
       });
 
       const distinctFrames = await filterDistinctSceneFrames(sampledFrames);
