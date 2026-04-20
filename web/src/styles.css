@@ -1314,10 +1314,14 @@ summary:focus-visible {
 }
 
 .core-route-card {
+  --detail-card-inset: 16px;
+  --detail-card-gap: 12px;
+  --detail-card-subsection-gap: 10px;
+  --detail-card-panel-pad: 10px;
   display: grid;
   grid-template-columns: 1fr;
-  gap: 12px;
-  padding: 14px;
+  gap: var(--detail-card-gap);
+  padding: var(--detail-card-inset);
   border-radius: 20px;
   background: var(--surface);
   box-shadow:
@@ -1346,7 +1350,7 @@ summary:focus-visible {
 .core-route-card-main {
   min-width: 0;
   display: grid;
-  gap: 8px;
+  gap: var(--detail-card-subsection-gap);
 }
 
 .core-route-card-top {
@@ -1358,7 +1362,7 @@ summary:focus-visible {
 
 .core-route-card-preview {
   display: grid;
-  gap: 8px;
+  gap: var(--detail-card-subsection-gap);
   align-content: start;
 }
 
@@ -1381,14 +1385,18 @@ summary:focus-visible {
 .route-asset-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .route-asset-card {
+  --detail-card-inset: 12px;
+  --detail-card-gap: 10px;
+  --detail-card-subsection-gap: 8px;
+  --detail-card-panel-pad: 9px;
   display: grid;
   align-content: start;
-  gap: 8px;
-  padding: 10px;
+  gap: var(--detail-card-gap);
+  padding: var(--detail-card-inset);
   border-radius: 16px;
   background: rgba(250, 251, 253, 0.96);
   box-shadow:
@@ -1405,7 +1413,8 @@ summary:focus-visible {
 
 .route-asset-meta {
   display: grid;
-  gap: 4px;
+  gap: 3px;
+  padding: 0;
   font-size: 0.75rem;
   color: var(--text-muted);
 }
@@ -1419,18 +1428,20 @@ summary:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  padding: 0;
 }
 
 .route-asset-folder-wrap,
 .asset-folder-wrap {
-  padding: 0 10px;
+  display: grid;
+  padding: 0;
 }
 
 .asset-folder-field {
   display: grid;
-  gap: 6px;
-  padding: 10px;
-  border-radius: 14px;
+  gap: 8px;
+  padding: var(--detail-card-panel-pad, 10px);
+  border-radius: 15px;
   background: rgba(244, 246, 249, 0.94);
   box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.05);
 }
@@ -1483,10 +1494,10 @@ summary:focus-visible {
 .asset-folder-trigger,
 .asset-folder-readonly {
   width: 100%;
-  min-height: 42px;
+  min-height: 40px;
   border: 0;
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 9px 11px;
   background: rgba(255, 255, 255, 0.9);
   color: var(--text);
   box-shadow:
@@ -1529,7 +1540,7 @@ summary:focus-visible {
 .asset-folder-path-stack {
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: 1px;
 }
 
 .asset-folder-path-primary,
@@ -1562,13 +1573,14 @@ summary:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  background: rgba(17, 24, 39, 0.06);
-  color: var(--text-muted);
-  font-size: 0.68rem;
-  font-weight: 700;
+  width: 9px;
+  height: 9px;
+  margin-right: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  color: rgba(95, 107, 124, 0.92);
+  transform: rotate(45deg) translateY(-1px);
+  flex: 0 0 auto;
 }
 
 .asset-folder-hint {
@@ -1609,14 +1621,14 @@ summary:focus-visible {
   width: 100%;
   padding: 0;
   border: 0;
-  border-radius: 18px;
+  border-radius: 17px;
   overflow: hidden;
   background: rgba(241, 243, 246, 0.92);
   box-shadow:
     inset 0 0 0 1px rgba(17, 24, 39, 0.04),
     0 4px 12px rgba(15, 23, 42, 0.022);
   cursor: pointer;
-  min-height: 176px;
+  min-height: 172px;
   transition:
     transform 180ms ease,
     box-shadow 180ms ease,
@@ -1792,7 +1804,14 @@ summary:focus-visible {
 }
 
 .asset-card {
+  --detail-card-inset: 12px;
+  --detail-card-gap: 10px;
+  --detail-card-subsection-gap: 8px;
+  --detail-card-panel-pad: 10px;
   display: grid;
+  align-content: start;
+  gap: var(--detail-card-gap);
+  padding: var(--detail-card-inset);
   border-radius: 20px;
   overflow: hidden;
   min-height: 324px;
@@ -1806,6 +1825,93 @@ summary:focus-visible {
     background-color 180ms ease;
   content-visibility: auto;
   contain-intrinsic-size: 252px;
+}
+
+.asset-card-toolbar,
+.route-asset-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0;
+  min-height: 30px;
+}
+
+.asset-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  border: 0;
+  background: rgba(241, 243, 246, 0.96);
+  box-shadow:
+    inset 0 0 0 1px rgba(17, 24, 39, 0.05),
+    0 1px 2px rgba(15, 23, 42, 0.03);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease;
+}
+
+.asset-icon-button:hover {
+  transform: translateY(-1px);
+  background: rgba(236, 239, 243, 0.98);
+  box-shadow:
+    inset 0 0 0 1px rgba(17, 24, 39, 0.07),
+    0 4px 10px rgba(15, 23, 42, 0.05);
+  color: var(--text);
+}
+
+.asset-focus-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+}
+
+.asset-focus-icon-corners {
+  position: absolute;
+  inset: 1px;
+  border-radius: 4px;
+  box-shadow:
+    inset 0 0 0 1.5px transparent,
+    inset 0 3px 0 -1.5px currentColor,
+    inset 0 -3px 0 -1.5px currentColor,
+    inset 3px 0 0 -1.5px currentColor,
+    inset -3px 0 0 -1.5px currentColor;
+  -webkit-mask:
+    linear-gradient(#000 0 0) top left / 5px 1.5px no-repeat,
+    linear-gradient(#000 0 0) top left / 1.5px 5px no-repeat,
+    linear-gradient(#000 0 0) top right / 5px 1.5px no-repeat,
+    linear-gradient(#000 0 0) top right / 1.5px 5px no-repeat,
+    linear-gradient(#000 0 0) bottom left / 5px 1.5px no-repeat,
+    linear-gradient(#000 0 0) bottom left / 1.5px 5px no-repeat,
+    linear-gradient(#000 0 0) bottom right / 5px 1.5px no-repeat,
+    linear-gradient(#000 0 0) bottom right / 1.5px 5px no-repeat;
+  mask:
+    linear-gradient(#000 0 0) top left / 5px 1.5px no-repeat,
+    linear-gradient(#000 0 0) top left / 1.5px 5px no-repeat,
+    linear-gradient(#000 0 0) top right / 5px 1.5px no-repeat,
+    linear-gradient(#000 0 0) top right / 1.5px 5px no-repeat,
+    linear-gradient(#000 0 0) bottom left / 5px 1.5px no-repeat,
+    linear-gradient(#000 0 0) bottom left / 1.5px 5px no-repeat,
+    linear-gradient(#000 0 0) bottom right / 5px 1.5px no-repeat,
+    linear-gradient(#000 0 0) bottom right / 1.5px 5px no-repeat;
+}
+
+.asset-focus-icon-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: currentColor;
 }
 
 .asset-card:hover {
@@ -1894,15 +2000,16 @@ summary:focus-visible {
 .asset-meta {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 10px 0;
+  gap: 3px;
+  padding: 0;
   font-size: 0.76rem;
   color: var(--text-muted);
 }
 
 .asset-meta strong {
   color: var(--text);
-  font-size: 0.82rem;
+  font-size: 0.9rem;
+  line-height: 1.3;
 }
 
 .asset-meta-inline {
@@ -1910,17 +2017,12 @@ summary:focus-visible {
 }
 
 .asset-card-actions {
-  padding: 10px;
+  padding: 0;
 }
 
 .asset-card,
 .route-asset-card {
   position: relative;
-}
-
-.asset-card > .asset-select-control,
-.route-asset-card > .asset-select-control {
-  margin: 10px 10px 0;
 }
 
 .asset-preview-modal-backdrop {

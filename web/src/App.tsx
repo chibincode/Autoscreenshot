@@ -1018,6 +1018,7 @@ const AssetCard = memo(function AssetCard({
 }) {
   const needsFolderSelection =
     asset.selectedForImport && asset.importStatus !== "imported" && asset.folderSelectionSource === "missing";
+  const canFocusDebug = canFocusDebugAsset(asset, hasSectionDebug);
 
   return (
     <article
@@ -1028,15 +1029,31 @@ const AssetCard = memo(function AssetCard({
         needsFolderSelection && (compact ? "route-asset-card-needs-folder" : "asset-card-needs-folder"),
       )}
     >
-      <label className="asset-select-control">
-        <input
-          type="checkbox"
-          checked={asset.selectedForImport}
-          disabled={assetActionsDisabled}
-          onChange={(event) => void onToggleSelection(asset.id, event.target.checked)}
-        />
-        <span>Import</span>
-      </label>
+      <div className={compact ? "route-asset-toolbar" : "asset-card-toolbar"}>
+        <label className="asset-select-control">
+          <input
+            type="checkbox"
+            checked={asset.selectedForImport}
+            disabled={assetActionsDisabled}
+            onChange={(event) => void onToggleSelection(asset.id, event.target.checked)}
+          />
+          <span>Import</span>
+        </label>
+        {canFocusDebug ? (
+          <button
+            type="button"
+            className="asset-icon-button"
+            onClick={() => onFocusDebug(asset)}
+            aria-label="Focus debug"
+            title="Focus debug"
+          >
+            <span className="asset-focus-icon" aria-hidden="true">
+              <span className="asset-focus-icon-corners" />
+              <span className="asset-focus-icon-dot" />
+            </span>
+          </button>
+        ) : null}
+      </div>
       <button
         type="button"
         className={cx("asset-preview-trigger", compact && "core-route-preview-trigger")}
@@ -1046,14 +1063,7 @@ const AssetCard = memo(function AssetCard({
       </button>
       <div className={compact ? "route-asset-meta" : "asset-meta"}>
         {!compact ? <strong>{asset.label}</strong> : null}
-        {!compact ? (
-          <span>
-            {asset.kind}
-            {asset.sectionType ? ` · ${asset.sectionType}` : ""}
-          </span>
-        ) : null}
-        {!compact ? <span>q{asset.quality} · dpr{asset.dpr}</span> : null}
-        <span>{formatAssetImportStatus(asset.importStatus, asset.selectedForImport, asset.importError)}</span>
+        {compact ? <span>{formatAssetImportStatus(asset.importStatus, asset.selectedForImport, asset.importError)}</span> : null}
       </div>
       <div className={compact ? "route-asset-folder-wrap" : "asset-folder-wrap"}>
         <AssetFolderControl
@@ -1062,18 +1072,13 @@ const AssetCard = memo(function AssetCard({
           onOpenFolderPicker={onOpenFolderPicker}
         />
       </div>
-      <div className={compact ? "route-asset-actions" : "asset-card-actions"}>
-        {!compact ? (
-          <button type="button" onClick={() => onOpenPreview(asset.id)}>
-            Preview
-          </button>
-        ) : null}
-        {canFocusDebugAsset(asset, hasSectionDebug) ? (
+      {compact && canFocusDebug ? (
+        <div className="route-asset-actions">
           <button type="button" onClick={() => onFocusDebug(asset)}>
             Focus Debug
           </button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </article>
   );
 });
