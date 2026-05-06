@@ -33,6 +33,10 @@ export class JobQueue {
     };
   }
 
+  hasJob(jobId: string): boolean {
+    return this.runningJobId === jobId || this.queue.some((task) => task.jobId === jobId);
+  }
+
   emit(event: JobEvent): void {
     this.events.emit("job-event", event);
   }

@@ -90,4 +90,32 @@ describe("JobQueue", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(queue.isCancellationRequested("job-1")).toBe(false);
   });
+
+  it("reports whether a job is queued, running, or finished", async () => {
+    const queue = new JobQueue();
+
+    let releaseFirst: () => void = () => {
+      // no-op until promise initializer runs
+    };
+    const firstDone = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    queue.enqueue("job-1", async () => {
+      await firstDone;
+    });
+    queue.enqueue("job-2", async () => {
+      // no-op
+    });
+
+    expect(queue.hasJob("job-1")).toBe(true);
+    expect(queue.hasJob("job-2")).toBe(true);
+    expect(queue.hasJob("job-3")).toBe(false);
+
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(queue.hasJob("job-1")).toBe(false);
+    expect(queue.hasJob("job-2")).toBe(false);
+  });
 });

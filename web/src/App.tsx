@@ -30,7 +30,12 @@ import {
   type EagleFolderOption,
   type RankedEagleFolderOption,
 } from "./folder-picker";
-import { deriveRouteProgress, describeCompletedCoreRoutesStatus, isActiveStatus } from "./job-progress";
+import {
+  deriveRouteProgress,
+  describeCompletedCoreRoutesStatus,
+  describeEagleImportQueueStatus,
+  isActiveStatus,
+} from "./job-progress";
 import { getNextSelectedJobId } from "./job-selection";
 import { canRetryRoute } from "./route-retry";
 import {
@@ -1888,6 +1893,7 @@ export function App() {
     }
     return runningJobId === selectedJobDetail.job.id || isActiveStatus(selectedJobDetail.job.status);
   }, [runningJobId, selectedJobDetail]);
+  const selectedJobIsBusy = selectedJobIsRunning || selectedJobDetail?.job.status === "queued";
   const selectedJobStatusNote = useMemo(() => {
     if (!selectedJobDetail) {
       return null;
@@ -1897,6 +1903,16 @@ export function App() {
     }
     if (selectedPendingQueueActionKind === "retry-import") {
       return "Sending Eagle retry request...";
+    }
+    const eagleImportQueueStatus = describeEagleImportQueueStatus({
+      status: selectedJobDetail.job.status,
+      assetCount: selectedJobDetail.assets.length,
+      selectedPending: assetImportSummary.selectedPending,
+      selectedFailed: assetImportSummary.selectedFailed,
+      routeProgress,
+    });
+    if (eagleImportQueueStatus) {
+      return eagleImportQueueStatus;
     }
     if (selectedJobMode === "core-routes") {
       if (routeProgress.total === 0) {
@@ -1931,10 +1947,13 @@ export function App() {
     return null;
   }, [
     assetImportSummary.pending,
+    assetImportSummary.selectedFailed,
     assetImportSummary.selectedPending,
     assetImportSummary.selectedPendingMissingFolderCount,
     routeProgress.currentRouteLabel,
     routeProgress.done,
+    routeProgress.queued,
+    routeProgress.running,
     routeProgress.total,
     selectedJobDetail,
     selectedJobIsRunning,
@@ -1969,7 +1988,7 @@ export function App() {
     () => buildAssetLookupIndex(selectedJobDetail?.assets ?? []),
     [selectedJobDetail?.assets],
   );
-  const assetActionsDisabled = selectionSaving || importingSelected || retryingFailedImport || selectedJobIsRunning;
+  const assetActionsDisabled = selectionSaving || importingSelected || retryingFailedImport || selectedJobIsBusy;
   const canImportSelected =
     !assetActionsDisabled &&
     assetImportSummary.selectedPending > 0 &&

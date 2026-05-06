@@ -56,7 +56,7 @@ export interface AssetLookupIndex {
 }
 
 export function formatPendingImportLabel(selectedForImport: boolean): string {
-  return selectedForImport ? "Selected, pending import" : "Not selected";
+  return selectedForImport ? "已预选，待确认导入" : "未加入导入";
 }
 
 export function buildJobStatusHint(job: AssetFeedbackJob): string | null {

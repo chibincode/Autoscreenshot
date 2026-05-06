@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveRouteProgress,
   describeCompletedCoreRoutesStatus,
+  describeEagleImportQueueStatus,
   isActiveStatus,
 } from "../web/src/job-progress.js";
 
@@ -91,6 +92,51 @@ describe("job progress ui helpers", () => {
     expect(isActiveStatus("success")).toBe(false);
     expect(isActiveStatus("failed")).toBe(false);
     expect(isActiveStatus("partial_success")).toBe(false);
+  });
+
+  it("describes queued Eagle imports for jobs that already have assets", () => {
+    expect(
+      describeEagleImportQueueStatus({
+        status: "queued",
+        assetCount: 3,
+        selectedPending: 2,
+        selectedFailed: 0,
+      }),
+    ).toBe("Queued · waiting to import to Eagle");
+  });
+
+  it("describes running Eagle imports without confusing fresh capture jobs", () => {
+    expect(
+      describeEagleImportQueueStatus({
+        status: "running",
+        assetCount: 3,
+        selectedPending: 2,
+        selectedFailed: 0,
+      }),
+    ).toBe("Importing to Eagle...");
+    expect(
+      describeEagleImportQueueStatus({
+        status: "running",
+        assetCount: 0,
+        selectedPending: 0,
+        selectedFailed: 0,
+      }),
+    ).toBeNull();
+  });
+
+  it("does not describe active core route capture as Eagle import", () => {
+    expect(
+      describeEagleImportQueueStatus({
+        status: "running",
+        assetCount: 2,
+        selectedPending: 2,
+        selectedFailed: 0,
+        routeProgress: {
+          queued: 1,
+          running: 1,
+        },
+      }),
+    ).toBeNull();
   });
 
   it("explains partial_success for core-routes as route-level partial completion", () => {

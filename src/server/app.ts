@@ -89,6 +89,7 @@ const AUTO_ARCHIVE_TERMINAL_STATUSES: JobStatus[] = [
   "failed",
   "cancelled",
 ];
+const EAGLE_IMPORT_ALREADY_QUEUED_MESSAGE = "Eagle import for this job is already queued or running";
 
 function statusFromManifest(manifest: RunManifest | null): JobStatus {
   if (!manifest) {
@@ -1237,6 +1238,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       reply.code(404);
       return { error: "Job not found" };
     }
+    if (queue.hasJob(job.id)) {
+      reply.code(409);
+      return { error: EAGLE_IMPORT_ALREADY_QUEUED_MESSAGE };
+    }
     if (!job.manifestPath) {
       reply.code(400);
       return { error: "No manifest for this job" };
@@ -1273,6 +1278,15 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       };
     }
 
+    repo.setJobResult({
+      jobId: job.id,
+      status: "queued",
+      taskJson: JSON.stringify(manifest.task),
+      manifestPath: job.manifestPath,
+      outputDir: manifest.outputDir,
+      error: null,
+    });
+    repo.addLog(job.id, "info", "Import selected queued");
     queue.enqueue(job.id, async () => {
       repo.setJobRunning(job.id);
       repo.addLog(job.id, "info", "Import selected started");
@@ -1349,6 +1363,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       reply.code(404);
       return { error: "Job not found" };
     }
+    if (queue.hasJob(job.id)) {
+      reply.code(409);
+      return { error: EAGLE_IMPORT_ALREADY_QUEUED_MESSAGE };
+    }
     if (!job.manifestPath) {
       reply.code(400);
       return { error: "No manifest for this job" };
@@ -1384,6 +1402,15 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       };
     }
 
+    repo.setJobResult({
+      jobId: job.id,
+      status: "queued",
+      taskJson: JSON.stringify(manifest.task),
+      manifestPath: job.manifestPath,
+      outputDir: manifest.outputDir,
+      error: null,
+    });
+    repo.addLog(job.id, "info", "Retry import queued");
     queue.enqueue(job.id, async () => {
       repo.setJobRunning(job.id);
       repo.addLog(job.id, "info", "Retry import started");

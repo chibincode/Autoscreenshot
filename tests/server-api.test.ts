@@ -1930,7 +1930,7 @@ describe("server api", () => {
     expect(detailData.assets[0].eagleId).toBe("eagle-item-import-selected");
   });
 
-  it("returns 202 before a slow selected import finishes in the background", async () => {
+  it("persists queued state and rejects duplicate selected imports while one is queued", async () => {
     const isolatedTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-import-queue-"));
     const isolatedDbPath = path.join(isolatedTmpDir, "jobs.db");
     const isolatedRepo = new JobsRepository(isolatedDbPath);
@@ -1999,13 +1999,25 @@ describe("server api", () => {
       error: null,
     });
 
+    let releaseQueueBlocker = (): void => {
+      // replaced when the blocking promise is created
+    };
+    const queueBlocked = new Promise<void>((resolve) => {
+      releaseQueueBlocker = () => resolve();
+    });
+    isolatedQueue.enqueue("blocking-job", async () => {
+      await queueBlocked;
+    });
+
     let releaseImport = (): void => {
       // replaced when the blocking promise is created
     };
     const importBlocked = new Promise<void>((resolve) => {
       releaseImport = () => resolve();
     });
+    let importCallCount = 0;
     const slowImportSelectedFn = async (inputManifestPath: string): Promise<RunManifest> => {
+      importCallCount += 1;
       const existing = JSON.parse(await fs.readFile(inputManifestPath, "utf8")) as RunManifest;
       await importBlocked;
       const updated: RunManifest = {
@@ -2041,6 +2053,15 @@ describe("server api", () => {
 
       expect(importResponse.statusCode).toBe(202);
 
+      const duplicateImportResponse = await isolatedApp.inject({
+        method: "POST",
+        url: `/api/jobs/${jobId}/import-selected`,
+      });
+      expect(duplicateImportResponse.statusCode).toBe(409);
+      expect(duplicateImportResponse.json()).toEqual({
+        error: "Eagle import for this job is already queued or running",
+      });
+
       const detailWhileBlockedResponse = await isolatedApp.inject({
         method: "GET",
         url: `/api/jobs/${jobId}`,
@@ -2049,11 +2070,11 @@ describe("server api", () => {
         job: { status: string };
         assets: Array<{ importStatus: string }>;
       };
-      expect(detailWhileBlockedData.job.status === "queued" || detailWhileBlockedData.job.status === "running").toBe(
-        true,
-      );
+      expect(detailWhileBlockedData.job.status).toBe("queued");
       expect(detailWhileBlockedData.assets[0].importStatus).toBe("pending_confirmation");
 
+      releaseQueueBlocker();
+      await new Promise((resolve) => setTimeout(resolve, 20));
       releaseImport();
       const finalStatus = await waitForNextTerminalStatus(
         isolatedApp,
@@ -2061,6 +2082,7 @@ describe("server api", () => {
         detailWhileBlockedData.job.status,
       );
       expect(finalStatus).toBe("success");
+      expect(importCallCount).toBe(1);
     } finally {
       await isolatedApp.close();
       await fs.rm(isolatedTmpDir, { recursive: true, force: true });
@@ -2127,5 +2149,162 @@ describe("server api", () => {
     };
     expect(detailData.assets[0].importStatus).toBe("imported");
     expect(detailData.assets[0].eagleId).toBe("eagle-item-retry");
+  });
+
+  it("rejects duplicate failed import retries while one is queued", async () => {
+    const isolatedTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-retry-queue-"));
+    const isolatedDbPath = path.join(isolatedTmpDir, "jobs.db");
+    const isolatedRepo = new JobsRepository(isolatedDbPath);
+    const isolatedQueue = new JobQueue();
+    const jobId = "slow-retry-job";
+    const outputDir = path.join(isolatedTmpDir, jobId);
+    await fs.mkdir(outputDir, { recursive: true });
+    const imagePath = path.join(outputDir, "sample.jpg");
+    await writeTestJpeg(imagePath, 1280, 960);
+
+    const manifest: RunManifest = {
+      runId: jobId,
+      instruction: "open https://example.com/pricing and retry import",
+      createdAt: new Date().toISOString(),
+      task: {
+        url: "https://example.com/pricing",
+        waitUntil: "networkidle",
+        captures: [{ mode: "fullPage" }],
+        image: { format: "jpg", quality: 92, dpr: 2 },
+        viewport: { width: 1920, height: 1080 },
+        tags: [],
+        eagle: {},
+      },
+      sectionScope: "classic",
+      outputDir,
+      assets: [
+        {
+          kind: "fullPage",
+          label: "full_page",
+          filePath: imagePath,
+          fileName: "sample.jpg",
+          sourceUrl: "https://example.com/pricing",
+          quality: 92,
+          dpr: 2,
+          capturedAt: new Date().toISOString(),
+          folderOverrideId: "page-pricing-id",
+          import: {
+            ok: false,
+            selected: true,
+            status: "failed",
+            error: "seeded failure",
+          },
+        },
+      ],
+      routes: [],
+      scrollSceneDebug: [],
+    };
+    const manifestPath = path.join(outputDir, "manifest.json");
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+
+    isolatedRepo.createJob({
+      id: jobId,
+      instruction: manifest.instruction,
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir,
+      },
+    });
+    isolatedRepo.replaceAssets(jobId, manifest);
+    isolatedRepo.setJobResult({
+      jobId,
+      status: "partial_success",
+      taskJson: JSON.stringify(manifest.task),
+      manifestPath,
+      outputDir,
+      error: "Some assets still require attention",
+    });
+
+    let releaseQueueBlocker = (): void => {
+      // replaced when the blocking promise is created
+    };
+    const queueBlocked = new Promise<void>((resolve) => {
+      releaseQueueBlocker = () => resolve();
+    });
+    isolatedQueue.enqueue("blocking-job", async () => {
+      await queueBlocked;
+    });
+
+    let releaseRetry = (): void => {
+      // replaced when the blocking promise is created
+    };
+    const retryBlocked = new Promise<void>((resolve) => {
+      releaseRetry = () => resolve();
+    });
+    let retryCallCount = 0;
+    const slowRetryImportFn = async (inputManifestPath: string): Promise<RunManifest> => {
+      retryCallCount += 1;
+      const existing = JSON.parse(await fs.readFile(inputManifestPath, "utf8")) as RunManifest;
+      await retryBlocked;
+      const updated: RunManifest = {
+        ...existing,
+        assets: existing.assets.map((asset) => ({
+          ...asset,
+          import: {
+            ok: true,
+            selected: true,
+            status: "imported",
+            eagleId: "slow-retry-eagle-id",
+          },
+        })),
+      };
+      await fs.writeFile(inputManifestPath, JSON.stringify(updated, null, 2), "utf8");
+      return updated;
+    };
+
+    const isolatedApp = await buildServer({
+      repo: isolatedRepo,
+      queue: isolatedQueue,
+      webDistDir: path.join(isolatedTmpDir, "no-ui"),
+      retryImportFn: slowRetryImportFn,
+    });
+    await isolatedApp.ready();
+
+    try {
+      mockEagleFolderList();
+      const retryResponse = await isolatedApp.inject({
+        method: "POST",
+        url: `/api/jobs/${jobId}/retry-import`,
+      });
+      expect(retryResponse.statusCode).toBe(202);
+
+      const duplicateRetryResponse = await isolatedApp.inject({
+        method: "POST",
+        url: `/api/jobs/${jobId}/retry-import`,
+      });
+      expect(duplicateRetryResponse.statusCode).toBe(409);
+      expect(duplicateRetryResponse.json()).toEqual({
+        error: "Eagle import for this job is already queued or running",
+      });
+
+      const detailWhileBlockedResponse = await isolatedApp.inject({
+        method: "GET",
+        url: `/api/jobs/${jobId}`,
+      });
+      const detailWhileBlockedData = detailWhileBlockedResponse.json() as {
+        job: { status: string };
+      };
+      expect(detailWhileBlockedData.job.status).toBe("queued");
+
+      releaseQueueBlocker();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      releaseRetry();
+      const finalStatus = await waitForNextTerminalStatus(isolatedApp, jobId, "queued");
+      expect(finalStatus).toBe("success");
+      expect(retryCallCount).toBe(1);
+    } finally {
+      await isolatedApp.close();
+      await fs.rm(isolatedTmpDir, { recursive: true, force: true });
+    }
   });
 });

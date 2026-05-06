@@ -619,6 +619,19 @@ async function isLocatorVisible(locator: Locator): Promise<boolean> {
   }
 }
 
+async function isLocatorInViewport(locator: Locator): Promise<boolean> {
+  try {
+    const box = await locator.boundingBox();
+    const viewport = locator.page().viewportSize();
+    if (!box || !viewport) {
+      return false;
+    }
+    return box.x < viewport.width && box.x + box.width > 0 && box.y < viewport.height && box.y + box.height > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function handleOverlayCandidate(
   page: Page,
   snapshot: OverlaySnapshot,
@@ -639,6 +652,17 @@ async function handleOverlayCandidate(
       log?.(
         "info",
         `overlay_action phase=${phase} action=hide_dom_offscreen type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
+      );
+    }
+    return hidden;
+  }
+  if (!(await isLocatorInViewport(container))) {
+    const hidden = await hideOverlayById(page, snapshot.overlayId);
+    if (hidden) {
+      await page.waitForTimeout(POST_ACTION_SETTLE_MS);
+      log?.(
+        "info",
+        `overlay_action action=hide_dom_offscreen type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
       );
     }
     return hidden;

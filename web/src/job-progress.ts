@@ -32,6 +32,29 @@ export function isActiveStatus(status: ActivityStatus): boolean {
   return status === "running";
 }
 
+export function describeEagleImportQueueStatus(params: {
+  status: ActivityStatus;
+  assetCount: number;
+  selectedPending: number;
+  selectedFailed: number;
+  routeProgress?: Pick<RouteProgressSummary, "queued" | "running">;
+}): string | null {
+  const { assetCount, routeProgress, selectedFailed, selectedPending, status } = params;
+  if (assetCount === 0 || selectedPending + selectedFailed === 0) {
+    return null;
+  }
+  if (routeProgress && (routeProgress.queued > 0 || routeProgress.running > 0)) {
+    return null;
+  }
+  if (status === "queued") {
+    return "Queued · waiting to import to Eagle";
+  }
+  if (status === "running") {
+    return "Importing to Eagle...";
+  }
+  return null;
+}
+
 export function getCurrentRunningRouteLabel(routes: readonly RouteProgressRoute[]): string | null {
   const route = routes.find((candidate) => candidate.status === "running");
   if (!route) {
@@ -50,25 +73,25 @@ export function describeCompletedCoreRoutesStatus(params: {
 
   if (status === "awaiting_confirmation") {
     if (selectedPendingMissingFolderCount > 0) {
-      return `Core routes done · ${routeProgress.success} ok · ${selectedPendingMissingFolderCount} folders needed`;
+      return `核心路由已完成 · ${routeProgress.success} 条成功 · ${selectedPendingMissingFolderCount} 个文件夹待选择`;
     }
-    return `Core routes done · ${routeProgress.success} ok · ${selectedPending} pending import`;
+    return `核心路由已完成 · ${routeProgress.success} 条成功 · ${selectedPending} 张已预选，待确认导入`;
   }
 
   if (status === "partial_success") {
-    const routeSummary = `Core routes done · ${routeProgress.success} ok / ${routeProgress.failed} failed`;
+    const routeSummary = `核心路由已完成 · ${routeProgress.success} 条成功 / ${routeProgress.failed} 条失败`;
     if (selectedPending > 0) {
-      return `${routeSummary} · not imported yet`;
+      return `${routeSummary} · 当前还没有导入到 Eagle`;
     }
     return routeSummary;
   }
 
   if (status === "success") {
-    return `Core routes done · ${routeProgress.success} ok`;
+    return `核心路由已完成 · ${routeProgress.success} 条成功`;
   }
 
   if (status === "failed") {
-    return `Core routes failed · ${routeProgress.failed} failed`;
+    return `核心路由失败 · ${routeProgress.failed} 条失败`;
   }
 
   return null;
