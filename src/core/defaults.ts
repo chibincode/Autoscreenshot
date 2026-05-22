@@ -5,7 +5,7 @@ export const DEFAULT_JOB_OPTIONS: JobExecutionOptions = {
   dpr: "auto",
   sectionScope: "classic",
   classicMaxSections: 10,
-  mode: "single",
+  mode: "core-routes",
   maxRoutes: 12,
   outputDir: "./output",
 };

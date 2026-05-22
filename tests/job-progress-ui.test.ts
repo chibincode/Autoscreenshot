@@ -152,7 +152,7 @@ describe("job progress ui helpers", () => {
         selectedPending: 7,
         selectedPendingMissingFolderCount: 0,
       }),
-    ).toBe("Core routes complete · 7 succeeded / 1 failed · Not imported to Eagle yet");
+    ).toBe("Core pages complete · 7 succeeded / 1 failed · Not imported to Eagle yet");
   });
 
   it("explains awaiting_confirmation for core-routes as preselected pending imports", () => {
@@ -168,6 +168,6 @@ describe("job progress ui helpers", () => {
         selectedPending: 3,
         selectedPendingMissingFolderCount: 0,
       }),
-    ).toBe("Core routes complete · 3 succeeded · 3 selected, pending import");
+    ).toBe("Core pages complete · 3 succeeded · 3 selected, pending import");
   });
 });

@@ -631,6 +631,14 @@ async function captureOnce(
 
     const sectionRequests = task.captures.filter((item) => item.mode === "section");
     if (sectionRequests.length > 0) {
+      await stabilizeFullPageViewport(page, task.url, options.log);
+      await waitForRenderableImages(page, options.log, "viewport");
+      await sweepCaptureOverlays({
+        page,
+        log: options.log,
+        phase: "pre_capture",
+      });
+      pageSize = await getPageDimensions(page);
       const detected = await detectSections(
         page,
         options.sectionScope,

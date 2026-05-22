@@ -167,6 +167,63 @@ function smoothScrollPageTemplate(): string {
   `;
 }
 
+function sectionStickyNavPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Section Sticky Nav</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #020617;
+            color: white;
+          }
+          header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 20;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            padding: 0 32px;
+            box-sizing: border-box;
+            background: rgb(241, 74, 96);
+            color: white;
+            font-weight: 700;
+          }
+          section {
+            min-height: 1180px;
+            box-sizing: border-box;
+            padding: 180px 80px 80px;
+          }
+          .hero {
+            background: #020617;
+          }
+          .feature {
+            background: #172033;
+          }
+        </style>
+      </head>
+      <body>
+        <header>Navigation should stay in the hero section screenshot</header>
+        <main>
+          <section class="hero">
+            <h1>Hero with fixed navigation</h1>
+            <button>Start</button>
+          </section>
+          <section class="feature">
+            <h2>Feature content</h2>
+            <p>This lower section forces lazy-load warmup to scroll away from the top.</p>
+          </section>
+        </main>
+      </body>
+    </html>
+  `;
+}
+
 function scrollScenePageTemplate(): string {
   return `
     <html>
@@ -1244,6 +1301,11 @@ beforeAll(async () => {
       res.end(smoothScrollPageTemplate());
       return;
     }
+    if (pathname.startsWith("/section-sticky-nav")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(sectionStickyNavPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/scroll-scene-overlay")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(scrollSceneOverlayPageTemplate());
@@ -1911,6 +1973,39 @@ describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {
   it("captures marketing page", async () => {
     await runCase("/marketing");
   });
+
+  it("keeps fixed navigation in section-only hero captures after lazy-load warmup", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-section-sticky-nav-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/section-sticky-nav`,
+      waitUntil: "networkidle",
+      captures: [{ mode: "section", targetType: "hero" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: ["e2e"],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "manual",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const heroAsset = result.assets.find((asset) => asset.kind === "section" && asset.sectionType === "hero");
+    expect(heroAsset).toBeTruthy();
+    const headerPixel = await sharp(heroAsset!.filePath)
+      .extract({ left: 24, top: 24, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(headerPixel[0]).toBeGreaterThan(180);
+    expect(headerPixel[1]).toBeLessThan(130);
+    expect(headerPixel[2]).toBeLessThan(150);
+    expect(logs.some((message) => message.includes("fullpage_scroll_stabilized"))).toBe(true);
+  }, 20_000);
 
   it("captures multiple features and faq in classic mode", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-marketing-"));

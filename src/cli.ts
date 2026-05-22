@@ -32,7 +32,7 @@ Options:
   --section-scope <classic|all-top-level|manual>
                                      Section capture policy (default: classic)
   --max-sections <1-20>              Classic mode max selected sections (default: 10)
-  --mode <single|core-routes>        Job mode (default: single)
+  --mode <single|core-routes>        Job mode (default: core-routes)
   --max-routes <1-30>                Core-routes max discovered routes (default: 12)
   --output-dir <path>               Output base directory (default: ./output)
   -h, --help                        Show help

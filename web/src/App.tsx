@@ -776,6 +776,10 @@ function parseJobMode(optionsJson: string | null): JobMode {
   }
 }
 
+function formatJobModeLabel(mode: JobMode): string {
+  return mode === "core-routes" ? "core pages" : "Section";
+}
+
 function formatAssetImportStatus(
   status: AssetImportStatus,
   selectedForImport: boolean,
@@ -1007,9 +1011,7 @@ const AssetFolderControl = memo(function AssetFolderControl({
           ) : (
             <span className="asset-folder-path asset-folder-path-empty">Choose an Eagle folder</span>
           )}
-          <span className="asset-folder-trigger-chevron" aria-hidden="true">
-            v
-          </span>
+          <span className="asset-folder-trigger-chevron" aria-hidden="true" />
         </button>
       )}
       {asset.folderSelectionSource === "manual" &&
@@ -1057,6 +1059,8 @@ const AssetCard = memo(function AssetCard({
 
   return (
     <article
+      data-asset-id={asset.id}
+      data-needs-folder={needsFolderSelection ? "true" : undefined}
       className={cx(
         compact ? "route-asset-card" : "asset-card",
         !asset.selectedForImport && (compact ? "route-asset-card-unselected" : "asset-card-unselected"),
@@ -1255,6 +1259,7 @@ const JobDetailSummary = memo(function JobDetailSummary({
   onCancel,
   onArchive,
   onImportSelected,
+  onRevealImportBlocker,
   onRetryImport,
 }: {
   detail: JobDetail;
@@ -1270,8 +1275,15 @@ const JobDetailSummary = memo(function JobDetailSummary({
   onCancel: (jobId: string) => void;
   onArchive: (jobId: string, archived: boolean) => void;
   onImportSelected: (jobId: string) => void | Promise<void>;
+  onRevealImportBlocker: () => void;
   onRetryImport: (jobId: string) => void | Promise<void>;
 }) {
+  const importBlockedByFolders =
+    !canImportSelected &&
+    !importingSelected &&
+    assetImportSummary.selectedPending > 0 &&
+    assetImportSummary.selectedPendingMissingFolderCount > 0;
+
   return (
     <>
       <div className="detail-header">
@@ -1310,11 +1322,21 @@ const JobDetailSummary = memo(function JobDetailSummary({
         ) : null}
         <button
           type="button"
-          className="primary-button"
-          disabled={!canImportSelected}
-          onClick={() => void onImportSelected(detail.job.id)}
+          className={cx("primary-button", importBlockedByFolders && "primary-button-blocked")}
+          disabled={!canImportSelected && !importBlockedByFolders}
+          data-blocked={importBlockedByFolders ? "true" : undefined}
+          title={importBlockedByFolders ? "Jump to the first selected asset that needs a folder" : undefined}
+          onClick={() => {
+            if (canImportSelected) {
+              void onImportSelected(detail.job.id);
+              return;
+            }
+            if (importBlockedByFolders) {
+              onRevealImportBlocker();
+            }
+          }}
         >
-          {importingSelected ? "Queueing..." : "Import selected"}
+          {importingSelected ? "Queueing..." : importBlockedByFolders ? "Fix folders" : "Import selected"}
         </button>
         {assetImportSummary.failed > 0 ? (
           <button type="button" disabled={!canRetryFailedImport} onClick={() => void onRetryImport(detail.job.id)}>
@@ -1367,7 +1389,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
 }) {
   return detail.routes.length > 0 ? (
     <div className="route-list-panel">
-      <h4>Core routes</h4>
+      <h4>Core pages</h4>
       <div className="core-route-card-list">
         {detail.routes.map((route) => {
           const asset = findAssetForRouteFromIndex(route, assetLookup);
@@ -1405,7 +1427,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                       disabled={browserActionsDisabled}
                       onClick={() => void onRetryRoute(detail.job.id, route.id)}
                     >
-                      Retry route
+                      Retry page
                     </button>
                   ) : null}
                 </div>
@@ -1778,7 +1800,7 @@ const PreviewModal = memo(function PreviewModal({
               <div>
                 <dt>Job</dt>
                 <dd>
-                  {selectedJobDetail.job.id} · {selectedJobMode} · {formatStatusLabel(selectedJobDetail.job.status)}
+                  {selectedJobDetail.job.id} · {formatJobModeLabel(selectedJobMode)} · {formatStatusLabel(selectedJobDetail.job.status)}
                 </dd>
               </div>
               <div>
@@ -1863,7 +1885,7 @@ export function App() {
   const [instruction, setInstruction] = useState("");
   const [quality, setQuality] = useState(92);
   const [dpr, setDpr] = useState<DprOption>("auto");
-  const [mode, setMode] = useState<JobMode>("single");
+  const [mode, setMode] = useState<JobMode>("core-routes");
   const [maxRoutes, setMaxRoutes] = useState(12);
   const [sectionScope, setSectionScope] = useState<SectionScope>("classic");
   const [classicMaxSections, setClassicMaxSections] = useState(10);
@@ -1966,7 +1988,7 @@ export function App() {
     }
     if (selectedJobMode === "core-routes") {
       if (routeProgress.total === 0) {
-        return selectedJobIsRunning ? "Live · discovering core routes" : "Waiting for core routes";
+        return selectedJobIsRunning ? "Live · discovering core pages" : "Waiting for core pages";
       }
       if (selectedJobIsRunning) {
         if (routeProgress.currentRouteLabel) {
@@ -1983,7 +2005,7 @@ export function App() {
       if (completedStatusCopy) {
         return completedStatusCopy;
       }
-      return `Core route progress · ${routeProgress.done} / ${routeProgress.total}`;
+      return `Core page progress · ${routeProgress.done} / ${routeProgress.total}`;
     }
     if (selectedJobIsRunning) {
       return "Live · capturing page";
@@ -2047,6 +2069,15 @@ export function App() {
     !assetActionsDisabled &&
     assetImportSummary.selectedFailed > 0 &&
     assetImportSummary.selectedFailedMissingFolderCount === 0;
+  const firstPendingMissingFolderAssetId = useMemo(() => {
+    const asset = selectedJobDetail?.assets.find(
+      (item) =>
+        item.selectedForImport &&
+        item.importStatus === "pending_confirmation" &&
+        item.folderSelectionSource === "missing",
+    );
+    return asset?.id ?? null;
+  }, [selectedJobDetail?.assets]);
   const focusedAsset = useMemo(
     () =>
       selectedAssetId !== null
@@ -2483,6 +2514,32 @@ export function App() {
   const showToast = useCallback((message: string, tone: ActionToastTone = "success"): void => {
     setActionToast({ message, tone });
   }, []);
+
+  const revealImportBlocker = useCallback((): void => {
+    if (firstPendingMissingFolderAssetId === null) {
+      showToast("没有找到需要处理的 Folder", "info");
+      return;
+    }
+
+    setSelectedAssetId(firstPendingMissingFolderAssetId);
+    showToast("已定位到需要选择 Folder 的资产", "info");
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const card = document.querySelector<HTMLElement>(
+          `[data-asset-id="${firstPendingMissingFolderAssetId}"]`,
+        );
+        const target = card?.querySelector<HTMLElement>(".asset-folder-field-missing") ?? card;
+        if (!target) {
+          return;
+        }
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        card?.classList.add("asset-card-reveal");
+        window.setTimeout(() => {
+          card?.classList.remove("asset-card-reveal");
+        }, 1600);
+      });
+    });
+  }, [firstPendingMissingFolderAssetId, showToast]);
 
   const refreshJobSoon = useCallback((jobId: string): void => {
     const delays = [0, 300, 1200];
@@ -2962,7 +3019,7 @@ export function App() {
           className="instruction-input"
           value={instruction}
           onChange={(event) => setInstruction(event.target.value)}
-          placeholder="Open https://stripe.com and capture full page plus hero/testimonial. Tags: landing, marketing"
+          placeholder="Open https://stripe.com and map core pages. Tags: landing, marketing"
         />
 
         <div className="field-grid field-grid-primary">
@@ -2976,7 +3033,7 @@ export function App() {
                 className={mode === "single" ? "segmented-control-option active" : "segmented-control-option"}
                 onClick={() => setMode("single")}
               >
-                single
+                Section
               </button>
               <button
                 type="button"
@@ -2985,13 +3042,13 @@ export function App() {
                 className={mode === "core-routes" ? "segmented-control-option active" : "segmented-control-option"}
                 onClick={() => setMode("core-routes")}
               >
-                core-routes
+                core pages
               </button>
             </div>
           </div>
           {mode === "core-routes" ? (
             <label className="field">
-              <span>Max Routes</span>
+              <span>Max pages</span>
               <input
                 type="number"
                 min={1}
@@ -3073,8 +3130,8 @@ export function App() {
 
         <div className="meta-lines">
           <div>Default quality: {config?.defaults.quality ?? "..."}</div>
-          <div>Default mode: {config?.defaults.mode ?? "single"}</div>
-          <div>Max routes: {config?.defaults.maxRoutes ?? "..."}</div>
+          <div>Default mode: {config ? formatJobModeLabel(config.defaults.mode) : "..."}</div>
+          <div>Max pages: {config?.defaults.maxRoutes ?? "..."}</div>
           <div>Classic max: {config?.defaults.classicMaxSections ?? "..."}</div>
           <div>Live: {liveConnected ? "connected" : "offline"}</div>
           <div>
@@ -3158,6 +3215,7 @@ export function App() {
                   onCancel={cancelJob}
                   onArchive={archiveJob}
                   onImportSelected={importSelected}
+                  onRevealImportBlocker={revealImportBlocker}
                   onRetryImport={retryImport}
                 />
                 {eagleFoldersError ? <div className="detail-inline-warning">{eagleFoldersError}</div> : null}
@@ -3166,19 +3224,19 @@ export function App() {
                   <div className={cx("progress-panel", selectedJobIsRunning && "progress-panel-live")}>
                     <div className="progress-panel-top">
                       <div>
-                        <div className="progress-kicker">Core route progress</div>
+                        <div className="progress-kicker">Core page progress</div>
                         <strong>
                           {routeProgress.done} / {routeProgress.total || 0}
                         </strong>
                         <p>
                           {routeProgress.total === 0
                             ? selectedJobIsRunning
-                              ? "Discovering core routes..."
-                              : "No core routes yet"
+                              ? "Discovering core pages..."
+                              : "No core pages yet"
                             : routeProgress.currentRouteLabel
-                              ? `Current route: ${routeProgress.currentRouteLabel}`
+                              ? `Current page: ${routeProgress.currentRouteLabel}`
                               : routeProgress.done === routeProgress.total
-                                ? "All routes processed"
+                                ? "All pages processed"
                                 : `${routeProgress.queued} queued`}
                         </p>
                       </div>
@@ -3190,7 +3248,7 @@ export function App() {
                     </div>
                     <div
                       className={cx("progress-track", selectedJobIsRunning && "progress-track-live")}
-                      aria-label={`核心路由进度 ${routeProgress.done} / ${routeProgress.total || 0}`}
+                      aria-label={`Core page progress ${routeProgress.done} / ${routeProgress.total || 0}`}
                     >
                       <div
                         className="progress-fill"

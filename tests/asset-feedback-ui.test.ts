@@ -134,7 +134,7 @@ describe("asset feedback ui helpers", () => {
     expect(formatPendingImportLabel(false)).toBe("Not selected for import");
   });
 
-  it("explains that core-routes Needs review is about route execution, not Eagle import", () => {
+  it("explains that core pages Needs review is about page execution, not Eagle import", () => {
     expect(
       buildJobStatusHint({
         id: "job_123",
@@ -183,7 +183,7 @@ describe("asset feedback ui helpers", () => {
 
     expect(context).toContain("job_id=job_123");
     expect(context).toContain("job_mode=core-routes");
-    expect(context).toContain("job_status_hint=For core-routes jobs, Needs review means route capture completed with one or more failed or skipped routes. It does not mean Eagle import has already happened.");
+    expect(context).toContain("job_status_hint=For core pages jobs, Needs review means page capture completed with one or more failed or skipped pages. It does not mean Eagle import has already happened.");
     expect(context).toContain("asset_id=22");
     expect(context).toContain("asset_preview_url=http://127.0.0.1:5173/api/assets/22/file");
     expect(context).toContain("asset_selected_for_import=yes");

@@ -606,7 +606,7 @@ describe("server api", () => {
       };
     };
     expect(data.defaults.classicMaxSections).toBe(10);
-    expect(data.defaults.mode).toBe("single");
+    expect(data.defaults.mode).toBe("core-routes");
     expect(data.defaults.maxRoutes).toBe(12);
     expect(data.eagleImportPolicy).toBeDefined();
     expect(data.eagleImportPolicy?.allowCreateFolder).toBe(false);
