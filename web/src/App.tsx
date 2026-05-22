@@ -777,7 +777,7 @@ function parseJobMode(optionsJson: string | null): JobMode {
 }
 
 function formatJobModeLabel(mode: JobMode): string {
-  return mode === "core-routes" ? "core pages" : "Section";
+  return mode === "core-routes" ? "Core Pages" : "Section";
 }
 
 function formatAssetImportStatus(
@@ -1389,7 +1389,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
 }) {
   return detail.routes.length > 0 ? (
     <div className="route-list-panel">
-      <h4>Core pages</h4>
+      <h4>Core Pages</h4>
       <div className="core-route-card-list">
         {detail.routes.map((route) => {
           const asset = findAssetForRouteFromIndex(route, assetLookup);
@@ -3042,7 +3042,7 @@ export function App() {
                 className={mode === "core-routes" ? "segmented-control-option active" : "segmented-control-option"}
                 onClick={() => setMode("core-routes")}
               >
-                core pages
+                Core Pages
               </button>
             </div>
           </div>
@@ -3224,7 +3224,7 @@ export function App() {
                   <div className={cx("progress-panel", selectedJobIsRunning && "progress-panel-live")}>
                     <div className="progress-panel-top">
                       <div>
-                        <div className="progress-kicker">Core page progress</div>
+                        <div className="progress-kicker">Core Page Progress</div>
                         <strong>
                           {routeProgress.done} / {routeProgress.total || 0}
                         </strong>

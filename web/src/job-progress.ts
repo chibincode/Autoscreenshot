@@ -73,13 +73,13 @@ export function describeCompletedCoreRoutesStatus(params: {
 
   if (status === "awaiting_confirmation") {
     if (selectedPendingMissingFolderCount > 0) {
-      return `Core pages complete · ${routeProgress.success} succeeded · ${selectedPendingMissingFolderCount} folders need selection`;
+      return `Core Pages complete · ${routeProgress.success} succeeded · ${selectedPendingMissingFolderCount} folders need selection`;
     }
-    return `Core pages complete · ${routeProgress.success} succeeded · ${selectedPending} selected, pending import`;
+    return `Core Pages complete · ${routeProgress.success} succeeded · ${selectedPending} selected, pending import`;
   }
 
   if (status === "partial_success") {
-    const routeSummary = `Core pages complete · ${routeProgress.success} succeeded / ${routeProgress.failed} failed`;
+    const routeSummary = `Core Pages complete · ${routeProgress.success} succeeded / ${routeProgress.failed} failed`;
     if (selectedPending > 0) {
       return `${routeSummary} · Not imported to Eagle yet`;
     }
@@ -87,11 +87,11 @@ export function describeCompletedCoreRoutesStatus(params: {
   }
 
   if (status === "success") {
-    return `Core pages complete · ${routeProgress.success} succeeded`;
+    return `Core Pages complete · ${routeProgress.success} succeeded`;
   }
 
   if (status === "failed") {
-    return `Core pages failed · ${routeProgress.failed} failed`;
+    return `Core Pages failed · ${routeProgress.failed} failed`;
   }
 
   return null;
