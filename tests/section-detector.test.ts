@@ -31,6 +31,7 @@ function scoreBreakdown(base: Partial<Record<string, number>>) {
   return {
     hero: 0,
     feature: 0,
+    security: 0,
     testimonial: 0,
     pricing: 0,
     team: 0,
@@ -193,6 +194,25 @@ describe("classifySectionCandidate", () => {
     expect(result.scores.feature).toBeGreaterThan(result.scores.cta);
     expect(
       result.signals.some((signal) => signal.rule === "content:numbered_steps"),
+    ).toBe(true);
+  });
+
+  it("recognizes security and compliance sections", () => {
+    const candidate = {
+      ...baseCandidate(),
+      className: "security-privacy compliance",
+      text:
+        "Enterprise-grade security and privacy. SOC 2 Type II, GDPR, encryption, audit logs, and data protection built for every customer.",
+      headingCount: 2,
+      linkCount: 2,
+      y: 1700,
+      height: 520,
+    };
+    const result = classifySectionCandidate(candidate, 1080);
+    expect(result.sectionType).toBe("security");
+    expect(result.scores.security).toBeGreaterThan(result.scores.feature);
+    expect(
+      result.signals.some((signal) => signal.rule === "regex:security_compliance_semantic"),
     ).toBe(true);
   });
 

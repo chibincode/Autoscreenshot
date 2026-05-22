@@ -53,6 +53,7 @@ type ScoreLabel = Exclude<SectionType, "unknown">;
 const SCORE_LABELS: ScoreLabel[] = [
   "hero",
   "feature",
+  "security",
   "testimonial",
   "pricing",
   "team",
@@ -69,6 +70,7 @@ const MAX_SIGNAL_COUNT = 20;
 export const CLASSIC_ORDER: SectionType[] = [
   "hero",
   "feature",
+  "security",
   "testimonial",
   "pricing",
   "team",
@@ -88,6 +90,7 @@ function createEmptyScores(): SectionScoreBreakdown {
   return {
     hero: 0,
     feature: 0,
+    security: 0,
     testimonial: 0,
     pricing: 0,
     team: 0,
@@ -159,6 +162,24 @@ export function classifySectionCandidate(
       "why us",
       "功能",
       "特点",
+    ],
+    security: [
+      "security",
+      "secure",
+      "privacy",
+      "trust",
+      "compliance",
+      "soc 2",
+      "soc2",
+      "iso 27001",
+      "gdpr",
+      "hipaa",
+      "encryption",
+      "data protection",
+      "安全",
+      "隐私",
+      "合规",
+      "信任",
     ],
     testimonial: [
       "testimonial",
@@ -330,6 +351,25 @@ export function classifySectionCandidate(
     }
   }
 
+  const securityStrongPhrases = [
+    "enterprise-grade security",
+    "security and privacy",
+    "security & privacy",
+    "trust center",
+    "data security",
+    "data privacy",
+    "compliance program",
+    "soc 2 type ii",
+    "soc2 type ii",
+  ];
+  let securityStrong = false;
+  for (const phrase of securityStrongPhrases) {
+    if (haystack.includes(phrase)) {
+      addScore("security", 5, `phrase:security_strong:${phrase.replace(/\s+/g, "_")}`);
+      securityStrong = true;
+    }
+  }
+
   const aspectRatio = candidate.width / Math.max(1, candidate.height);
   if (candidate.y <= viewportHeight * 0.35) {
     addScore("hero", 3, "hard:hero_top_fold");
@@ -394,6 +434,14 @@ export function classifySectionCandidate(
     addScore("blog", 2, "layout:linked_update_list");
   }
   if (
+    /\b(?:soc\s?2|iso\s?27001|gdpr|hipaa|sso|saml|audit logs?|data residency|encryption|encrypted|compliance|subprocessors?|vulnerability|pen(?:etration)? test)\b/i.test(
+      candidate.text,
+    )
+  ) {
+    addScore("security", 3, "regex:security_compliance_semantic");
+    securityStrong = true;
+  }
+  if (
     /\$\s?\d+|\b(?:usd|eur|gbp|cny|rmb)\s?\d+|\b\d+(?:\.\d+)?\s?(?:usd|eur|gbp|cny|rmb)\b|\b(?:from|starting at)\s+\$\s?\d+|\b(?:per|\/)\s?(?:mo|month|yr|year)\b|\bbilled\s+(?:monthly|annually|yearly)\b|\b(?:monthly|annual|yearly)\s+billing\b|每月\s*\d+|每年\s*\d+/i.test(
       candidate.text,
     )
@@ -453,6 +501,10 @@ export function classifySectionCandidate(
   }
   if (blogStrong) {
     addScore("testimonial", -2, "conflict:blog_strong_vs_testimonial");
+  }
+  if (securityStrong) {
+    addScore("feature", -1, "conflict:security_strong_vs_feature");
+    addScore("testimonial", -2, "conflict:security_strong_vs_testimonial");
   }
   if (testimonialStrong && scores.faq > 0 && !faqStrong) {
     addScore("faq", -1, "conflict:testimonial_strong");

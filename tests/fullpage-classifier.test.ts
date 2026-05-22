@@ -36,6 +36,21 @@ const rules = normalizeEagleFolderRules({
         "/solutions/:slug",
       ],
     },
+    security: {
+      folderId: "security-id",
+      pathRules: [
+        "/security",
+        "/security/*",
+        "/trust",
+        "/trust/*",
+        "/trust-center",
+        "/trust-center/*",
+        "/compliance",
+        "/compliance/*",
+        "/privacy",
+        "/privacy/*",
+      ],
+    },
     blog_list: { folderId: "blog-list-id", pathRules: ["/blog", "/blog/page/*", "/blog/tag/*"] },
     blog_detail: { folderId: "blog-detail-id", pathRules: ["/blog/:slug"] },
     changelog_list: { folderId: "changelog-list-id", pathRules: ["/changelog"] },
@@ -161,6 +176,15 @@ describe("classifyFullPageType", () => {
     expect(classifyFullPageType("https://example.com/api/reference/auth", rules).type).toBe(
       "help",
     );
+  });
+
+  it("classifies security, trust, compliance, and privacy routes", () => {
+    expect(classifyFullPageType("https://example.com/security", rules).type).toBe("security");
+    expect(classifyFullPageType("https://example.com/trust-center/soc2", rules).type).toBe(
+      "security",
+    );
+    expect(classifyFullPageType("https://example.com/compliance", rules).type).toBe("security");
+    expect(classifyFullPageType("https://example.com/privacy", rules).type).toBe("security");
   });
 
   it("returns unmatched when no rule matches", () => {

@@ -83,6 +83,7 @@ describe("section debug manifest wiring", () => {
             scores: {
               hero: 0,
               feature: 1,
+              security: 0,
               testimonial: 6,
               pricing: 0,
               team: 0,

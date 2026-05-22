@@ -27,6 +27,7 @@ const CORE_ROUTE_TYPE_LIMITS: Partial<Record<Exclude<FullPageType, "unmatched">,
   project_detail: 1,
   product_detail: 1,
   download_detail: 1,
+  security: 1,
 };
 const COVERAGE_FAMILY_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "home",
@@ -38,6 +39,7 @@ const COVERAGE_FAMILY_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "projects_list",
   "project_detail",
   "integration",
+  "security",
   "help",
   "contact",
   "blog_list",

@@ -16,6 +16,7 @@ interface ParserOverrides {
 const SECTION_KEYWORDS: Array<{ type: SectionType; patterns: RegExp[] }> = [
   { type: "hero", patterns: [/\bhero\b/i, /首屏/, /头图/] },
   { type: "feature", patterns: [/\bfeature(s)?\b/i, /功能/, /特点/] },
+  { type: "security", patterns: [/\bsecurity\b/i, /\bprivacy\b/i, /\btrust\b/i, /\bcompliance\b/i, /安全/, /隐私/, /合规/] },
   { type: "testimonial", patterns: [/\btestimonial(s)?\b/i, /\breview(s)?\b/i, /评价/] },
   { type: "pricing", patterns: [/\bpricing\b/i, /\bplan(s)?\b/i, /价格/, /套餐/] },
   { type: "team", patterns: [/\bteam\b/i, /\bmember(s)?\b/i, /\bleadership\b/i, /团队/, /成员/, /创始人/] },
@@ -203,6 +204,7 @@ function isSectionType(value: unknown): value is SectionType {
     [
       "hero",
       "feature",
+      "security",
       "testimonial",
       "pricing",
       "team",

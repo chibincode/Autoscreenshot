@@ -25,6 +25,10 @@ describe("eagle-folder-rules", () => {
         hero: {
           folderId: "hero-folder",
         },
+        security: {
+          folderId: "security-section-folder",
+          nameHints: ["section_security"],
+        },
       },
     });
 
@@ -32,6 +36,10 @@ describe("eagle-folder-rules", () => {
     expect(rules.policy.missingFolderBehavior).toBe("root");
     expect(rules.urlNormalization.stripLocalePrefix).toBe(true);
     expect(rules.sections.hero?.folderId).toBe("hero-folder");
+    expect(rules.sections.security).toEqual({
+      folderId: "security-section-folder",
+      nameHints: ["section_security"],
+    });
     expect(rules.fullPage.changelog_list).toEqual({
       folderId: "changelog-list-id",
       pathRules: ["/changelog"],

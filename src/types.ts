@@ -5,6 +5,7 @@ export type CaptureMode = "fullPage" | "section";
 export type SectionType =
   | "hero"
   | "feature"
+  | "security"
   | "testimonial"
   | "pricing"
   | "team"
@@ -38,6 +39,7 @@ export type FullPageType =
   | "downloads_list"
   | "download_detail"
   | "integration"
+  | "security"
   | "unmatched";
 
 export type SectionScope = "classic" | "all-top-level" | "manual";
@@ -100,6 +102,7 @@ export interface SectionResult {
 export interface SectionScoreBreakdown {
   hero: number;
   feature: number;
+  security: number;
   testimonial: number;
   pricing: number;
   team: number;

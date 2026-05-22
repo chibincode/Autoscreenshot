@@ -19,6 +19,10 @@
       "folderId": "K60RMBANRMW95",
       "nameHints": ["section_featured", "section_feature", "feature", "featured"]
     },
+    "security": {
+      "folderId": "MPGKA2AX9VQ04",
+      "nameHints": ["section_security", "section_security_privacy", "security", "privacy", "trust", "compliance"]
+    },
     "testimonial": {
       "folderId": "K096I808K7O0H",
       "nameHints": ["section_testimonials", "section_testimonial", "testimonials", "testimonial"]
@@ -152,6 +156,23 @@
     "integration": {
       "folderId": "LR5VC4L6FB0KO",
       "pathRules": ["/integration", "/integrations"]
+    },
+    "security": {
+      "folderId": "M7LNLVHXEZLKE",
+      "pathRules": [
+        "/security",
+        "/security/*",
+        "/security-and-privacy",
+        "/privacy-security",
+        "/trust",
+        "/trust/*",
+        "/trust-center",
+        "/trust-center/*",
+        "/compliance",
+        "/compliance/*",
+        "/privacy",
+        "/privacy/*"
+      ]
     }
   }
 }

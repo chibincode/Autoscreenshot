@@ -59,6 +59,7 @@ type SectionScope = "classic" | "all-top-level" | "manual";
 type SectionType =
   | "hero"
   | "feature"
+  | "security"
   | "testimonial"
   | "pricing"
   | "team"
@@ -75,6 +76,7 @@ type FolderSelectionSource = "auto" | "manual" | "missing";
 interface SectionScoreBreakdown {
   hero: number;
   feature: number;
+  security: number;
   testimonial: number;
   pricing: number;
   team: number;
@@ -298,6 +300,7 @@ interface SectionDebugRow extends SectionDebugCandidate {
 const SECTION_TYPES: SectionType[] = [
   "hero",
   "feature",
+  "security",
   "testimonial",
   "pricing",
   "team",
@@ -575,6 +578,7 @@ function toSectionDebugCandidate(value: unknown): SectionDebugCandidate | null {
       return null;
     }
   }
+  const securityScore = typeof scores.security === "number" ? scores.security : 0;
 
   return {
     selector: value.selector,
@@ -591,6 +595,7 @@ function toSectionDebugCandidate(value: unknown): SectionDebugCandidate | null {
     scores: {
       hero: scores.hero,
       feature: scores.feature,
+      security: securityScore,
       testimonial: scores.testimonial,
       pricing: scores.pricing,
       team: scores.team,

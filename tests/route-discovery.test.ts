@@ -5,10 +5,12 @@ describe("route-discovery", () => {
   it("scores core template routes above generic pages", () => {
     const home = scoreCoreRoute("/", "nav", 0);
     const pricing = scoreCoreRoute("/pricing", "nav", 0);
+    const security = scoreCoreRoute("/security", "nav", 0);
     const generic = scoreCoreRoute("/random-page", "link", 2);
 
     expect(home).toBeGreaterThan(pricing);
     expect(pricing).toBeGreaterThan(generic);
+    expect(security).toBeGreaterThan(generic);
   });
 
   it("applies exclusion rules", () => {
@@ -17,6 +19,7 @@ describe("route-discovery", () => {
     expect(shouldExcludeRoute("/page/2")).toBe(true);
     expect(shouldExcludeRoute("/assets/guide.pdf")).toBe(true);
     expect(shouldExcludeRoute("/pricing")).toBe(false);
+    expect(shouldExcludeRoute("/security")).toBe(false);
     expect(shouldExcludeRoute("/")).toBe(false);
   });
 

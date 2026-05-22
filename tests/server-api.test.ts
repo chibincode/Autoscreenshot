@@ -255,6 +255,7 @@ describe("server api", () => {
               scores: {
                 hero: 7,
                 feature: 1,
+                security: 0,
                 testimonial: 0,
                 pricing: 0,
                 team: 0,

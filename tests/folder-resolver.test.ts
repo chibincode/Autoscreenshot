@@ -175,6 +175,38 @@ describe("folder resolver", () => {
     });
   });
 
+  it("routes security full pages and sections to their mapped Eagle folders", () => {
+    const rules = normalizeEagleFolderRules({
+      sections: {
+        security: {
+          folderId: "section-security-id",
+          nameHints: ["section_security", "security privacy"],
+        },
+      },
+      fullPage: {
+        security: {
+          folderId: "page-security-id",
+          pathRules: ["/security", "/trust", "/compliance"],
+        },
+      },
+    });
+    const folderIndex = buildFolderIndex([
+      { id: "section-security-id", name: "Section_Security & Privacy", path: "Section_Security & Privacy" },
+      { id: "page-security-id", name: "Page_Security & Privacy", path: "Page_Security & Privacy" },
+    ]);
+
+    expect(resolveSectionFolder("security", rules, folderIndex)).toEqual({
+      folderId: "section-security-id",
+      resolvedBy: "explicit",
+      reason: "mapped",
+    });
+    expect(resolveFullPageFolder("security", rules, folderIndex)).toEqual({
+      folderId: "page-security-id",
+      resolvedBy: "explicit",
+      reason: "mapped",
+    });
+  });
+
   it("does not send classified sections to general when explicit mapping is broken", () => {
     const rules = normalizeEagleFolderRules({
       sections: {

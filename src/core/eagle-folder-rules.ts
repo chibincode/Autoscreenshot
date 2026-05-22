@@ -8,6 +8,7 @@ export const EAGLE_FOLDER_RULES_RELATIVE_PATH = "data/eagle-folder-rules.json";
 const SECTION_KEYS: Array<Exclude<SectionType, "unknown">> = [
   "hero",
   "feature",
+  "security",
   "testimonial",
   "pricing",
   "team",
@@ -41,6 +42,7 @@ const FULL_PAGE_KEYS: Array<Exclude<FullPageType, "unmatched">> = [
   "downloads_list",
   "download_detail",
   "integration",
+  "security",
 ];
 
 function makeRootFallbackRules(): EagleFolderRules {
