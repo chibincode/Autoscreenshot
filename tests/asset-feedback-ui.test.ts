@@ -130,11 +130,11 @@ describe("asset feedback ui helpers", () => {
   });
 
   it("describes pending imports as preselected instead of already imported", () => {
-    expect(formatPendingImportLabel(true)).toBe("已预选，待确认导入");
-    expect(formatPendingImportLabel(false)).toBe("未加入导入");
+    expect(formatPendingImportLabel(true)).toBe("Selected, pending import");
+    expect(formatPendingImportLabel(false)).toBe("Not selected for import");
   });
 
-  it("explains that core-routes partial_success is about route execution, not Eagle import", () => {
+  it("explains that core-routes Needs review is about route execution, not Eagle import", () => {
     expect(
       buildJobStatusHint({
         id: "job_123",
@@ -183,11 +183,11 @@ describe("asset feedback ui helpers", () => {
 
     expect(context).toContain("job_id=job_123");
     expect(context).toContain("job_mode=core-routes");
-    expect(context).toContain("job_status_hint=For core-routes jobs, partial_success means some routes succeeded and others failed or were skipped. It does not mean Eagle import has already happened.");
+    expect(context).toContain("job_status_hint=For core-routes jobs, Needs review means route capture completed with one or more failed or skipped routes. It does not mean Eagle import has already happened.");
     expect(context).toContain("asset_id=22");
     expect(context).toContain("asset_preview_url=http://127.0.0.1:5173/api/assets/22/file");
     expect(context).toContain("asset_selected_for_import=yes");
-    expect(context).toContain("asset_import_display=已预选，待确认导入");
+    expect(context).toContain("asset_import_display=Selected, pending import");
     expect(context).toContain("asset_import_started=yes");
     expect(context).toContain("asset_import_status=failed");
     expect(context).toContain("route_path=/pricing");

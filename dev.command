@@ -19,6 +19,10 @@ if command -v nvm >/dev/null 2>&1; then
     echo "Install it with: nvm install 20"
     exit 1
   fi
+  # zsh can keep a hashed Homebrew npm path from the parent Terminal session.
+  # Force the selected nvm Node/npm to the front before running native modules.
+  hash -r
+  export PATH="${NVM_BIN:-$(dirname "$(command -v node)")}:$PATH"
 elif [ -x "$HOME/.nvm/versions/node/v20.19.3/bin/node" ]; then
   export PATH="$HOME/.nvm/versions/node/v20.19.3/bin:$PATH"
 else
@@ -28,12 +32,15 @@ else
   exit 1
 fi
 
-echo "Node: $(node -v)"
-echo "npm:  $(npm -v)"
+NODE_BIN="$(command -v node)"
+NPM_BIN="$(dirname "$NODE_BIN")/npm"
+
+echo "Node: $("$NODE_BIN" -v) ($NODE_BIN)"
+echo "npm:  $("$NPM_BIN" -v) ($NPM_BIN)"
 
 if [ ! -d node_modules ]; then
   echo "node_modules not found, running npm ci..."
-  npm ci
+  "$NPM_BIN" ci
 fi
 
 echo
@@ -43,4 +50,4 @@ echo "API: http://127.0.0.1:8787"
 echo "Stop with Ctrl+C or close this Terminal window."
 echo
 
-exec npm run dev
+exec "$NPM_BIN" run dev

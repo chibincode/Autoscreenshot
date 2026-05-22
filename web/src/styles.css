@@ -1014,8 +1014,8 @@ summary:focus-visible {
 }
 
 .status-partial_success {
-  background: rgba(231, 244, 235, 0.98);
-  color: #4f8b61;
+  background: rgba(255, 241, 224, 0.96);
+  color: #9b6b37;
 }
 
 .status-skipped {

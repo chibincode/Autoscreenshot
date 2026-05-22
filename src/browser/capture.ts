@@ -28,8 +28,12 @@ export const DPR_PIXEL_THRESHOLD = 120_000_000;
 const FULLPAGE_INITIAL_SETTLE_MS = 2500;
 const FULLPAGE_SINGLE_CAPTURE_MAX_HEIGHT_PX = 16_000;
 const FULLPAGE_TILE_CSS_HEIGHT = 4_000;
+const IMAGE_READY_TIMEOUT_MS = 7_500;
+const IMAGE_READY_POLL_MS = 250;
+const IMAGE_READY_MIN_AREA_PX = 8_000;
 const OVERLAY_SWEEP_SETTLE_MS = 120;
 const CAPTURE_PHASE_ATTR = "data-autosnap-capture-phase";
+const HIDDEN_IMAGE_FALLBACK_STYLE_ATTR = "data-autosnap-hidden-image-fallback";
 
 interface CaptureTaskOptions {
   outputDir: string;
@@ -83,14 +87,11 @@ async function sweepCaptureOverlays(params: {
   phase: "pre_capture" | "tile_capture";
   maxPasses?: number;
 }): Promise<number> {
-  await params.page
-    .evaluate(
-      ({ attrName, phase }) => {
-        document.documentElement?.setAttribute(attrName, phase);
-      },
-      { attrName: CAPTURE_PHASE_ATTR, phase: params.phase },
-    )
-    .catch(() => undefined);
+  await Promise.resolve(
+    params.page.evaluate(({ attrName, phase }) => {
+      document.documentElement?.setAttribute(attrName, phase);
+    }, { attrName: CAPTURE_PHASE_ATTR, phase: params.phase }),
+  ).catch(() => undefined);
 
   try {
     const result = await cleanupCaptureOverlays(params.page, {
@@ -98,16 +99,17 @@ async function sweepCaptureOverlays(params: {
       phase: params.phase,
       maxPasses: params.maxPasses,
     });
-    if (result.handled > 0) {
+    const handled = result?.handled ?? 0;
+    if (handled > 0) {
       await params.page.waitForTimeout(OVERLAY_SWEEP_SETTLE_MS);
     }
-    return result.handled;
+    return handled;
   } finally {
-    await params.page
-      .evaluate((attrName) => {
+    await Promise.resolve(
+      params.page.evaluate((attrName) => {
         document.documentElement?.removeAttribute(attrName);
       }, CAPTURE_PHASE_ATTR)
-      .catch(() => undefined);
+    ).catch(() => undefined);
   }
 }
 
@@ -273,6 +275,160 @@ async function warmupLazyLoad(page: import("playwright").Page): Promise<void> {
   }
 }
 
+type ImageReadyScope = "document" | "viewport";
+
+async function getPendingRenderableImageCount(
+  page: import("playwright").Page,
+  scope: ImageReadyScope,
+): Promise<number> {
+  return page.evaluate(({ minAreaPx, scope }) => {
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const documentHeight = document.documentElement.scrollHeight || document.body?.scrollHeight || 0;
+    const lazyLoadMargin = Math.max(viewportHeight * 1.5, 1200);
+
+    return Array.from(document.images).filter((image) => {
+      const rect = image.getBoundingClientRect();
+      const top = rect.top + window.scrollY;
+      const bottom = rect.bottom + window.scrollY;
+      const width = rect.width || image.width || 0;
+      const height = rect.height || image.height || 0;
+
+      if (width * height < minAreaPx) {
+        return false;
+      }
+
+      if (scope === "viewport" && (rect.bottom < -lazyLoadMargin || rect.top > viewportHeight + lazyLoadMargin)) {
+        return false;
+      }
+
+      if (scope === "document" && (bottom < -lazyLoadMargin || top > documentHeight + lazyLoadMargin)) {
+        return false;
+      }
+
+      const src = image.currentSrc || image.src;
+      if (!src) {
+        return false;
+      }
+
+      return !image.complete || image.naturalWidth === 0 || image.naturalHeight === 0;
+    }).length;
+  }, { minAreaPx: IMAGE_READY_MIN_AREA_PX, scope });
+}
+
+async function decodeRenderableImages(page: import("playwright").Page, scope: ImageReadyScope): Promise<void> {
+  await page
+    .evaluate(({ minAreaPx, scope }) => {
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+      const documentHeight = document.documentElement.scrollHeight || document.body?.scrollHeight || 0;
+      const lazyLoadMargin = Math.max(viewportHeight * 1.5, 1200);
+      const images = Array.from(document.images).filter((image) => {
+        const rect = image.getBoundingClientRect();
+        const top = rect.top + window.scrollY;
+        const bottom = rect.bottom + window.scrollY;
+        const width = rect.width || image.width || 0;
+        const height = rect.height || image.height || 0;
+
+        if (width * height < minAreaPx) {
+          return false;
+        }
+
+        if (scope === "viewport" && (rect.bottom < -lazyLoadMargin || rect.top > viewportHeight + lazyLoadMargin)) {
+          return false;
+        }
+
+        if (scope === "document" && (bottom < -lazyLoadMargin || top > documentHeight + lazyLoadMargin)) {
+          return false;
+        }
+
+        return Boolean(image.currentSrc || image.src);
+      });
+
+      return Promise.allSettled(
+        images.map((image) => {
+          if (!image.complete || image.naturalWidth === 0 || image.naturalHeight === 0) {
+            return Promise.reject(new Error("image_not_loaded"));
+          }
+          return image.decode ? image.decode() : Promise.resolve();
+        }),
+      );
+    }, { minAreaPx: IMAGE_READY_MIN_AREA_PX, scope })
+    .catch(() => undefined);
+}
+
+async function waitForRenderableImages(
+  page: import("playwright").Page,
+  log?: CaptureTaskOptions["log"],
+  scope: ImageReadyScope = "viewport",
+): Promise<void> {
+  const startedAt = Date.now();
+  let pendingCount = await getPendingRenderableImageCount(page, scope).catch(() => 0);
+
+  while (pendingCount > 0 && Date.now() - startedAt < IMAGE_READY_TIMEOUT_MS) {
+    await page.waitForTimeout(IMAGE_READY_POLL_MS);
+    pendingCount = await getPendingRenderableImageCount(page, scope).catch(() => pendingCount);
+  }
+
+  await decodeRenderableImages(page, scope);
+
+  const elapsedMs = Date.now() - startedAt;
+  if (pendingCount > 0) {
+    emitLog(log, "warn", `image_ready_timeout scope=${scope} pending=${pendingCount} elapsedMs=${elapsedMs}`);
+    return;
+  }
+
+  emitLog(log, "info", `image_ready_complete scope=${scope} elapsedMs=${elapsedMs}`);
+}
+
+async function installHiddenImageCaptureFallback(
+  page: import("playwright").Page,
+  log?: CaptureTaskOptions["log"],
+): Promise<void> {
+  const fallbackCount = await page
+    .evaluate(
+      ({ attrName, minAreaPx }) => {
+        const existing = document.querySelector(`style[${attrName}]`);
+        if (!existing) {
+          const style = document.createElement("style");
+          style.setAttribute(attrName, "true");
+          style.textContent = `
+            [role="img"] img.invisible,
+            [role="img"] img[style*="visibility: hidden"] {
+              visibility: visible !important;
+              opacity: 1 !important;
+              object-fit: cover !important;
+              z-index: 1 !important;
+            }
+          `;
+          document.head.appendChild(style);
+        }
+
+        return Array.from(document.querySelectorAll<HTMLImageElement>('[role="img"] img')).filter((image) => {
+          const rect = image.getBoundingClientRect();
+          const width = rect.width || image.width || 0;
+          const height = rect.height || image.height || 0;
+          const style = window.getComputedStyle(image);
+
+          if (width * height < minAreaPx) {
+            return false;
+          }
+
+          if (style.visibility !== "hidden" && !image.classList.contains("invisible")) {
+            return false;
+          }
+
+          return Boolean(image.currentSrc || image.src);
+        }).length;
+      },
+      { attrName: HIDDEN_IMAGE_FALLBACK_STYLE_ATTR, minAreaPx: IMAGE_READY_MIN_AREA_PX },
+    )
+    .catch(() => 0);
+
+  if (fallbackCount > 0) {
+    emitLog(log, "info", `hidden_image_capture_fallback applied=${fallbackCount}`);
+    await page.waitForTimeout(120);
+  }
+}
+
 export async function stabilizeFullPageViewport(
   page: import("playwright").Page,
   url: string,
@@ -373,6 +529,7 @@ async function captureOnce(
       onFallback: options.navigationFallback?.onFallback,
     });
     const hasFullPageCapture = task.captures.some((item) => item.mode === "fullPage");
+    let fullPageImageReadyScope: ImageReadyScope = "viewport";
     await page.waitForTimeout(hasFullPageCapture ? FULLPAGE_INITIAL_SETTLE_MS : 400);
     await sweepCaptureOverlays({
       page,
@@ -383,6 +540,7 @@ async function captureOnce(
       const earlyScrollScenes = await detectScrollSceneCandidates(page);
       if (earlyScrollScenes.length === 0) {
         await warmupLazyLoad(page);
+        fullPageImageReadyScope = "document";
         await page.waitForTimeout(400);
       } else {
         emitLog(options.log, "info", `scroll_scene_preserve_layout count=${earlyScrollScenes.length}`);
@@ -407,6 +565,8 @@ async function captureOnce(
 
     if (hasFullPageCapture) {
       await stabilizeFullPageViewport(page, task.url, options.log);
+      await waitForRenderableImages(page, options.log, fullPageImageReadyScope);
+      await installHiddenImageCaptureFallback(page, options.log);
       await sweepCaptureOverlays({
         page,
         log: options.log,

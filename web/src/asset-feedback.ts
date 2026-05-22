@@ -56,12 +56,12 @@ export interface AssetLookupIndex {
 }
 
 export function formatPendingImportLabel(selectedForImport: boolean): string {
-  return selectedForImport ? "已预选，待确认导入" : "未加入导入";
+  return selectedForImport ? "Selected, pending import" : "Not selected for import";
 }
 
 export function buildJobStatusHint(job: AssetFeedbackJob): string | null {
   if (job.mode === "core-routes" && job.status === "partial_success") {
-    return "For core-routes jobs, partial_success means some routes succeeded and others failed or were skipped. It does not mean Eagle import has already happened.";
+    return "For core-routes jobs, Needs review means route capture completed with one or more failed or skipped routes. It does not mean Eagle import has already happened.";
   }
   if (job.status === "awaiting_confirmation") {
     return "awaiting_confirmation means assets are only selected for import and still need confirmation before Eagle import starts.";

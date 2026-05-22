@@ -455,10 +455,31 @@ function formatStatusLabel(status: JobStatus | RouteTargetSummary["status"]): st
     case "awaiting_confirmation":
       return "Awaiting confirmation";
     case "partial_success":
-      return "Partial success";
+      return "Needs review";
     default:
       return status;
   }
+}
+
+function formatPartialSuccessJobBadge(params: {
+  imported: number;
+  failed: number;
+  pending: number;
+}): {
+  label: string;
+  tone: JobStatus | RouteTargetSummary["status"];
+} {
+  const { failed, imported, pending } = params;
+  if (failed > 0 && imported === 0 && pending === 0) {
+    return { label: "Import failed", tone: "failed" };
+  }
+  if (imported > 0 && failed === 0) {
+    return { label: "Imported to Eagle", tone: "success" };
+  }
+  if (imported > 0 || failed > 0) {
+    return { label: "Imported with issues", tone: "partial_success" };
+  }
+  return { label: "Needs review", tone: "partial_success" };
 }
 
 function canQuickArchiveJob(job: JobSummary): boolean {
@@ -761,12 +782,12 @@ function formatAssetImportStatus(
   error: string | null,
 ): string {
   if (status === "imported") {
-    return "Eagle 导入成功";
+    return "Imported to Eagle";
   }
   if (status === "pending_confirmation") {
     return formatPendingImportLabel(selectedForImport);
   }
-  return `导入失败: ${error ?? "未知错误"}`;
+  return `Import failed: ${error ?? "Unknown error"}`;
 }
 
 function summarizeAssets(assets: JobAsset[]): {
@@ -823,21 +844,25 @@ function summarizeAssets(assets: JobAsset[]): {
 
 function StatusBadge({
   status,
+  label,
+  tone,
   emphasis = false,
 }: {
   status: JobStatus | RouteTargetSummary["status"];
+  label?: string;
+  tone?: JobStatus | RouteTargetSummary["status"];
   emphasis?: boolean;
 }) {
   const active = isActiveStatus(status);
   return (
-    <span className={cx(statusClass(status), active && "status-live", emphasis && "status-emphasis")}>
+    <span className={cx(statusClass(tone ?? status), active && "status-live", emphasis && "status-emphasis")}>
       {active ? (
         <span className="status-indicator" aria-hidden="true">
           <span className="status-indicator-ring" />
           <span className="status-indicator-dot" />
         </span>
       ) : null}
-      <span>{formatStatusLabel(status)}</span>
+      <span>{label ?? formatStatusLabel(status)}</span>
     </span>
   );
 }
@@ -1149,7 +1174,17 @@ const JobsListPanel = memo(function JobsListPanel({
             >
               <div className="job-top">
                 <div className="job-top-left">
-                  <StatusBadge status={job.status} />
+                  {(() => {
+                    const badge =
+                      job.status === "partial_success"
+                        ? formatPartialSuccessJobBadge({
+                            imported: job.importSuccessCount,
+                            failed: job.importFailedCount,
+                            pending: job.pendingConfirmationCount,
+                          })
+                        : null;
+                    return <StatusBadge status={job.status} label={badge?.label} tone={badge?.tone} />;
+                  })()}
                   {job.archivedAt ? <span className="job-archived-pill">archived</span> : null}
                 </div>
               </div>
@@ -1247,7 +1282,17 @@ const JobDetailSummary = memo(function JobDetailSummary({
           </p>
         </div>
         <div className={cx("detail-status", isRunning && "detail-status-live")}>
-          <StatusBadge status={detail.job.status} emphasis />
+          {(() => {
+            const badge =
+              detail.job.status === "partial_success"
+                ? formatPartialSuccessJobBadge({
+                    imported: assetImportSummary.imported,
+                    failed: assetImportSummary.failed,
+                    pending: assetImportSummary.pending,
+                  })
+                : null;
+            return <StatusBadge status={detail.job.status} label={badge?.label} tone={badge?.tone} emphasis />;
+          })()}
           {statusNote ? <span className="detail-status-note">{statusNote}</span> : null}
         </div>
       </div>
