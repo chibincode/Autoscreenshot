@@ -10,6 +10,8 @@ import {
   type NavigationFallbackEvent,
 } from "./navigation.js";
 import { cleanupCaptureOverlays } from "./overlay-cleanup.js";
+import { captureFooterRevealReplacements } from "./footer-reveals.js";
+import { captureTopOverlayReplacement } from "./top-overlays.js";
 import {
   captureScrollSceneReplacements,
   detectScrollSceneCandidates,
@@ -536,6 +538,15 @@ async function captureOnce(
       log: options.log,
       phase: "pre_capture",
     });
+    const topOverlayReplacements = hasFullPageCapture
+      ? await captureTopOverlayReplacement({
+          page,
+          pageWidth: task.viewport.width,
+          viewportHeight: task.viewport.height,
+          dpr: forcedDpr,
+          log: options.log,
+        })
+      : [];
     if (hasFullPageCapture) {
       const earlyScrollScenes = await detectScrollSceneCandidates(page);
       if (earlyScrollScenes.length === 0) {
@@ -606,10 +617,23 @@ async function captureOnce(
         dpr: forcedDpr,
         log: options.log,
       });
+      const footerRevealReplacements = await captureFooterRevealReplacements({
+        page,
+        pageWidth: pageSize.width,
+        documentHeight: pageSize.height,
+        viewportHeight: task.viewport.height,
+        dpr: forcedDpr,
+        log: options.log,
+      });
       scrollSceneDebug = scrollSceneResult.debug;
+      const imageReplacements = [
+        ...topOverlayReplacements,
+        ...scrollSceneResult.replacements,
+        ...footerRevealReplacements,
+      ];
       const optimizedFullPageBuffer =
-        scrollSceneResult.replacements.length > 0
-          ? await replaceImageRegions(rawFullPageBuffer, scrollSceneResult.replacements)
+        imageReplacements.length > 0
+          ? await replaceImageRegions(rawFullPageBuffer, imageReplacements)
           : rawFullPageBuffer;
       await fs.writeFile(
         fullPath,

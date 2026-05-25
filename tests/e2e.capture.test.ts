@@ -976,6 +976,143 @@ function veryTallPageTemplate(): string {
   `;
 }
 
+function scrollRevealFooterPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Scroll Reveal Footer Fixture</title>
+        <style>
+          html,
+          body {
+            margin: 0;
+            scroll-behavior: smooth;
+            font-family: sans-serif;
+            background: #fafafa;
+          }
+          main {
+            min-height: 2600px;
+            padding: 72px 96px;
+            box-sizing: border-box;
+            background: #fafafa;
+          }
+          .fixed-nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 20;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            gap: 40px;
+            padding: 0 80px;
+            box-sizing: border-box;
+            background: rgba(250, 250, 250, 0.86);
+            color: #1b1c1c;
+            backdrop-filter: blur(18px);
+          }
+          .fixed-nav.is-hidden {
+            opacity: 0;
+          }
+          .nav-marker {
+            width: 38px;
+            height: 38px;
+            border-radius: 999px;
+            background: #ef4444;
+          }
+          .work-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 32px;
+            max-width: 1280px;
+            margin: 1300px auto 0;
+          }
+          .work-card {
+            height: 420px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, #143f3d, #f2f5f0);
+          }
+          .footer-window {
+            height: 720px;
+            overflow: hidden;
+            background: #fafafa;
+          }
+          footer {
+            position: relative;
+            height: 720px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #1b1c1c;
+            color: #fafafa;
+            transform: translateY(-500px);
+            transition: transform 80ms linear;
+          }
+          .footer-lockup {
+            position: absolute;
+            top: 260px;
+            left: 0;
+            right: 0;
+            text-align: center;
+          }
+          .footer-lockup h2 {
+            margin: 0;
+            font-size: 48px;
+            font-weight: 400;
+          }
+          .footer-marker {
+            position: absolute;
+            top: 360px;
+            left: calc(50% - 48px);
+            width: 96px;
+            height: 96px;
+            background: #22c55e;
+          }
+        </style>
+      </head>
+      <body>
+        <nav class="fixed-nav">
+          <div class="nav-marker"></div>
+          <span>Work</span>
+          <span>About</span>
+          <span>Playground</span>
+        </nav>
+        <main>
+          <h1>Portfolio</h1>
+          <div class="work-grid">
+            <div class="work-card"></div>
+            <div class="work-card"></div>
+          </div>
+        </main>
+        <div class="footer-window">
+          <footer>
+            <div class="footer-lockup">
+              <h2>Have a project in mind?</h2>
+            </div>
+            <div class="footer-marker"></div>
+          </footer>
+        </div>
+        <script>
+          const nav = document.querySelector('.fixed-nav');
+          const footer = document.querySelector('footer');
+          let navWasScrolled = false;
+          function renderFooter() {
+            const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+            const progress = maxScroll <= 0 ? 1 : Math.max(0, Math.min(1, window.scrollY / maxScroll));
+            footer.style.transform = 'translateY(' + Math.round(-500 + 500 * progress) + 'px)';
+            if (window.scrollY > 0) {
+              navWasScrolled = true;
+            }
+            nav.classList.toggle('is-hidden', navWasScrolled);
+          }
+          window.addEventListener('scroll', renderFooter, { passive: true });
+          renderFooter();
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 function splitScrollScenePageTemplate(): string {
   const blocks = [
     ["Overview", "#ef4444"],
@@ -1351,6 +1488,11 @@ beforeAll(async () => {
       res.end(veryTallPageTemplate());
       return;
     }
+    if (pathname.startsWith("/scroll-reveal-footer")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(scrollRevealFooterPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/split-scroll-scene-unfold")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(splitScrollSceneUnfoldPageTemplate());
@@ -1528,6 +1670,58 @@ describe("fullPage tiled capture", () => {
     expect(orangeBandSample[0]).toBeGreaterThan(orangeBandSample[1] + 40);
     expect(orangeBandSample[1]).toBeGreaterThan(orangeBandSample[2] + 20);
   }, 30_000);
+});
+
+describe("footer scroll reveal preservation", () => {
+  it("patches transformed footers from their bottom-scroll visual state", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-footer-reveal-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/scroll-reveal-footer`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs.some((message) => message.includes("top_overlay_replaced"))).toBe(true);
+    expect(logs.some((message) => message.includes("footer_reveal_replaced"))).toBe(true);
+
+    const metadata = await sharp(fullPageAsset!.filePath).metadata();
+    expect(metadata.height).toBe(result.fullPageSize.height);
+
+    const navSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 99, top: 36, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const markerSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: metadata.height! - 312, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const lowerFooterSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: metadata.height! - 80, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(navSample[0]).toBeGreaterThan(navSample[1] + 80);
+    expect(navSample[0]).toBeGreaterThan(navSample[2] + 80);
+    expect(markerSample[1]).toBeGreaterThan(markerSample[0] + 50);
+    expect(markerSample[1]).toBeGreaterThan(markerSample[2] + 20);
+    expect(lowerFooterSample[0]).toBeLessThan(40);
+    expect(lowerFooterSample[1]).toBeLessThan(45);
+    expect(lowerFooterSample[2]).toBeLessThan(45);
+  }, 20_000);
 });
 
 describe("split scroll scene preservation", () => {
