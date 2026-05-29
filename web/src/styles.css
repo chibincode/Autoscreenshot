@@ -745,7 +745,7 @@ summary:focus-visible {
 .jobs-list {
   display: flex;
   flex-direction: column;
-  padding: 6px 10px 6px 6px;
+  padding: 10px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;

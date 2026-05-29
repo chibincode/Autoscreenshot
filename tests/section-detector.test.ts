@@ -177,6 +177,39 @@ describe("classifySectionCandidate", () => {
     expect(result.scores.team).toBeGreaterThan(0);
   });
 
+  it("does not classify product image grids as team without people semantics", () => {
+    const candidate = {
+      ...baseCandidate(),
+      className: "agent-os visual-grid",
+      text: "Sierra Agent OS Build, optimize, personalize, and scale the best AI agents.",
+      headingCount: 1,
+      imageCount: 4,
+      y: 3734,
+      width: 1920,
+      height: 1170,
+    };
+    const result = classifySectionCandidate(candidate, 1080);
+    expect(result.sectionType).not.toBe("team");
+    expect(
+      result.signals.some((signal) => signal.rule === "layout:team_grid"),
+    ).toBe(false);
+  });
+
+  it("does not treat generic customer members copy as a team signal", () => {
+    const candidate = {
+      ...baseCandidate(),
+      className: "customer-story",
+      text: "Innovation is in our DNA, and Sierra helps us care for our members every day.",
+      headingCount: 1,
+      imageCount: 4,
+      y: 3200,
+      height: 520,
+    };
+    const result = classifySectionCandidate(candidate, 1080);
+    expect(result.sectionType).not.toBe("team");
+    expect(result.scores.team).toBe(0);
+  });
+
   it("prefers feature for numbered walkthrough sections even when customers are mentioned", () => {
     const candidate = {
       ...baseCandidate(),

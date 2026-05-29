@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import type { Page } from "playwright";
 import { cleanupCaptureOverlays } from "./overlay-cleanup.js";
+import { waitForRenderStability } from "./render-readiness.js";
 import type { ScrollSceneLayoutMode, ScrollSceneReplacementDebug } from "../types.js";
 
 const SCENE_ATTR = "data-autosnap-scroll-scene";
@@ -27,6 +28,9 @@ const DIVIDER_MAX_WIDTH_PX = 12;
 const DIVIDER_MAX_WIDTH_RATIO = 0.05;
 const DIVIDER_MIN_HEIGHT_RATIO = 0.8;
 const OVERLAY_SWEEP_SETTLE_MS = 120;
+const SCROLL_SCENE_RENDER_READY_TIMEOUT_MS = 2_400;
+const INTRO_PRESERVE_MIN_HEIGHT_PX = 480;
+const INTRO_PRESERVE_MIN_VIEWPORT_RATIO = 0.75;
 
 interface ScrollSceneContentBlock {
   top: number;
@@ -110,6 +114,38 @@ export function sampleSceneScrollPositions(params: {
     positions.add(Math.round(start + (end - start) * ratio));
   }
   return [...positions].sort((left, right) => left - right);
+}
+
+export function resolveScrollSceneCaptureBounds(params: {
+  outerTop: number;
+  outerHeight: number;
+  stickyTop: number;
+  stickyHeight: number;
+  splitLayout: boolean;
+  viewportHeight: number;
+}): { outerTop: number; outerHeight: number; preservedIntroHeight: number } {
+  const preservedIntroHeight = Math.max(0, Math.round(params.stickyTop - params.outerTop));
+  const minIntroHeight = Math.max(
+    INTRO_PRESERVE_MIN_HEIGHT_PX,
+    params.viewportHeight * INTRO_PRESERVE_MIN_VIEWPORT_RATIO,
+  );
+
+  if (params.splitLayout || preservedIntroHeight < minIntroHeight) {
+    return {
+      outerTop: params.outerTop,
+      outerHeight: params.outerHeight,
+      preservedIntroHeight: 0,
+    };
+  }
+
+  const originalBottom = params.outerTop + params.outerHeight;
+  const adjustedOuterTop = Math.min(params.stickyTop, originalBottom - params.stickyHeight);
+  const adjustedOuterHeight = Math.max(params.stickyHeight, originalBottom - adjustedOuterTop);
+  return {
+    outerTop: adjustedOuterTop,
+    outerHeight: adjustedOuterHeight,
+    preservedIntroHeight,
+  };
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -926,6 +962,13 @@ async function captureSceneFrames(params: {
       page: params.page,
       log: params.log,
     });
+    await waitForRenderStability(params.page, {
+      log: params.log,
+      phase: `scroll_scene:${params.candidate.sceneId}:${target.scrollY}`,
+      timeoutMs: SCROLL_SCENE_RENDER_READY_TIMEOUT_MS,
+      pollMs: 180,
+      stablePassCount: 1,
+    });
 
     const clip = await params.page.evaluate(
       ({ sceneId, stickyAttr }) => {
@@ -1013,15 +1056,34 @@ export async function captureScrollSceneReplacements(params: {
   const debug: ScrollSceneReplacementDebug[] = [];
 
   for (const candidate of candidates) {
+    const captureBounds = resolveScrollSceneCaptureBounds({
+      outerTop: candidate.outerTop,
+      outerHeight: candidate.outerHeight,
+      stickyTop: candidate.stickyTop,
+      stickyHeight: candidate.stickyHeight,
+      splitLayout: candidate.splitLayout,
+      viewportHeight: params.viewportHeight,
+    });
+    const captureCandidate: ScrollSceneGeometry = {
+      ...candidate,
+      outerTop: captureBounds.outerTop,
+      outerHeight: captureBounds.outerHeight,
+    };
     params.log?.(
       "info",
       `scroll_scene_detected id=${candidate.sceneId} splitLayout=${candidate.splitLayout} contentBlocks=${candidate.contentBlocks.length} top=${Math.round(candidate.outerTop)} height=${Math.round(candidate.outerHeight)} stickyHeight=${Math.round(candidate.stickyHeight)}`,
     );
+    if (captureBounds.preservedIntroHeight > 0) {
+      params.log?.(
+        "info",
+        `scroll_scene_intro_preserved id=${candidate.sceneId} introHeight=${captureBounds.preservedIntroHeight} captureTop=${Math.round(captureBounds.outerTop)} captureHeight=${Math.round(captureBounds.outerHeight)}`,
+      );
+    }
 
     try {
       const sampledFrames = await captureSceneFrames({
         page: params.page,
-        candidate,
+        candidate: captureCandidate,
         documentHeight: params.documentHeight,
         viewportHeight: params.viewportHeight,
         log: params.log,
@@ -1053,7 +1115,7 @@ export async function captureScrollSceneReplacements(params: {
       if (layoutMode === "split_content_preserve") {
         replacement = await buildSplitContentPreserveReplacement({
           baseImage: params.baseImage,
-          candidate,
+          candidate: captureCandidate,
           dpr: params.dpr,
           frame: sampledFrames[0],
         });
@@ -1061,7 +1123,7 @@ export async function captureScrollSceneReplacements(params: {
         try {
           replacement = await buildSplitContentUnfoldReplacement({
             baseImage: params.baseImage,
-            candidate,
+            candidate: captureCandidate,
             dpr: params.dpr,
             sampledFrames,
             distinctFrames,
@@ -1074,7 +1136,7 @@ export async function captureScrollSceneReplacements(params: {
           );
           replacement = await buildSplitContentPreserveReplacement({
               baseImage: params.baseImage,
-              candidate,
+              candidate: captureCandidate,
               dpr: params.dpr,
               frame: sampledFrames[0],
             });
@@ -1096,15 +1158,15 @@ export async function captureScrollSceneReplacements(params: {
       }
 
       replacements.push({
-        top: Math.round(candidate.outerTop * params.dpr),
-        height: Math.round(candidate.outerHeight * params.dpr),
+        top: Math.round(captureCandidate.outerTop * params.dpr),
+        height: Math.round(captureCandidate.outerHeight * params.dpr),
         replacement,
       });
       debug.push({
         sceneId: candidate.sceneId,
         layoutMode: effectiveLayoutMode,
-        outerTop: Math.round(candidate.outerTop),
-        outerHeight: Math.round(candidate.outerHeight),
+        outerTop: Math.round(captureCandidate.outerTop),
+        outerHeight: Math.round(captureCandidate.outerHeight),
         stickyHeight: Math.round(candidate.stickyHeight),
         sampledFrameCount: sampledFrames.length,
         distinctFrameCount: distinctFrames.length,
@@ -1112,7 +1174,7 @@ export async function captureScrollSceneReplacements(params: {
       });
       params.log?.(
         "info",
-        `scroll_scene_replaced id=${candidate.sceneId} layoutMode=${effectiveLayoutMode} sampled=${sampledFrames.length} distinct=${distinctFrames.length} originalHeight=${Math.round(candidate.outerHeight)} replacementHeight=${Math.round(replacementMeta.height / params.dpr)}`,
+        `scroll_scene_replaced id=${candidate.sceneId} layoutMode=${effectiveLayoutMode} sampled=${sampledFrames.length} distinct=${distinctFrames.length} originalHeight=${Math.round(captureCandidate.outerHeight)} replacementHeight=${Math.round(replacementMeta.height / params.dpr)}`,
       );
     } catch (error) {
       params.log?.(

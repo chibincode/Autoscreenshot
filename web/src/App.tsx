@@ -764,6 +764,10 @@ function debugRowKey(row: SectionDebugRow): string {
   return `${row.phase}:${row.selector}:${row.bbox.y}:${row.bbox.height}`;
 }
 
+function formatCoreRouteCardLabel(path: string): string {
+  return path === "/" ? "Home" : path;
+}
+
 function parseJobMode(optionsJson: string | null): JobMode {
   if (!optionsJson) {
     return "single";
@@ -1411,7 +1415,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                 </div>
                 <ExternalLink
                   href={route.url}
-                  label={route.path}
+                  label={formatCoreRouteCardLabel(route.path)}
                   className="core-route-card-path"
                   title={route.url}
                 />
@@ -3287,15 +3291,13 @@ export function App() {
                   />
                 )}
 
-                <details className="section-debug-panel" open>
-                  <summary>Section Debug</summary>
-                  {!sectionDebug ? (
-                    <div className="empty-text">当前任务没有 sectionDebug 数据</div>
-                  ) : (
+                {sectionDebug ? (
+                  <details className="section-debug-panel" open>
+                    <summary>Section Debug</summary>
                     <>
                       <div className="section-debug-toolbar">
                         <label>
-                          阶段
+                          Stage
                           <select
                             value={debugPhaseFilter}
                             onChange={(event) =>
@@ -3314,7 +3316,7 @@ export function App() {
                             checked={showDebugConflictsOnly}
                             onChange={(event) => setShowDebugConflictsOnly(event.target.checked)}
                           />
-                          仅显示 faq/testimonial 冲突
+                          FAQ/testimonial conflicts only
                         </label>
                         <span>
                           scope: {sectionDebug.scope} · viewportH: {sectionDebug.viewportHeight} · rows:{" "}
@@ -3327,11 +3329,11 @@ export function App() {
                           </span>
                         ) : null}
                         {focusSectionType ? (
-                          <span className="focus-source">聚焦模式：已展示 raw/merged/selected 全阶段</span>
+                          <span className="focus-source">Focus mode: showing raw, merged, and selected stages</span>
                         ) : null}
                         {selectedAssetId !== null ? (
                           <button type="button" className="focus-clear-btn" onClick={clearFocus}>
-                            清除聚焦
+                            Clear focus
                           </button>
                         ) : null}
                       </div>
@@ -3394,8 +3396,8 @@ export function App() {
                         </table>
                       </div>
                     </>
-                  )}
-                </details>
+                  </details>
+                ) : null}
 
                 <div className="detail-columns">
                   <LogsPanel

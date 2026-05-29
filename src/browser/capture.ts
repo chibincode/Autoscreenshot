@@ -10,6 +10,7 @@ import {
   type NavigationFallbackEvent,
 } from "./navigation.js";
 import { cleanupCaptureOverlays } from "./overlay-cleanup.js";
+import { waitForRenderStability } from "./render-readiness.js";
 import { captureFooterRevealReplacements } from "./footer-reveals.js";
 import { captureTopOverlayReplacement } from "./top-overlays.js";
 import {
@@ -36,6 +37,7 @@ const IMAGE_READY_MIN_AREA_PX = 8_000;
 const OVERLAY_SWEEP_SETTLE_MS = 120;
 const CAPTURE_PHASE_ATTR = "data-autosnap-capture-phase";
 const HIDDEN_IMAGE_FALLBACK_STYLE_ATTR = "data-autosnap-hidden-image-fallback";
+const VIDEO_EMBED_THUMBNAIL_FALLBACK_ATTR = "data-autosnap-video-thumbnail-fallback";
 
 interface CaptureTaskOptions {
   outputDir: string;
@@ -431,6 +433,139 @@ async function installHiddenImageCaptureFallback(
   }
 }
 
+async function installVideoEmbedThumbnailFallback(
+  page: import("playwright").Page,
+  log?: CaptureTaskOptions["log"],
+): Promise<void> {
+  const result = await page
+    .evaluate(
+      async ({ attrName, minAreaPx }) => {
+        let candidateCount = 0;
+        let parsedVideoCount = 0;
+        let loadedThumbnailCount = 0;
+        const iframes = Array.from(
+          document.querySelectorAll<HTMLIFrameElement>(
+            'iframe[src*="youtube.com/embed"], iframe[src*="youtube-nocookie.com/embed"]',
+          ),
+        );
+        let applied = 0;
+
+        for (const iframe of iframes) {
+          const rect = iframe.getBoundingClientRect();
+          if (rect.width * rect.height < minAreaPx) {
+            continue;
+          }
+          candidateCount += 1;
+
+          let videoId: string | null = null;
+          try {
+            const url = new URL(iframe.src || iframe.getAttribute("src") || "", window.location.href);
+            if (/(^|\.)youtube(?:-nocookie)?\.com$/i.test(url.hostname)) {
+              const embedMatch = url.pathname.match(/\/embed\/([^/?#]+)/i);
+              videoId = embedMatch?.[1] ?? url.searchParams.get("v");
+            }
+          } catch {
+            videoId = null;
+          }
+          if (!videoId) {
+            continue;
+          }
+          parsedVideoCount += 1;
+
+          const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+          const preload = new Image();
+          preload.decoding = "async";
+          preload.src = thumbnailUrl;
+          await preload.decode().catch(() => undefined);
+          loadedThumbnailCount += 1;
+
+          const container =
+            iframe.closest<HTMLElement>(".w-embed-youtubevideo") ??
+            iframe.parentElement;
+          if (!container) {
+            continue;
+          }
+
+          container.setAttribute(attrName, videoId);
+          container.style.backgroundImage = `url("${thumbnailUrl}")`;
+          container.style.backgroundSize = "cover";
+          container.style.backgroundPosition = "center";
+          container.style.backgroundRepeat = "no-repeat";
+          container.style.backgroundColor = "#111827";
+          iframe.style.opacity = "0";
+          iframe.style.visibility = "hidden";
+          applied += 1;
+        }
+
+        if (applied > 0 && !document.querySelector(`style[${attrName}]`)) {
+          const style = document.createElement("style");
+          style.setAttribute(attrName, "true");
+          style.textContent = `
+            [${attrName}] {
+              position: relative;
+              overflow: hidden;
+            }
+            [${attrName}]::after {
+              content: "";
+              position: absolute;
+              left: 50%;
+              top: 50%;
+              width: 68px;
+              height: 48px;
+              border-radius: 14px;
+              transform: translate(-50%, -50%);
+              background: rgba(15, 23, 42, 0.72);
+              box-shadow: 0 10px 28px rgba(15, 23, 42, 0.24);
+            }
+            [${attrName}]::before {
+              content: "";
+              position: absolute;
+              z-index: 1;
+              left: 50%;
+              top: 50%;
+              width: 0;
+              height: 0;
+              border-top: 11px solid transparent;
+              border-bottom: 11px solid transparent;
+              border-left: 18px solid rgba(255, 255, 255, 0.92);
+              transform: translate(-34%, -50%);
+            }
+          `;
+          document.head.appendChild(style);
+        }
+
+        return {
+          applied,
+          candidateCount,
+          parsedVideoCount,
+          loadedThumbnailCount,
+        };
+      },
+      { attrName: VIDEO_EMBED_THUMBNAIL_FALLBACK_ATTR, minAreaPx: IMAGE_READY_MIN_AREA_PX },
+    )
+    .catch((error) => ({
+      applied: 0,
+      candidateCount: 0,
+      parsedVideoCount: 0,
+      loadedThumbnailCount: 0,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+
+  if (result.applied > 0) {
+    emitLog(log, "info", `video_embed_thumbnail_fallback applied=${result.applied}`);
+    await page.waitForTimeout(700);
+    return;
+  }
+
+  if (result.candidateCount > 0 || "error" in result) {
+    emitLog(
+      log,
+      "warn",
+      `video_embed_thumbnail_fallback skipped candidates=${result.candidateCount} parsed=${result.parsedVideoCount} thumbnails=${result.loadedThumbnailCount}${"error" in result ? ` error=${result.error}` : ""}`,
+    );
+  }
+}
+
 export async function stabilizeFullPageViewport(
   page: import("playwright").Page,
   url: string,
@@ -533,6 +668,11 @@ async function captureOnce(
     const hasFullPageCapture = task.captures.some((item) => item.mode === "fullPage");
     let fullPageImageReadyScope: ImageReadyScope = "viewport";
     await page.waitForTimeout(hasFullPageCapture ? FULLPAGE_INITIAL_SETTLE_MS : 400);
+    await waitForRenderStability(page, {
+      log: options.log,
+      phase: hasFullPageCapture ? "initial_fullpage" : "initial_section",
+      timeoutMs: hasFullPageCapture ? 10_000 : 4_000,
+    });
     await sweepCaptureOverlays({
       page,
       log: options.log,
@@ -576,8 +716,14 @@ async function captureOnce(
 
     if (hasFullPageCapture) {
       await stabilizeFullPageViewport(page, task.url, options.log);
+      await waitForRenderStability(page, {
+        log: options.log,
+        phase: "pre_fullpage",
+        timeoutMs: 6_000,
+      });
       await waitForRenderableImages(page, options.log, fullPageImageReadyScope);
       await installHiddenImageCaptureFallback(page, options.log);
+      await installVideoEmbedThumbnailFallback(page, options.log);
       await sweepCaptureOverlays({
         page,
         log: options.log,
@@ -656,6 +802,11 @@ async function captureOnce(
     const sectionRequests = task.captures.filter((item) => item.mode === "section");
     if (sectionRequests.length > 0) {
       await stabilizeFullPageViewport(page, task.url, options.log);
+      await waitForRenderStability(page, {
+        log: options.log,
+        phase: "pre_section",
+        timeoutMs: 6_000,
+      });
       await waitForRenderableImages(page, options.log, "viewport");
       await sweepCaptureOverlays({
         page,

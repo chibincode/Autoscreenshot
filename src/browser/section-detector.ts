@@ -205,8 +205,11 @@ export function classifySectionCandidate(
     team: [
       "our team",
       "meet the team",
-      "members",
+      "meet our team",
+      "team members",
       "leadership",
+      "leadership team",
+      "executive team",
       "founders",
       "团队",
       "成员",
@@ -448,7 +451,11 @@ export function classifySectionCandidate(
   ) {
     addScore("pricing", 2, "regex:pricing_semantic");
   }
-  if (candidate.imageCount >= 3 && candidate.headingCount >= 1) {
+  const hasTeamSemanticSignal =
+    /\b(?:our team|meet (?:the|our) team|team members|leadership team|executive team|founders?|co-founders?|founder|ceo|cto|cpo|coo|vp|director|manager)\b|团队|团队成员|创始人|联合创始人|负责人/i.test(
+      haystack,
+    );
+  if (candidate.imageCount >= 3 && candidate.headingCount >= 1 && hasTeamSemanticSignal) {
     addScore("team", 2, "layout:team_grid");
   }
   if (

@@ -4,6 +4,7 @@ import {
   filterDistinctSceneFrames,
   isValidScrollSceneCandidate,
   replaceImageRegions,
+  resolveScrollSceneCaptureBounds,
   sampleSceneScrollPositions,
   stackSceneFrames,
 } from "../src/browser/scroll-scenes.js";
@@ -54,6 +55,38 @@ describe("scroll scene helpers", () => {
         documentHeight: 12000,
       }),
     ).toEqual([3000, 4000, 5000, 6000]);
+  });
+
+  it("preserves large intro content before a delayed sticky scene", () => {
+    expect(
+      resolveScrollSceneCaptureBounds({
+        outerTop: 0,
+        outerHeight: 8144,
+        stickyTop: 2654,
+        stickyHeight: 1080,
+        splitLayout: false,
+        viewportHeight: 1080,
+      }),
+    ).toEqual({
+      outerTop: 2654,
+      outerHeight: 5490,
+      preservedIntroHeight: 2654,
+    });
+
+    expect(
+      resolveScrollSceneCaptureBounds({
+        outerTop: 720,
+        outerHeight: 4200,
+        stickyTop: 800,
+        stickyHeight: 520,
+        splitLayout: false,
+        viewportHeight: 1080,
+      }),
+    ).toEqual({
+      outerTop: 720,
+      outerHeight: 4200,
+      preservedIntroHeight: 0,
+    });
   });
 
   it("drops adjacent frames that are visually identical", async () => {

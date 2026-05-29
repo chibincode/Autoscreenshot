@@ -311,6 +311,64 @@ function scrollScenePageTemplate(): string {
   `;
 }
 
+function delayedHeroPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Delayed Hero Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #e5e7eb;
+            color: #0f172a;
+          }
+          .loading-shell,
+          .hero {
+            min-height: 1180px;
+            padding: 96px;
+            box-sizing: border-box;
+          }
+          .loading-shell {
+            background: #e5e7eb;
+          }
+          .skeleton-line {
+            width: 520px;
+            height: 48px;
+            margin-bottom: 24px;
+            border-radius: 999px;
+            background: #cbd5e1;
+          }
+          .hero {
+            background: #064e3b;
+            color: #ecfdf5;
+          }
+          .hero h1 {
+            margin: 0;
+            font-size: 88px;
+            line-height: 1;
+          }
+        </style>
+      </head>
+      <body>
+        <main id="root" class="loading-shell" aria-busy="true">
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line"></div>
+          <p>Loading customer data...</p>
+        </main>
+        <script>
+          window.setTimeout(() => {
+            const root = document.getElementById('root');
+            root.className = 'hero';
+            root.setAttribute('aria-busy', 'false');
+            root.innerHTML = '<h1>Hero is ready</h1><p>Stable content should be captured.</p>';
+          }, 3200);
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 function scrollSceneOverlayPageTemplate(): string {
   return `
     <html>
@@ -1453,6 +1511,11 @@ beforeAll(async () => {
       res.end(scrollScenePageTemplate());
       return;
     }
+    if (pathname.startsWith("/delayed-hero")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(delayedHeroPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/consent-banner")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(consentBannerPageTemplate());
@@ -1592,6 +1655,38 @@ describe("fullPage stabilization", () => {
 });
 
 describe("fullPage tiled capture", () => {
+  it("waits for delayed hero content before fullPage capture", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-delayed-hero-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/delayed-hero`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs.some((message) => message.includes("render_stable phase=initial_fullpage"))).toBe(true);
+    expect(logs.some((message) => message.includes("render_stable_timeout"))).toBe(false);
+
+    const sample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 40, top: 40, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    expect(sample[0] + sample[1] + sample[2]).toBeLessThan(260);
+  }, 20_000);
+
   it("stitches tall pages so the final footer remains in the output", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-tiled-fullpage-"));
     const logs: string[] = [];
