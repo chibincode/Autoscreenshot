@@ -34,10 +34,15 @@ const FULLPAGE_TILE_CSS_HEIGHT = 4_000;
 const IMAGE_READY_TIMEOUT_MS = 7_500;
 const IMAGE_READY_POLL_MS = 250;
 const IMAGE_READY_MIN_AREA_PX = 8_000;
+const LAZY_WARMUP_MEDIA_TIMEOUT_MS = 1_000;
 const OVERLAY_SWEEP_SETTLE_MS = 120;
 const CAPTURE_PHASE_ATTR = "data-autosnap-capture-phase";
 const HIDDEN_IMAGE_FALLBACK_STYLE_ATTR = "data-autosnap-hidden-image-fallback";
 const VIDEO_EMBED_THUMBNAIL_FALLBACK_ATTR = "data-autosnap-video-thumbnail-fallback";
+const CHROMIUM_CAPTURE_ARGS =
+  process.platform === "darwin"
+    ? ["--use-angle=metal", "--ignore-gpu-blocklist"]
+    : ["--use-angle=swiftshader", "--ignore-gpu-blocklist", "--enable-unsafe-swiftshader"];
 
 interface CaptureTaskOptions {
   outputDir: string;
@@ -276,10 +281,18 @@ async function warmupLazyLoad(page: import("playwright").Page): Promise<void> {
     const y = Math.round((docHeight * i) / steps);
     await page.evaluate((scrollY) => window.scrollTo(0, scrollY), y);
     await page.waitForTimeout(120);
+    await waitForRenderableMedia(page, undefined, "viewport", LAZY_WARMUP_MEDIA_TIMEOUT_MS);
   }
 }
 
 type ImageReadyScope = "document" | "viewport";
+
+interface BackgroundImageReadyResult {
+  total: number;
+  loaded: number;
+  failed: number;
+  timedOut: number;
+}
 
 async function getPendingRenderableImageCount(
   page: import("playwright").Page,
@@ -363,11 +376,12 @@ async function waitForRenderableImages(
   page: import("playwright").Page,
   log?: CaptureTaskOptions["log"],
   scope: ImageReadyScope = "viewport",
+  timeoutMs: number = IMAGE_READY_TIMEOUT_MS,
 ): Promise<void> {
   const startedAt = Date.now();
   let pendingCount = await getPendingRenderableImageCount(page, scope).catch(() => 0);
 
-  while (pendingCount > 0 && Date.now() - startedAt < IMAGE_READY_TIMEOUT_MS) {
+  while (pendingCount > 0 && Date.now() - startedAt < timeoutMs) {
     await page.waitForTimeout(IMAGE_READY_POLL_MS);
     pendingCount = await getPendingRenderableImageCount(page, scope).catch(() => pendingCount);
   }
@@ -381,6 +395,174 @@ async function waitForRenderableImages(
   }
 
   emitLog(log, "info", `image_ready_complete scope=${scope} elapsedMs=${elapsedMs}`);
+}
+
+async function preloadRenderableBackgroundImages(
+  page: import("playwright").Page,
+  scope: ImageReadyScope,
+  timeoutMs: number,
+): Promise<BackgroundImageReadyResult> {
+  return page
+    .evaluate(
+      async ({ minAreaPx, scope, timeoutMs }) => {
+        type BackgroundStatus = "loaded" | "failed" | "timeout";
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+        const documentHeight = document.documentElement.scrollHeight || document.body?.scrollHeight || 0;
+        const lazyLoadMargin = Math.max(viewportHeight * 1.5, 1200);
+        const urlPattern = /url\((?:"([^"]+)"|'([^']+)'|([^)]*?))\)/g;
+        const windowWithCache = window as typeof window & {
+          __autosnapBackgroundImageReady?: Record<string, BackgroundStatus>;
+        };
+        const readyCache = (windowWithCache.__autosnapBackgroundImageReady ??= {});
+        const urls = new Set<string>();
+
+        const addUrlsFromValue = (value: string): void => {
+          if (!value || value === "none") {
+            return;
+          }
+
+          for (const match of value.matchAll(urlPattern)) {
+            const rawUrl = (match[1] ?? match[2] ?? match[3] ?? "").trim();
+            if (!rawUrl || /^(data|blob|about):/i.test(rawUrl) || rawUrl.startsWith("#")) {
+              continue;
+            }
+
+            try {
+              urls.add(new URL(rawUrl, document.baseURI).href);
+            } catch {
+              urls.add(rawUrl);
+            }
+          }
+        };
+
+        const addUrlsFromStyle = (style: CSSStyleDeclaration): void => {
+          addUrlsFromValue(style.backgroundImage);
+          addUrlsFromValue(style.borderImageSource);
+          addUrlsFromValue(style.maskImage);
+          addUrlsFromValue(style.getPropertyValue("-webkit-mask-image"));
+        };
+
+        for (const element of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
+          const rect = element.getBoundingClientRect();
+          const top = rect.top + window.scrollY;
+          const bottom = rect.bottom + window.scrollY;
+          const width = rect.width || element.offsetWidth || 0;
+          const height = rect.height || element.offsetHeight || 0;
+
+          if (width * height < minAreaPx) {
+            continue;
+          }
+
+          if (scope === "viewport" && (rect.bottom < -lazyLoadMargin || rect.top > viewportHeight + lazyLoadMargin)) {
+            continue;
+          }
+
+          if (scope === "document" && (bottom < -lazyLoadMargin || top > documentHeight + lazyLoadMargin)) {
+            continue;
+          }
+
+          const style = window.getComputedStyle(element);
+          if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) <= 0.01) {
+            continue;
+          }
+
+          addUrlsFromStyle(style);
+          addUrlsFromStyle(window.getComputedStyle(element, "::before"));
+          addUrlsFromStyle(window.getComputedStyle(element, "::after"));
+        }
+
+        const probeUrl = (url: string): Promise<BackgroundStatus> => {
+          if (readyCache[url] === "loaded" || readyCache[url] === "failed") {
+            return Promise.resolve(readyCache[url]);
+          }
+
+          return new Promise<BackgroundStatus>((resolve) => {
+            const image = new Image();
+            let settled = false;
+            const settle = (status: BackgroundStatus): void => {
+              if (settled) {
+                return;
+              }
+              settled = true;
+              window.clearTimeout(timer);
+              readyCache[url] = status;
+              resolve(status);
+            };
+            const timer = window.setTimeout(() => settle("timeout"), timeoutMs);
+
+            image.decoding = "async";
+            image.onload = () => {
+              if (image.decode) {
+                void image.decode().finally(() => settle("loaded"));
+                return;
+              }
+              settle("loaded");
+            };
+            image.onerror = () => settle("failed");
+            image.src = url;
+
+            if (image.complete) {
+              settle(image.naturalWidth > 0 && image.naturalHeight > 0 ? "loaded" : "failed");
+            }
+          });
+        };
+
+        const statuses = await Promise.all(Array.from(urls, (url) => probeUrl(url)));
+        return {
+          total: statuses.length,
+          loaded: statuses.filter((status) => status === "loaded").length,
+          failed: statuses.filter((status) => status === "failed").length,
+          timedOut: statuses.filter((status) => status === "timeout").length,
+        };
+      },
+      { minAreaPx: IMAGE_READY_MIN_AREA_PX, scope, timeoutMs },
+    )
+    .catch(() => ({
+      total: 0,
+      loaded: 0,
+      failed: 0,
+      timedOut: 0,
+    }));
+}
+
+async function waitForRenderableBackgroundImages(
+  page: import("playwright").Page,
+  log?: CaptureTaskOptions["log"],
+  scope: ImageReadyScope = "viewport",
+  timeoutMs: number = IMAGE_READY_TIMEOUT_MS,
+): Promise<void> {
+  const startedAt = Date.now();
+  const result = await preloadRenderableBackgroundImages(page, scope, timeoutMs);
+  const elapsedMs = Date.now() - startedAt;
+
+  if (result.total === 0) {
+    return;
+  }
+
+  if (result.timedOut > 0) {
+    emitLog(
+      log,
+      "warn",
+      `background_image_ready_timeout scope=${scope} timedOut=${result.timedOut} failed=${result.failed} total=${result.total} elapsedMs=${elapsedMs}`,
+    );
+    return;
+  }
+
+  emitLog(
+    log,
+    "info",
+    `background_image_ready_complete scope=${scope} loaded=${result.loaded} failed=${result.failed} elapsedMs=${elapsedMs}`,
+  );
+}
+
+async function waitForRenderableMedia(
+  page: import("playwright").Page,
+  log?: CaptureTaskOptions["log"],
+  scope: ImageReadyScope = "viewport",
+  timeoutMs: number = IMAGE_READY_TIMEOUT_MS,
+): Promise<void> {
+  await waitForRenderableImages(page, log, scope, timeoutMs);
+  await waitForRenderableBackgroundImages(page, log, scope, timeoutMs);
 }
 
 async function installHiddenImageCaptureFallback(
@@ -648,7 +830,7 @@ async function captureOnce(
   forcedDpr: number,
 ): Promise<CaptureRunResult> {
   await ensureDir(options.outputDir);
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, args: CHROMIUM_CAPTURE_ARGS });
   const context = await browser.newContext({
     viewport: task.viewport,
     deviceScaleFactor: forcedDpr,
@@ -721,7 +903,7 @@ async function captureOnce(
         phase: "pre_fullpage",
         timeoutMs: 6_000,
       });
-      await waitForRenderableImages(page, options.log, fullPageImageReadyScope);
+      await waitForRenderableMedia(page, options.log, fullPageImageReadyScope);
       await installHiddenImageCaptureFallback(page, options.log);
       await installVideoEmbedThumbnailFallback(page, options.log);
       await sweepCaptureOverlays({
@@ -807,7 +989,7 @@ async function captureOnce(
         phase: "pre_section",
         timeoutMs: 6_000,
       });
-      await waitForRenderableImages(page, options.log, "viewport");
+      await waitForRenderableMedia(page, options.log, "viewport");
       await sweepCaptureOverlays({
         page,
         log: options.log,
@@ -881,7 +1063,7 @@ export async function captureTask(
 ): Promise<CaptureRunResult> {
   const preferredDpr = task.image.dpr === "auto" ? 2 : task.image.dpr;
 
-  const probeBrowser = await chromium.launch({ headless: true });
+  const probeBrowser = await chromium.launch({ headless: true, args: CHROMIUM_CAPTURE_ARGS });
   const probeContext = await probeBrowser.newContext({
     viewport: task.viewport,
     deviceScaleFactor: preferredDpr,

@@ -369,6 +369,168 @@ function delayedHeroPageTemplate(): string {
   `;
 }
 
+function lazyFeatureBackgroundPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Lazy Feature Background Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #ffffff;
+            color: #111827;
+          }
+          .hero {
+            min-height: 1120px;
+            padding: 160px 240px;
+            box-sizing: border-box;
+            background: #f8fafc;
+          }
+          .hero h1 {
+            margin: 0;
+            font-size: 80px;
+            line-height: 1;
+          }
+          .features {
+            min-height: 1500px;
+            padding: 140px 240px;
+            box-sizing: border-box;
+            background: #ffffff;
+          }
+          .intro {
+            width: 640px;
+            margin: 0 auto 80px;
+            text-align: center;
+          }
+          .intro h2 {
+            margin: 0 0 16px;
+            font-size: 52px;
+          }
+          .grid {
+            width: 1320px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 32px;
+          }
+          .feature-card {
+            height: 520px;
+            padding: 40px;
+            box-sizing: border-box;
+            border-radius: 8px;
+            background-color: #05070a;
+            background-position: center;
+            background-size: cover;
+            color: white;
+          }
+          footer {
+            min-height: 520px;
+            background: #020617;
+          }
+        </style>
+      </head>
+      <body>
+        <section class="hero">
+          <h1>Automation made visible</h1>
+        </section>
+        <section class="features">
+          <div class="intro">
+            <h2>Packed with features</h2>
+            <p>Feature art is attached only after each card has entered the viewport.</p>
+          </div>
+          <div class="grid">
+            <article class="feature-card" data-bg="/slow-feature-art/green.svg">
+              <h3>Human Language to CAD</h3>
+            </article>
+            <article class="feature-card" data-bg="/slow-feature-art/blue.svg">
+              <h3>Code Compliant Zone Maps</h3>
+            </article>
+            <article class="feature-card" data-bg="/slow-feature-art/pink.svg">
+              <h3>Automatic Riser Diagrams</h3>
+            </article>
+            <article class="feature-card" data-bg="/slow-feature-art/orange.svg">
+              <h3>Drag & Drop Them</h3>
+            </article>
+          </div>
+        </section>
+        <footer></footer>
+        <script>
+          const observer = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) {
+                continue;
+              }
+              const card = entry.target;
+              card.style.backgroundImage = 'url("' + card.dataset.bg + '")';
+              observer.unobserve(card);
+            }
+          }, { threshold: 0.2 });
+
+          document.querySelectorAll('.feature-card').forEach((card) => observer.observe(card));
+        </script>
+      </body>
+    </html>
+  `;
+}
+
+function webglCanvasPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>WebGL Canvas Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #020617;
+          }
+          .hero {
+            min-height: 420px;
+            padding: 120px 240px;
+            box-sizing: border-box;
+            color: white;
+          }
+          .canvas-card {
+            width: 960px;
+            height: 560px;
+            margin: 0 auto 180px;
+            background: #05070a;
+            border-radius: 8px;
+            overflow: hidden;
+          }
+          canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+          }
+          footer {
+            min-height: 520px;
+          }
+        </style>
+      </head>
+      <body>
+        <section class="hero">
+          <h1>Canvas feature art</h1>
+        </section>
+        <section class="canvas-card">
+          <canvas id="feature-canvas" width="960" height="560"></canvas>
+        </section>
+        <footer></footer>
+        <script>
+          const canvas = document.getElementById('feature-canvas');
+          const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+          if (gl) {
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(0.13, 0.77, 0.37, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+          }
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 function scrollSceneOverlayPageTemplate(): string {
   return `
     <html>
@@ -1476,6 +1638,30 @@ function splitScrollSceneUnfoldPageTemplate(): string {
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     const pathname = req.url ?? "/";
+    if (pathname.startsWith("/slow-feature-art/")) {
+      const color = pathname.includes("blue")
+        ? "#38bdf8"
+        : pathname.includes("pink")
+          ? "#f472b6"
+          : pathname.includes("orange")
+            ? "#fb923c"
+            : "#22c55e";
+      const svg = `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 520">
+          <rect width="640" height="520" fill="${color}"/>
+          <circle cx="480" cy="130" r="96" fill="rgba(255,255,255,0.36)"/>
+          <rect x="80" y="300" width="420" height="36" rx="18" fill="rgba(15,23,42,0.38)"/>
+        </svg>
+      `;
+      setTimeout(() => {
+        res.writeHead(200, {
+          "content-type": "image/svg+xml; charset=utf-8",
+          "cache-control": "no-store",
+        });
+        res.end(svg);
+      }, 3200);
+      return;
+    }
     if (pathname.startsWith("/marketing")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(pageTemplate("marketing"));
@@ -1514,6 +1700,16 @@ beforeAll(async () => {
     if (pathname.startsWith("/delayed-hero")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(delayedHeroPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/lazy-feature-backgrounds")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(lazyFeatureBackgroundPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/webgl-canvas")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(webglCanvasPageTemplate());
       return;
     }
     if (pathname.startsWith("/consent-banner")) {
@@ -1685,6 +1881,71 @@ describe("fullPage tiled capture", () => {
       .raw()
       .toBuffer();
     expect(sample[0] + sample[1] + sample[2]).toBeLessThan(260);
+  }, 20_000);
+
+  it("waits for scroll-triggered CSS feature illustrations before fullPage capture", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-lazy-feature-bg-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/lazy-feature-backgrounds`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs.some((message) => message.includes("background_image_ready_complete"))).toBe(true);
+
+    const featureCardSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 620, top: 1690, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(featureCardSample[0]).toBeLessThan(80);
+    expect(featureCardSample[1]).toBeGreaterThan(130);
+    expect(featureCardSample[2]).toBeLessThan(150);
+  }, 30_000);
+
+  it("captures WebGL canvas feature art instead of a blank fallback", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-webgl-canvas-"));
+    const task: ParsedTask = {
+      url: `${baseUrl}/webgl-canvas`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+
+    const canvasSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 700, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(canvasSample[1]).toBeGreaterThan(150);
+    expect(canvasSample[1]).toBeGreaterThan(canvasSample[0] + 60);
+    expect(canvasSample[1]).toBeGreaterThan(canvasSample[2] + 60);
   }, 20_000);
 
   it("stitches tall pages so the final footer remains in the output", async () => {
