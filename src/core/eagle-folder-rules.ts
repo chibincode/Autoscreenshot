@@ -42,6 +42,7 @@ const FULL_PAGE_KEYS: Array<Exclude<FullPageType, "unmatched">> = [
   "downloads_list",
   "download_detail",
   "integration",
+  "brandkit",
   "security",
 ];
 

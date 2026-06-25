@@ -369,6 +369,48 @@ function delayedHeroPageTemplate(): string {
   `;
 }
 
+function viewportHeroImagePageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Viewport Hero Image Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            color: #111827;
+            background: #ffffff;
+          }
+          .hero {
+            min-height: 1080px;
+            padding: 96px 240px;
+            box-sizing: border-box;
+            background: linear-gradient(180deg, #ffffff 0%, #eef2ff 100%);
+          }
+          .hero h1 {
+            margin: 0 0 32px;
+            font-size: 80px;
+            line-height: 1;
+          }
+          .hero-visual {
+            display: block;
+            width: 640px;
+            height: 520px;
+            object-fit: cover;
+            border-radius: 8px;
+          }
+        </style>
+      </head>
+      <body>
+        <section class="hero">
+          <h1>Slow hero visual</h1>
+          <img class="hero-visual" src="/slow-feature-art/blue.svg" alt="">
+        </section>
+      </body>
+    </html>
+  `;
+}
+
 function lazyFeatureBackgroundPageTemplate(): string {
   return `
     <html>
@@ -1702,6 +1744,11 @@ beforeAll(async () => {
       res.end(delayedHeroPageTemplate());
       return;
     }
+    if (pathname.startsWith("/viewport-hero-image")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(viewportHeroImagePageTemplate());
+      return;
+    }
     if (pathname.startsWith("/lazy-feature-backgrounds")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(lazyFeatureBackgroundPageTemplate());
@@ -1915,6 +1962,40 @@ describe("fullPage tiled capture", () => {
     expect(featureCardSample[0]).toBeLessThan(80);
     expect(featureCardSample[1]).toBeGreaterThan(130);
     expect(featureCardSample[2]).toBeLessThan(150);
+  }, 30_000);
+
+  it("captures viewport-sized hero sections from viewport pixels after visual images load", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-viewport-hero-section-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/viewport-hero-image`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "section", targetType: "hero" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const heroAsset = result.assets.find((asset) => asset.kind === "section" && asset.sectionType === "hero");
+    expect(heroAsset).toBeTruthy();
+    expect(logs.some((message) => message.includes("section_capture_mode=viewport_crop label=hero"))).toBe(true);
+
+    const visualSample = await sharp(heroAsset!.filePath)
+      .extract({ left: 560, top: 260, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(visualSample[0]).toBeLessThan(90);
+    expect(visualSample[1]).toBeGreaterThan(150);
+    expect(visualSample[2]).toBeGreaterThan(190);
   }, 30_000);
 
   it("captures WebGL canvas feature art instead of a blank fallback", async () => {

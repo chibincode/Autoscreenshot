@@ -36,6 +36,10 @@ const rules = normalizeEagleFolderRules({
         "/solutions/:slug",
       ],
     },
+    brandkit: {
+      folderId: "brandkit-id",
+      pathRules: ["/brand", "/brand/*", "/brandkit", "/brand-kit", "/press-kit", "/media-kit"],
+    },
     security: {
       folderId: "security-id",
       pathRules: [
@@ -185,6 +189,14 @@ describe("classifyFullPageType", () => {
     );
     expect(classifyFullPageType("https://example.com/compliance", rules).type).toBe("security");
     expect(classifyFullPageType("https://example.com/privacy", rules).type).toBe("security");
+  });
+
+  it("classifies brand and press kit pages as brandkit", () => {
+    expect(classifyFullPageType("https://example.com/brand", rules).type).toBe("brandkit");
+    expect(classifyFullPageType("https://example.com/brand/assets", rules).type).toBe("brandkit");
+    expect(classifyFullPageType("https://example.com/brand-kit", rules).type).toBe("brandkit");
+    expect(classifyFullPageType("https://example.com/press-kit", rules).type).toBe("brandkit");
+    expect(classifyFullPageType("https://example.com/media-kit", rules).type).toBe("brandkit");
   });
 
   it("returns unmatched when no rule matches", () => {

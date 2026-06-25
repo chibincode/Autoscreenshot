@@ -157,6 +157,23 @@
       "folderId": "LR5VC4L6FB0KO",
       "pathRules": ["/integration", "/integrations"]
     },
+    "brandkit": {
+      "folderId": "M7LQ6N00QRFEE",
+      "pathRules": [
+        "/brand",
+        "/brand/*",
+        "/brandkit",
+        "/brandkit/*",
+        "/brand-kit",
+        "/brand-kit/*",
+        "/brand-guidelines",
+        "/brand-guidelines/*",
+        "/press-kit",
+        "/press-kit/*",
+        "/media-kit",
+        "/media-kit/*"
+      ]
+    },
     "security": {
       "folderId": "M7LNLVHXEZLKE",
       "pathRules": [

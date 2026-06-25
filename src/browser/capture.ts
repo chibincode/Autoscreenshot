@@ -251,6 +251,71 @@ async function captureFullPageImage(params: {
   }
 }
 
+async function captureSectionClipImage(params: {
+  page: import("playwright").Page;
+  clip: { x: number; y: number; width: number; height: number };
+  pageHeight: number;
+  viewportHeight: number;
+  dpr: number;
+  quality: number;
+  label: string;
+  outputPath: string;
+  log?: CaptureTaskOptions["log"];
+}): Promise<void> {
+  const fitsInViewport = params.clip.height <= params.viewportHeight && params.clip.y >= 0;
+  if (fitsInViewport) {
+    const scrollY = Math.max(
+      0,
+      Math.min(Math.round(params.clip.y), Math.max(0, Math.round(params.pageHeight - params.viewportHeight))),
+    );
+    await params.page.evaluate((targetY) => window.scrollTo(0, targetY), scrollY);
+    await params.page.waitForTimeout(120);
+    await waitForRenderableMedia(params.page, params.log, "viewport");
+
+    const actualScrollY = await params.page
+      .evaluate(() => Math.round(window.scrollY || document.documentElement.scrollTop || 0))
+      .catch(() => scrollY);
+    const viewportClipY = params.clip.y - actualScrollY;
+    const canCropViewport =
+      viewportClipY >= 0 &&
+      viewportClipY + params.clip.height <= params.viewportHeight &&
+      params.clip.x >= 0 &&
+      params.clip.width > 0 &&
+      params.clip.height > 0;
+
+    if (canCropViewport) {
+      const viewportBuffer = await params.page.screenshot({
+        type: "png",
+        fullPage: false,
+      });
+      await sharp(viewportBuffer)
+        .extract({
+          left: Math.max(0, Math.round(params.clip.x * params.dpr)),
+          top: Math.max(0, Math.round(viewportClipY * params.dpr)),
+          width: Math.max(1, Math.round(params.clip.width * params.dpr)),
+          height: Math.max(1, Math.round(params.clip.height * params.dpr)),
+        })
+        .jpeg({ quality: params.quality })
+        .toFile(params.outputPath);
+      emitLog(
+        params.log,
+        "info",
+        `section_capture_mode=viewport_crop label=${params.label} scrollY=${actualScrollY}`,
+      );
+      return;
+    }
+  }
+
+  await params.page.screenshot({
+    path: params.outputPath,
+    type: "jpeg",
+    quality: params.quality,
+    fullPage: true,
+    clip: params.clip,
+  });
+  emitLog(params.log, "info", `section_capture_mode=document_clip label=${params.label}`);
+}
+
 export function resolveDpr(
   requested: ParsedTask["image"]["dpr"],
   pageWidth: number,
@@ -1020,12 +1085,16 @@ async function captureOnce(
           forcedDpr,
         );
         const sectionPath = path.join(options.outputDir, sectionName);
-        await page.screenshot({
-          path: sectionPath,
-          type: "jpeg",
-          quality: task.image.quality,
-          fullPage: true,
+        await captureSectionClipImage({
+          page,
           clip,
+          pageHeight: pageSize.height,
+          viewportHeight: task.viewport.height,
+          dpr: forcedDpr,
+          quality: task.image.quality,
+          label,
+          outputPath: sectionPath,
+          log: options.log,
         });
         assets.push({
           kind: "section",

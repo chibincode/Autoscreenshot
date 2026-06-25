@@ -28,6 +28,7 @@ const FULL_PAGE_MATCH_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "downloads_list",
   "download_detail",
   "integration",
+  "brandkit",
   "security",
 ];
 

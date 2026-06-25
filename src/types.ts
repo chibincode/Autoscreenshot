@@ -39,6 +39,7 @@ export type FullPageType =
   | "downloads_list"
   | "download_detail"
   | "integration"
+  | "brandkit"
   | "security"
   | "unmatched";
 

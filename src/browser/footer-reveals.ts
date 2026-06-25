@@ -89,10 +89,6 @@ async function findFooterRevealCandidate(params: {
           current = current.parentElement;
         }
 
-        if (!hasTransformedContext) {
-          continue;
-        }
-
         const absoluteTop = rect.top + window.scrollY;
         const absoluteBottom = absoluteTop + rect.height;
         const clippedTop = Math.max(0, absoluteTop);
@@ -262,16 +258,27 @@ export async function captureFooterRevealReplacements(params: {
     1,
     Math.max(1, Math.round(params.documentHeight - top)),
   );
-  const replacement = await params.page.screenshot({
+  const currentScrollY = await params.page
+    .evaluate(() => Math.round(window.scrollY || document.documentElement.scrollTop || 0))
+    .catch(() => Math.max(0, Math.round(params.documentHeight - params.viewportHeight)));
+  const viewportTop = top - currentScrollY;
+  if (viewportTop < 0 || viewportTop + height > params.viewportHeight) {
+    return [];
+  }
+
+  const viewportScreenshot = await params.page.screenshot({
     type: "png",
-    fullPage: true,
-    clip: {
-      x: 0,
-      y: top,
-      width: Math.max(1, Math.round(params.pageWidth)),
-      height,
-    },
+    fullPage: false,
   });
+  const replacement = await sharp(viewportScreenshot)
+    .extract({
+      left: 0,
+      top: Math.round(viewportTop * params.dpr),
+      width: Math.max(1, Math.round(params.pageWidth * params.dpr)),
+      height: Math.max(1, Math.round(height * params.dpr)),
+    })
+    .png()
+    .toBuffer();
   const metadata = await sharp(replacement).metadata();
   if (!metadata.height) {
     return [];

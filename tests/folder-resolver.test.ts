@@ -207,6 +207,26 @@ describe("folder resolver", () => {
     });
   });
 
+  it("routes brandkit full pages to their mapped Eagle folder", () => {
+    const rules = normalizeEagleFolderRules({
+      fullPage: {
+        brandkit: {
+          folderId: "brandkit-id",
+          pathRules: ["/brand"],
+        },
+      },
+    });
+    const folderIndex = buildFolderIndex([
+      { id: "brandkit-id", name: "Page_Brand kit", path: "Page_Gerneral/Page_About/Page_Brand kit" },
+    ]);
+
+    expect(resolveFullPageFolder("brandkit", rules, folderIndex)).toEqual({
+      folderId: "brandkit-id",
+      resolvedBy: "explicit",
+      reason: "mapped",
+    });
+  });
+
   it("does not send classified sections to general when explicit mapping is broken", () => {
     const rules = normalizeEagleFolderRules({
       sections: {

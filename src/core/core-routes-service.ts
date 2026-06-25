@@ -39,6 +39,7 @@ const COVERAGE_FAMILY_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "projects_list",
   "project_detail",
   "integration",
+  "brandkit",
   "security",
   "help",
   "contact",
