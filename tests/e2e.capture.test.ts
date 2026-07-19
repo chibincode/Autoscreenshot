@@ -479,7 +479,7 @@ function lazyFeatureBackgroundPageTemplate(): string {
         <section class="features">
           <div class="intro">
             <h2>Packed with features</h2>
-            <p>Feature art is attached only after each card has entered the viewport.</p>
+            <p>Feature art is attached shortly after each card has entered the viewport.</p>
           </div>
           <div class="grid">
             <article class="feature-card" data-bg="/slow-feature-art/green.svg">
@@ -504,7 +504,9 @@ function lazyFeatureBackgroundPageTemplate(): string {
                 continue;
               }
               const card = entry.target;
-              card.style.backgroundImage = 'url("' + card.dataset.bg + '")';
+              window.setTimeout(() => {
+                card.style.backgroundImage = 'url("' + card.dataset.bg + '")';
+              }, 900);
               observer.unobserve(card);
             }
           }, { threshold: 0.2 });

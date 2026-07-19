@@ -34,7 +34,9 @@ const FULLPAGE_TILE_CSS_HEIGHT = 4_000;
 const IMAGE_READY_TIMEOUT_MS = 7_500;
 const IMAGE_READY_POLL_MS = 250;
 const IMAGE_READY_MIN_AREA_PX = 8_000;
-const LAZY_WARMUP_MEDIA_TIMEOUT_MS = 1_000;
+const LAZY_WARMUP_MEDIA_TIMEOUT_MS = 4_500;
+const LAZY_WARMUP_SETTLE_MS = 320;
+const LAZY_WARMUP_POST_STABLE_MS = 700;
 const OVERLAY_SWEEP_SETTLE_MS = 120;
 const CAPTURE_PHASE_ATTR = "data-autosnap-capture-phase";
 const HIDDEN_IMAGE_FALLBACK_STYLE_ATTR = "data-autosnap-hidden-image-fallback";
@@ -339,14 +341,24 @@ export function isRetryableCaptureError(error: unknown): boolean {
   );
 }
 
-async function warmupLazyLoad(page: import("playwright").Page): Promise<void> {
+async function warmupLazyLoad(
+  page: import("playwright").Page,
+  log?: CaptureTaskOptions["log"],
+): Promise<void> {
   const docHeight = await page.evaluate(() => document.documentElement.scrollHeight || 0);
   const steps = Math.max(4, Math.min(12, Math.ceil(docHeight / 1200)));
   for (let i = 1; i <= steps; i += 1) {
     const y = Math.round((docHeight * i) / steps);
     await page.evaluate((scrollY) => window.scrollTo(0, scrollY), y);
-    await page.waitForTimeout(120);
-    await waitForRenderableMedia(page, undefined, "viewport", LAZY_WARMUP_MEDIA_TIMEOUT_MS);
+    await page.waitForTimeout(LAZY_WARMUP_SETTLE_MS);
+    await waitForRenderStability(page, {
+      log,
+      phase: "lazy_warmup",
+      timeoutMs: LAZY_WARMUP_MEDIA_TIMEOUT_MS,
+      stablePassCount: 1,
+    });
+    await page.waitForTimeout(LAZY_WARMUP_POST_STABLE_MS);
+    await waitForRenderableMedia(page, log, "viewport", LAZY_WARMUP_MEDIA_TIMEOUT_MS);
   }
 }
 
@@ -937,14 +949,14 @@ async function captureOnce(
     if (hasFullPageCapture) {
       const earlyScrollScenes = await detectScrollSceneCandidates(page);
       if (earlyScrollScenes.length === 0) {
-        await warmupLazyLoad(page);
+        await warmupLazyLoad(page, options.log);
         fullPageImageReadyScope = "document";
         await page.waitForTimeout(400);
       } else {
         emitLog(options.log, "info", `scroll_scene_preserve_layout count=${earlyScrollScenes.length}`);
       }
     } else {
-      await warmupLazyLoad(page);
+      await warmupLazyLoad(page, options.log);
       await page.waitForTimeout(400);
     }
     await sweepCaptureOverlays({
