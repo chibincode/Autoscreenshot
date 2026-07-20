@@ -12,7 +12,10 @@ import {
 import { cleanupCaptureOverlays } from "./overlay-cleanup.js";
 import { waitForRenderStability } from "./render-readiness.js";
 import { captureFooterRevealReplacements } from "./footer-reveals.js";
-import { captureTopOverlayReplacement } from "./top-overlays.js";
+import {
+  captureTopOverlayReplacement,
+  hideTopOverlaysForCapture,
+} from "./top-overlays.js";
 import {
   captureScrollSceneReplacements,
   detectScrollSceneCandidates,
@@ -160,11 +163,20 @@ async function captureFullPageByTiles(params: {
   const outputWidth = Math.max(1, Math.round(params.pageWidth * params.dpr));
   const outputHeight = Math.max(1, Math.round(params.pageHeight * params.dpr));
   const tiles: Array<{ buffer: Buffer; top: number }> = [];
+  let restoreTopOverlays: (() => Promise<void>) | null = null;
 
   try {
     let sliceCount = 0;
     for (let top = 0; top < params.pageHeight; top += tileHeight) {
       await params.beforeSliceCapture?.();
+      if (top > 0 && !restoreTopOverlays) {
+        restoreTopOverlays = await hideTopOverlaysForCapture({
+          page: params.page,
+          pageWidth: params.pageWidth,
+          viewportHeight: params.page.viewportSize()?.height ?? Math.min(params.pageHeight, tileHeight),
+          log: params.log,
+        });
+      }
       const height = Math.max(1, Math.min(tileHeight, Math.round(params.pageHeight - top)));
       const screenshot = await client.send("Page.captureScreenshot", {
         format: "png",
@@ -190,6 +202,7 @@ async function captureFullPageByTiles(params: {
       `fullpage_capture_mode=tiled pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} tileCssHeight=${tileHeight} slices=${sliceCount}`,
     );
   } finally {
+    await restoreTopOverlays?.();
     await client.detach().catch(() => undefined);
   }
 

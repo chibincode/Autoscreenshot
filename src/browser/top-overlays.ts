@@ -18,6 +18,7 @@ const TOP_OVERLAY_MIN_HEIGHT = 24;
 const TOP_OVERLAY_MIN_WIDTH_RATIO = 0.35;
 const TOP_OVERLAY_MIN_CAPTURE_HEIGHT = 64;
 const TOP_OVERLAY_EXTRA_PADDING = 8;
+const TOP_OVERLAY_HIDDEN_ATTR = "data-autosnap-top-overlay-hidden";
 
 interface TopOverlayCandidate {
   selectorLabel: string;
@@ -176,4 +177,93 @@ export async function captureTopOverlayReplacement(params: {
       replacement,
     },
   ];
+}
+
+export async function hideTopOverlaysForCapture(params: {
+  page: Page;
+  pageWidth: number;
+  viewportHeight: number;
+  log?: (level: "info" | "warn", message: string) => void;
+}): Promise<() => Promise<void>> {
+  const hiddenCount = await params.page.evaluate(
+    ({ attrName, maxHeight, maxTop, minHeight, minWidthRatio, pageWidth, selectors, viewportHeight }) => {
+      const elements = Array.from(document.querySelectorAll<HTMLElement>(selectors));
+      const hidden = new Set<HTMLElement>();
+
+      for (const element of elements) {
+        let pinnedElement: HTMLElement | null = element;
+        let pinnedStyle = window.getComputedStyle(pinnedElement);
+        while (
+          pinnedElement &&
+          pinnedElement !== document.body &&
+          pinnedElement !== document.documentElement &&
+          pinnedStyle.position !== "fixed" &&
+          pinnedStyle.position !== "sticky"
+        ) {
+          pinnedElement = pinnedElement.parentElement;
+          pinnedStyle = pinnedElement ? window.getComputedStyle(pinnedElement) : pinnedStyle;
+        }
+
+        if (!pinnedElement || hidden.has(pinnedElement)) {
+          continue;
+        }
+
+        const rect = pinnedElement.getBoundingClientRect();
+        const opacity = Number(pinnedStyle.opacity || "1");
+        const hasMeaningfulContent =
+          (element.textContent || pinnedElement.textContent || "").trim().length > 0 ||
+          element.querySelector("a, button, img, svg") !== null ||
+          pinnedElement.querySelector("a, button, img, svg") !== null;
+
+        if (
+          (pinnedStyle.position === "fixed" || pinnedStyle.position === "sticky") &&
+          rect.top <= maxTop &&
+          rect.bottom > minHeight &&
+          rect.top < viewportHeight &&
+          rect.width >= pageWidth * minWidthRatio &&
+          rect.height >= minHeight &&
+          rect.height <= maxHeight &&
+          pinnedStyle.display !== "none" &&
+          pinnedStyle.visibility !== "hidden" &&
+          opacity > 0.01 &&
+          hasMeaningfulContent
+        ) {
+          pinnedElement.setAttribute(attrName, "true");
+          hidden.add(pinnedElement);
+        }
+      }
+
+      return hidden.size;
+    },
+    {
+      attrName: TOP_OVERLAY_HIDDEN_ATTR,
+      maxHeight: TOP_OVERLAY_MAX_HEIGHT,
+      maxTop: TOP_OVERLAY_MAX_TOP,
+      minHeight: TOP_OVERLAY_MIN_HEIGHT,
+      minWidthRatio: TOP_OVERLAY_MIN_WIDTH_RATIO,
+      pageWidth: params.pageWidth,
+      selectors: TOP_OVERLAY_SELECTORS,
+      viewportHeight: params.viewportHeight,
+    },
+  );
+
+  if (hiddenCount === 0) {
+    return async () => undefined;
+  }
+
+  const styleHandle = await params.page.addStyleTag({
+    content: `[${TOP_OVERLAY_HIDDEN_ATTR}="true"] { visibility: hidden !important; }`,
+  });
+  params.log?.("info", `top_overlay_hidden_for_tiles count=${hiddenCount}`);
+
+  return async () => {
+    await styleHandle
+      .evaluate((node) => (node instanceof Element ? node.remove() : undefined))
+      .catch(() => undefined);
+    await params.page
+      .evaluate((attrName) => {
+        document.querySelectorAll(`[${attrName}]`).forEach((element) => element.removeAttribute(attrName));
+      }, TOP_OVERLAY_HIDDEN_ATTR)
+      .catch(() => undefined);
+  };
 }

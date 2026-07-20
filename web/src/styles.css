@@ -2467,6 +2467,10 @@ summary:focus-visible {
   background: rgba(246, 251, 246, 0.98);
 }
 
+.folder-picker-option-recent:not(.folder-picker-option-current):not(.folder-picker-option-suggested) {
+  background: rgba(247, 248, 250, 0.98);
+}
+
 .folder-picker-option-copy {
   display: grid;
   gap: 4px;
@@ -2514,6 +2518,11 @@ summary:focus-visible {
 .folder-picker-tag-suggested {
   background: rgba(228, 245, 233, 0.98);
   color: #5a9466;
+}
+
+.folder-picker-tag-recent {
+  background: rgba(17, 24, 39, 0.07);
+  color: var(--text-muted);
 }
 
 .folder-picker-empty {

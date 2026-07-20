@@ -27,6 +27,9 @@ import {
   filterAndRankFolders,
   formatFolderNameForCard,
   formatFolderPathForCard,
+  parseRecentFolderIds,
+  RECENT_EAGLE_FOLDER_IDS_STORAGE_KEY,
+  rememberRecentFolderId,
   type EagleFolderOption,
   type RankedEagleFolderOption,
 } from "./folder-picker";
@@ -1931,6 +1934,13 @@ export function App() {
   const [folderSavingAssetIds, setFolderSavingAssetIds] = useState<Set<number>>(() => new Set());
   const [folderPickerState, setFolderPickerState] = useState<FolderPickerState | null>(null);
   const [folderPickerSaving, setFolderPickerSaving] = useState(false);
+  const [recentEagleFolderIds, setRecentEagleFolderIds] = useState<string[]>(() => {
+    try {
+      return parseRecentFolderIds(window.localStorage.getItem(RECENT_EAGLE_FOLDER_IDS_STORAGE_KEY));
+    } catch {
+      return [];
+    }
+  });
   const [logsExpanded, setLogsExpanded] = useState(false);
   const [manifestExpanded, setManifestExpanded] = useState(false);
   const sseRefreshTimerRef = useRef<number | null>(null);
@@ -2111,9 +2121,10 @@ export function App() {
             folderPickerState?.query ?? "",
             folderPickerAsset.targetEagleFolderPath,
             folderPickerAsset.resolvedEagleFolderPath,
+            recentEagleFolderIds,
           )
         : [],
-    [eagleFolders, folderPickerAsset, folderPickerState],
+    [eagleFolders, folderPickerAsset, folderPickerState, recentEagleFolderIds],
   );
   const previewRoute = useMemo(() => {
     if (!previewAsset || !selectedJobDetail) {
@@ -2690,6 +2701,18 @@ export function App() {
     setFolderPickerSaving(false);
   }, []);
 
+  const rememberRecentEagleFolder = useCallback((folderId: string): void => {
+    setRecentEagleFolderIds((current) => {
+      const next = rememberRecentFolderId(current, folderId);
+      try {
+        window.localStorage.setItem(RECENT_EAGLE_FOLDER_IDS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Keep recency in memory when browser storage is unavailable.
+      }
+      return next;
+    });
+  }, []);
+
   const updateFolderPickerQuery = useCallback((query: string): void => {
     setFolderPickerState((current) =>
       current
@@ -2718,6 +2741,7 @@ export function App() {
       return;
     }
     if (folder.id === folderPickerAsset.targetEagleFolderId) {
+      rememberRecentEagleFolder(folder.id);
       closeFolderPicker();
       return;
     }
@@ -2725,11 +2749,18 @@ export function App() {
     setFolderPickerSaving(true);
     const saved = await saveAssetTargetFolder(folderPickerAsset.id, folder.id);
     if (saved) {
+      rememberRecentEagleFolder(folder.id);
       closeFolderPicker();
       return;
     }
     setFolderPickerSaving(false);
-  }, [closeFolderPicker, folderPickerAsset, folderPickerSaving, saveAssetTargetFolder]);
+  }, [
+    closeFolderPicker,
+    folderPickerAsset,
+    folderPickerSaving,
+    rememberRecentEagleFolder,
+    saveAssetTargetFolder,
+  ]);
 
   const toggleAssetSelection = useCallback(async (assetId: number, selected: boolean): Promise<void> => {
     if (!selectedJobDetail) {
