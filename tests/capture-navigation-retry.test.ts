@@ -77,13 +77,16 @@ describe("captureTask recoverable navigation retry", () => {
     cleanupCaptureOverlaysMock.mockResolvedValue(undefined);
     waitForTimeoutMock.mockResolvedValue(undefined);
     titleMock.mockResolvedValue("Example");
-    evaluateMock.mockImplementation((fn: unknown) => {
+    evaluateMock.mockImplementation(async (fn: unknown) => {
       const source = String(fn);
       if (source.includes("document.documentElement.scrollHeight || 0")) {
         return 0;
       }
       if (source.includes("body?.scrollWidth") && source.includes("body?.scrollHeight")) {
         return { width: 1280, height: 2400 };
+      }
+      if (source.includes("__autosnapBackgroundImageReady")) {
+        return { total: 0, loaded: 0, failed: 0, timedOut: 0 };
       }
       return undefined;
     });

@@ -166,6 +166,7 @@ export function FolderPickerDialog({
                     "folder-picker-option",
                     isActive ? "folder-picker-option-active" : "",
                     option.isCurrent ? "folder-picker-option-current" : "",
+                    option.isRecent ? "folder-picker-option-recent" : "",
                     option.isSuggested ? "folder-picker-option-suggested" : "",
                   ]
                     .filter(Boolean)
@@ -181,6 +182,9 @@ export function FolderPickerDialog({
                   </div>
                   <div className="folder-picker-option-tags">
                     {option.isCurrent ? <span className="folder-picker-tag folder-picker-tag-current">当前</span> : null}
+                    {option.isRecent ? (
+                      <span className="folder-picker-tag folder-picker-tag-recent">最近</span>
+                    ) : null}
                     {option.isSuggested ? (
                       <span className="folder-picker-tag folder-picker-tag-suggested">建议</span>
                     ) : null}
