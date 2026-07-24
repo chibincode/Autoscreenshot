@@ -481,6 +481,9 @@ export interface AssetPreviewRecord extends AssetRecord {
   thumbnailUrl: string;
   thumbnailWidth: number;
   thumbnailHeight: number;
+  imageWidth: number;
+  imageHeight: number;
+  canRestoreOriginal: boolean;
 }
 
 export interface JobDetailResponse extends Omit<JobDetail, "assets"> {

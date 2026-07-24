@@ -6,6 +6,7 @@ import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildServer } from "../src/server/app.js";
 import { createPendingImportResult, normalizeImportResult } from "../src/core/import-state.js";
+import { getAssetCropManifestPath } from "../src/server/asset-crop.js";
 import { JobsRepository } from "../src/server/db.js";
 import { JobQueue } from "../src/server/queue.js";
 import type { ExecuteInstructionParams, ExecuteInstructionResult } from "../src/core/job-service.js";
@@ -23,6 +24,30 @@ async function writeTestJpeg(filePath: string, width = 1280, height = 720): Prom
     },
   })
     .jpeg({ quality: 82 })
+    .toFile(filePath);
+}
+
+async function writeThreeBandTestJpeg(filePath: string): Promise<void> {
+  const width = 100;
+  const height = 300;
+  const pixels = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y += 1) {
+    const color = y < 100 ? [255, 0, 0] : y < 200 ? [0, 255, 0] : [0, 0, 255];
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 3;
+      pixels[offset] = color[0];
+      pixels[offset + 1] = color[1];
+      pixels[offset + 2] = color[2];
+    }
+  }
+  await sharp(pixels, {
+    raw: {
+      width,
+      height,
+      channels: 3,
+    },
+  })
+    .jpeg({ quality: 100, chromaSubsampling: "4:4:4" })
     .toFile(filePath);
 }
 
@@ -1033,6 +1058,306 @@ describe("server api", () => {
     expect(thumbnailResponse.statusCode).toBe(200);
     expect(thumbnailResponse.headers["content-type"]).toContain("image/jpeg");
     expect(Buffer.byteLength(thumbnailResponse.body)).toBeGreaterThan(0);
+  });
+
+  it("crops the bottom of a pending asset and restores the original", async () => {
+    mockEagleFolderList();
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and capture",
+      },
+    });
+    const jobId = (createResponse.json() as { jobId: string }).jobId;
+    await waitForTerminalStatus(app, jobId);
+
+    const detailBefore = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const detailBeforeData = detailBefore.json() as {
+      assets: Array<{
+        id: number;
+        imageWidth: number;
+        imageHeight: number;
+        canRestoreOriginal: boolean;
+        previewUrl: string;
+      }>;
+    };
+    const asset = detailBeforeData.assets[0];
+    expect(asset).toMatchObject({
+      imageWidth: 1440,
+      imageHeight: 900,
+      canRestoreOriginal: false,
+    });
+
+    const cropResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/jobs/${jobId}/assets/${asset.id}/crop-bottom`,
+      payload: {
+        keepHeight: 700,
+        expectedHeight: 900,
+      },
+    });
+    expect(cropResponse.statusCode).toBe(200);
+    expect(cropResponse.json()).toMatchObject({
+      assetId: asset.id,
+      imageWidth: 1440,
+      imageHeight: 700,
+      removedHeight: 200,
+      canRestoreOriginal: true,
+    });
+
+    const croppedAsset = repo.getAssetById(asset.id);
+    expect(croppedAsset).not.toBeNull();
+    const croppedMetadata = await sharp(croppedAsset!.filePath).metadata();
+    expect(croppedMetadata.height).toBe(700);
+
+    const detailAfterCrop = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const detailAfterCropData = detailAfterCrop.json() as {
+      assets: Array<{
+        imageHeight: number;
+        canRestoreOriginal: boolean;
+        previewUrl: string;
+      }>;
+    };
+    expect(detailAfterCropData.assets[0]).toMatchObject({
+      imageHeight: 700,
+      canRestoreOriginal: true,
+    });
+    expect(detailAfterCropData.assets[0].previewUrl).not.toBe(asset.previewUrl);
+
+    const restoreResponse = await app.inject({
+      method: "DELETE",
+      url: `/api/jobs/${jobId}/assets/${asset.id}/crop-bottom`,
+    });
+    expect(restoreResponse.statusCode).toBe(200);
+    expect(restoreResponse.json()).toMatchObject({
+      assetId: asset.id,
+      imageWidth: 1440,
+      imageHeight: 900,
+      canRestoreOriginal: false,
+    });
+
+    const restoredMetadata = await sharp(croppedAsset!.filePath).metadata();
+    expect(restoredMetadata.height).toBe(900);
+  });
+
+  it("removes arbitrary horizontal bands and rebuilds repeated crops from the original", async () => {
+    mockEagleFolderList();
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and capture",
+      },
+    });
+    const jobId = (createResponse.json() as { jobId: string }).jobId;
+    await waitForTerminalStatus(app, jobId);
+
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const assetId = (detailResponse.json() as { assets: Array<{ id: number }> }).assets[0]?.id;
+    const asset = assetId ? repo.getAssetById(assetId) : null;
+    expect(asset).not.toBeNull();
+    await writeThreeBandTestJpeg(asset!.filePath);
+
+    const staleResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/jobs/${jobId}/assets/${asset!.id}/crop`,
+      payload: {
+        operation: {
+          type: "remove-band",
+          startY: 100,
+          endY: 200,
+        },
+        expectedWidth: 101,
+        expectedHeight: 300,
+      },
+    });
+    expect(staleResponse.statusCode).toBe(409);
+
+    const removeMiddleResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/jobs/${jobId}/assets/${asset!.id}/crop`,
+      payload: {
+        operation: {
+          type: "remove-band",
+          startY: 100,
+          endY: 200,
+        },
+        expectedWidth: 100,
+        expectedHeight: 300,
+      },
+    });
+    expect(removeMiddleResponse.statusCode).toBe(200);
+    expect(removeMiddleResponse.json()).toMatchObject({
+      imageWidth: 100,
+      imageHeight: 200,
+      removedHeight: 100,
+      canRestoreOriginal: true,
+    });
+
+    const firstCrop = await sharp(asset!.filePath).raw().toBuffer({ resolveWithObject: true });
+    const firstTopPixelOffset = (50 * firstCrop.info.width + 50) * firstCrop.info.channels;
+    const firstBottomPixelOffset = (150 * firstCrop.info.width + 50) * firstCrop.info.channels;
+    expect(firstCrop.data[firstTopPixelOffset]).toBeGreaterThan(220);
+    expect(firstCrop.data[firstTopPixelOffset + 2]).toBeLessThan(30);
+    expect(firstCrop.data[firstBottomPixelOffset]).toBeLessThan(30);
+    expect(firstCrop.data[firstBottomPixelOffset + 2]).toBeGreaterThan(220);
+
+    const removeSecondBandResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/jobs/${jobId}/assets/${asset!.id}/crop`,
+      payload: {
+        operation: {
+          type: "remove-band",
+          startY: 50,
+          endY: 100,
+        },
+        expectedWidth: 100,
+        expectedHeight: 200,
+      },
+    });
+    expect(removeSecondBandResponse.statusCode).toBe(200);
+    expect(removeSecondBandResponse.json()).toMatchObject({
+      imageWidth: 100,
+      imageHeight: 150,
+      removedHeight: 50,
+    });
+
+    const cropManifest = JSON.parse(
+      await fs.readFile(getAssetCropManifestPath(asset!.filePath), "utf8"),
+    ) as {
+      retainedSegments: Array<{ startY: number; endY: number }>;
+    };
+    expect(cropManifest.retainedSegments).toEqual([
+      { startY: 0, endY: 50 },
+      { startY: 200, endY: 300 },
+    ]);
+
+    const secondCrop = await sharp(asset!.filePath).raw().toBuffer({ resolveWithObject: true });
+    const secondTopPixelOffset = (25 * secondCrop.info.width + 50) * secondCrop.info.channels;
+    const secondBottomPixelOffset = (75 * secondCrop.info.width + 50) * secondCrop.info.channels;
+    expect(secondCrop.data[secondTopPixelOffset]).toBeGreaterThan(220);
+    expect(secondCrop.data[secondTopPixelOffset + 2]).toBeLessThan(30);
+    expect(secondCrop.data[secondBottomPixelOffset]).toBeLessThan(30);
+    expect(secondCrop.data[secondBottomPixelOffset + 2]).toBeGreaterThan(220);
+
+    const invalidRangeResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/jobs/${jobId}/assets/${asset!.id}/crop`,
+      payload: {
+        operation: {
+          type: "remove-band",
+          startY: 0,
+          endY: 100,
+        },
+        expectedWidth: 100,
+        expectedHeight: 150,
+      },
+    });
+    expect(invalidRangeResponse.statusCode).toBe(400);
+    expect(invalidRangeResponse.json()).toMatchObject({
+      error: "The crop must retain at least 64px",
+    });
+
+    const restoreResponse = await app.inject({
+      method: "DELETE",
+      url: `/api/jobs/${jobId}/assets/${asset!.id}/crop`,
+    });
+    expect(restoreResponse.statusCode).toBe(200);
+    expect(restoreResponse.json()).toMatchObject({
+      imageWidth: 100,
+      imageHeight: 300,
+      canRestoreOriginal: false,
+    });
+    await expect(fs.access(getAssetCropManifestPath(asset!.filePath))).rejects.toThrow();
+  });
+
+  it("rejects crop edits while a job is running or after an asset is imported", async () => {
+    mockEagleFolderList();
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and capture",
+      },
+    });
+    const jobId = (createResponse.json() as { jobId: string }).jobId;
+    await waitForTerminalStatus(app, jobId);
+
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    const assetId = (detailResponse.json() as { assets: Array<{ id: number }> }).assets[0]?.id;
+    expect(assetId).toBeTypeOf("number");
+
+    repo.setJobRunning(jobId);
+    const runningResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/jobs/${jobId}/assets/${assetId}/crop`,
+      payload: {
+        operation: {
+          type: "remove-bottom",
+          keepHeight: 700,
+        },
+        expectedWidth: 1440,
+        expectedHeight: 900,
+      },
+    });
+    expect(runningResponse.statusCode).toBe(400);
+    expect(runningResponse.json()).toMatchObject({
+      error: "Asset cropping is not available while the job is running",
+    });
+
+    repo.setJobResult({
+      jobId,
+      status: "awaiting_confirmation",
+    });
+    const directDb = new Database(dbPath);
+    directDb
+      .prepare(
+        "UPDATE assets SET import_status = 'imported', import_ok = 1, eagle_id = 'test-eagle-id' WHERE id = ?",
+      )
+      .run(assetId);
+    directDb.close();
+
+    const importedCropResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/jobs/${jobId}/assets/${assetId}/crop`,
+      payload: {
+        operation: {
+          type: "remove-bottom",
+          keepHeight: 700,
+        },
+        expectedWidth: 1440,
+        expectedHeight: 900,
+      },
+    });
+    expect(importedCropResponse.statusCode).toBe(400);
+    expect(importedCropResponse.json()).toMatchObject({
+      error: "Imported assets cannot be cropped",
+    });
+
+    const importedRestoreResponse = await app.inject({
+      method: "DELETE",
+      url: `/api/jobs/${jobId}/assets/${assetId}/crop`,
+    });
+    expect(importedRestoreResponse.statusCode).toBe(400);
+    expect(importedRestoreResponse.json()).toMatchObject({
+      error: "Imported assets cannot be restored",
+    });
   });
 
   it("stores a manual Eagle folder override for a pending asset", async () => {

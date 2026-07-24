@@ -1,6 +1,6 @@
 import { createReadStream, existsSync } from "node:fs";
 import path from "node:path";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import { nanoid } from "nanoid";
 import { extractFirstHttpUrl } from "../ai/intent-parser.js";
@@ -61,7 +61,19 @@ import type {
   RouteTargetSummary,
   RunManifest,
 } from "../types.js";
-import { buildThumbnailUrl, getThumbnailDimensions, getThumbnailPath } from "./asset-thumbnails.js";
+import {
+  AssetCropError,
+  type AssetCropOperation,
+  canRestoreAssetOriginal,
+  cropAsset,
+  restoreAssetOriginal,
+} from "./asset-crop.js";
+import {
+  buildThumbnailUrl,
+  getAssetImageMetadata,
+  getThumbnailDimensions,
+  getThumbnailPath,
+} from "./asset-thumbnails.js";
 import { JobsRepository } from "./db.js";
 import {
   buildPlaywrightRuntimeService,
@@ -360,18 +372,28 @@ async function decorateAssetsForResponse(
       rulesState,
       folderIndex,
     );
+    const imageMetadata = await getAssetImageMetadata(asset).catch(() => ({
+      width: 360,
+      height: 225,
+      mtimeMs: 0,
+      cacheVersion: "0",
+    }));
     const { thumbnailWidth, thumbnailHeight } = await getThumbnailDimensions(asset).catch(() => ({
       thumbnailWidth: 360,
       thumbnailHeight: 225,
     }));
+    const cacheVersion = imageMetadata.cacheVersion;
 
     return {
       ...asset,
       pageTitle: manifestAsset?.pageTitle,
-      previewUrl: `/api/assets/${asset.id}/file`,
-      thumbnailUrl: buildThumbnailUrl(asset.id, thumbnailWidth),
+      previewUrl: `/api/assets/${asset.id}/file?v=${cacheVersion}`,
+      thumbnailUrl: buildThumbnailUrl(asset.id, thumbnailWidth, undefined, cacheVersion),
       thumbnailWidth,
       thumbnailHeight,
+      imageWidth: imageMetadata.width,
+      imageHeight: imageMetadata.height,
+      canRestoreOriginal: canRestoreAssetOriginal(asset.filePath),
       ...folderState,
       eagleFolderId: folderState.targetEagleFolderId,
       eagleFolderPath: folderState.targetEagleFolderPath,
@@ -1041,6 +1063,212 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     } catch {
       reply.type("image/jpeg");
       return reply.send(createReadStream(asset.filePath));
+    }
+  });
+
+  const sendAssetCropError = (
+    reply: FastifyReply,
+    error: unknown,
+    fallbackMessage: string,
+  ): { error: string } => {
+    if (error instanceof AssetCropError) {
+      reply.code(error.statusCode);
+      return { error: error.message };
+    }
+    reply.code(500);
+    return { error: error instanceof Error ? error.message : fallbackMessage };
+  };
+
+  const getEditableAsset = (
+    jobId: string,
+    rawAssetId: string,
+    action: "crop" | "restore",
+  ): { job: JobRecord; asset: AssetRecord } => {
+    const job = repo.getJob(jobId);
+    if (!job) {
+      throw new AssetCropError("Job not found", 404);
+    }
+    if (job.status === "queued" || job.status === "running") {
+      throw new AssetCropError(
+        action === "crop"
+          ? "Asset cropping is not available while the job is running"
+          : "Asset restoration is not available while the job is running",
+      );
+    }
+
+    const assetId = Number(rawAssetId);
+    if (!Number.isFinite(assetId)) {
+      throw new AssetCropError("A valid assetId is required");
+    }
+    const asset = repo.getAssetById(assetId);
+    if (!asset || asset.jobId !== job.id || !existsSync(asset.filePath)) {
+      throw new AssetCropError("Asset not found for this job", 404);
+    }
+    if (asset.importStatus === "imported") {
+      throw new AssetCropError(
+        action === "crop"
+          ? "Imported assets cannot be cropped"
+          : "Imported assets cannot be restored",
+      );
+    }
+    return { job, asset };
+  };
+
+  const applyCropOperation = async (params: {
+    jobId: string;
+    rawAssetId: string;
+    operation: AssetCropOperation;
+    expectedWidth?: number;
+    expectedHeight?: number;
+  }) => {
+    const { job, asset } = getEditableAsset(params.jobId, params.rawAssetId, "crop");
+    const result = await cropAsset({
+      asset,
+      operation: params.operation,
+      expectedWidth: params.expectedWidth,
+      expectedHeight: params.expectedHeight,
+    });
+    const operationLabel =
+      params.operation.type === "remove-bottom"
+        ? `remove_bottom keep_height=${params.operation.keepHeight}`
+        : `remove_band start_y=${params.operation.startY} end_y=${params.operation.endY}`;
+    const logEntry = repo.addLog(
+      job.id,
+      "info",
+      `asset_crop asset=${asset.id} operation=${operationLabel} image_height=${result.height} removed_height=${result.removedHeight}`,
+    );
+    emitToQueue(queue, {
+      type: "log",
+      jobId: job.id,
+      level: logEntry.level,
+      message: logEntry.message,
+      at: logEntry.ts,
+    });
+    emitToQueue(queue, {
+      type: "assets_updated",
+      jobId: job.id,
+      at: logEntry.ts,
+    });
+    return {
+      assetId: asset.id,
+      imageWidth: result.width,
+      imageHeight: result.height,
+      removedHeight: result.removedHeight,
+      canRestoreOriginal: result.canRestoreOriginal,
+    };
+  };
+
+  const restoreCroppedAsset = async (jobId: string, rawAssetId: string) => {
+    const { job, asset } = getEditableAsset(jobId, rawAssetId, "restore");
+    const result = await restoreAssetOriginal(asset);
+    const logEntry = repo.addLog(
+      job.id,
+      "info",
+      `asset_crop_restored asset=${asset.id} image_height=${result.height}`,
+    );
+    emitToQueue(queue, {
+      type: "log",
+      jobId: job.id,
+      level: logEntry.level,
+      message: logEntry.message,
+      at: logEntry.ts,
+    });
+    emitToQueue(queue, {
+      type: "assets_updated",
+      jobId: job.id,
+      at: logEntry.ts,
+    });
+    return {
+      assetId: asset.id,
+      imageWidth: result.width,
+      imageHeight: result.height,
+      canRestoreOriginal: result.canRestoreOriginal,
+    };
+  };
+
+  app.patch<{
+    Params: { jobId: string; assetId: string };
+    Body: {
+      operation?: Partial<AssetCropOperation> & { type?: string };
+      expectedWidth?: number;
+      expectedHeight?: number;
+    };
+  }>("/api/jobs/:jobId/assets/:assetId/crop", async (request, reply) => {
+    try {
+      const rawOperation = request.body?.operation;
+      let operation: AssetCropOperation;
+      if (rawOperation?.type === "remove-bottom") {
+        operation = {
+          type: "remove-bottom",
+          keepHeight: Number(rawOperation.keepHeight),
+        };
+      } else if (rawOperation?.type === "remove-band") {
+        operation = {
+          type: "remove-band",
+          startY: Number(rawOperation.startY),
+          endY: Number(rawOperation.endY),
+        };
+      } else {
+        throw new AssetCropError("operation.type must be remove-bottom or remove-band");
+      }
+
+      return await applyCropOperation({
+        jobId: request.params.jobId,
+        rawAssetId: request.params.assetId,
+        operation,
+        expectedWidth:
+          request.body?.expectedWidth === undefined ? undefined : Number(request.body.expectedWidth),
+        expectedHeight:
+          request.body?.expectedHeight === undefined ? undefined : Number(request.body.expectedHeight),
+      });
+    } catch (error) {
+      return sendAssetCropError(reply, error, "Failed to crop asset");
+    }
+  });
+
+  app.delete<{
+    Params: { jobId: string; assetId: string };
+  }>("/api/jobs/:jobId/assets/:assetId/crop", async (request, reply) => {
+    try {
+      return await restoreCroppedAsset(request.params.jobId, request.params.assetId);
+    } catch (error) {
+      return sendAssetCropError(reply, error, "Failed to restore asset");
+    }
+  });
+
+  app.patch<{
+    Params: { jobId: string; assetId: string };
+    Body: { keepHeight?: number; expectedWidth?: number; expectedHeight?: number };
+  }>("/api/jobs/:jobId/assets/:assetId/crop-bottom", async (request, reply) => {
+    try {
+      const keepHeight = Number(request.body?.keepHeight);
+      if (!Number.isFinite(keepHeight)) {
+        throw new AssetCropError("A valid keepHeight is required");
+      }
+      return await applyCropOperation({
+        jobId: request.params.jobId,
+        rawAssetId: request.params.assetId,
+        operation: {
+          type: "remove-bottom",
+          keepHeight,
+        },
+        expectedWidth:
+          request.body?.expectedWidth === undefined ? undefined : Number(request.body.expectedWidth),
+        expectedHeight:
+          request.body?.expectedHeight === undefined ? undefined : Number(request.body.expectedHeight),
+      });
+    } catch (error) {
+      return sendAssetCropError(reply, error, "Failed to crop asset");
+    }
+  });
+
+  app.delete<{
+    Params: { jobId: string; assetId: string };
+  }>("/api/jobs/:jobId/assets/:assetId/crop-bottom", async (request, reply) => {
+    try {
+      return await restoreCroppedAsset(request.params.jobId, request.params.assetId);
+    } catch (error) {
+      return sendAssetCropError(reply, error, "Failed to restore asset");
     }
   });
 
