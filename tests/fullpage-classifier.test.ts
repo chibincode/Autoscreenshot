@@ -9,10 +9,27 @@ const rules = normalizeEagleFolderRules({
     about: { folderId: "about-id", pathRules: ["/about", "/about-us", "/company", "/team"] },
     careers: { folderId: "careers-id", pathRules: ["/careers"] },
     contact: { folderId: "contact-id", pathRules: ["/contact", "/contact-sales", "/demo", "/book-demo"] },
-    customers_list: { folderId: "customers-list-id", pathRules: ["/customers", "/use-cases"] },
+    customers_list: {
+      folderId: "customers-list-id",
+      pathRules: [
+        "/customers",
+        "/customer-stories",
+        "/case-study",
+        "/case-studies",
+        "/use-cases",
+        "/testimonials",
+      ],
+    },
     customer_detail: {
       folderId: "customer-detail-id",
-      pathRules: ["/customers/:slug", "/use-cases/:slug"],
+      pathRules: [
+        "/customers/:slug",
+        "/customer-stories/:slug",
+        "/case-study/:slug",
+        "/case-studies/:slug",
+        "/use-cases/:slug",
+        "/testimonials/:slug",
+      ],
     },
     projects_list: {
       folderId: "projects-list-id",
@@ -35,6 +52,14 @@ const rules = normalizeEagleFolderRules({
         "/feature/:slug",
         "/solutions/:slug",
       ],
+    },
+    downloads_list: {
+      folderId: "downloads-list-id",
+      pathRules: ["/download", "/downloads"],
+    },
+    download_detail: {
+      folderId: "download-detail-id",
+      pathRules: ["/download/:slug", "/downloads/:slug"],
     },
     brandkit: {
       folderId: "brandkit-id",
@@ -131,10 +156,25 @@ describe("classifyFullPageType", () => {
   it("classifies customers overview and detail pages", () => {
     expect(classifyFullPageType("https://example.com/customers", rules).type).toBe("customers_list");
     expect(classifyFullPageType("https://example.com/use-cases", rules).type).toBe("customers_list");
+    expect(classifyFullPageType("https://www.coreweave.com/case-studies", rules).type).toBe(
+      "customers_list",
+    );
+    expect(classifyFullPageType("https://example.com/customer-stories", rules).type).toBe(
+      "customers_list",
+    );
+    expect(classifyFullPageType("https://example.com/testimonials", rules).type).toBe(
+      "customers_list",
+    );
     expect(classifyFullPageType("https://example.com/customers/polymath", rules).type).toBe(
       "customer_detail",
     );
     expect(classifyFullPageType("https://example.com/use-cases/robotics", rules).type).toBe(
+      "customer_detail",
+    );
+    expect(classifyFullPageType("https://example.com/case-studies/acme", rules).type).toBe(
+      "customer_detail",
+    );
+    expect(classifyFullPageType("https://example.com/customer-stories/acme", rules).type).toBe(
       "customer_detail",
     );
   });
@@ -162,6 +202,20 @@ describe("classifyFullPageType", () => {
     expect(classifyFullPageType("https://example.com/solutions/robotics", rules).type).toBe(
       "product_detail",
     );
+  });
+
+  it("classifies singular and plural download routes", () => {
+    expect(classifyFullPageType("https://feldar.com/download", rules).type).toBe("downloads_list");
+    expect(classifyFullPageType("https://example.com/downloads", rules).type).toBe("downloads_list");
+    expect(classifyFullPageType("https://example.com/download/macos", rules).type).toBe(
+      "download_detail",
+    );
+    expect(classifyFullPageType("https://example.com/downloads/windows", rules).type).toBe(
+      "download_detail",
+    );
+    expect(
+      classifyFullPageType("https://example.com/en/download?source=nav#desktop", rules).type,
+    ).toBe("downloads_list");
   });
 
   it("classifies signin aliases as login pages", () => {

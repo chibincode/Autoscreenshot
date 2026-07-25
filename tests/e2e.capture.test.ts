@@ -1205,6 +1205,19 @@ function veryTallPageTemplate(): string {
             background: #f8fafc;
             color: #0f172a;
           }
+          .fixed-nav {
+            position: fixed;
+            inset: 0 0 auto;
+            z-index: 20;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            padding: 0 48px;
+            box-sizing: border-box;
+            background: rgb(238, 40, 80);
+            color: white;
+            font-weight: 700;
+          }
           .panel {
             min-height: 980px;
             padding: 48px;
@@ -1230,6 +1243,7 @@ function veryTallPageTemplate(): string {
         </style>
       </head>
       <body>
+        <header class="fixed-nav">Fixed navigation should appear only once</header>
         <main>${sections}</main>
         <footer>
           <h2>Footer</h2>
@@ -1274,9 +1288,6 @@ function scrollRevealFooterPageTemplate(): string {
             background: rgba(250, 250, 250, 0.86);
             color: #1b1c1c;
             backdrop-filter: blur(18px);
-          }
-          .fixed-nav.is-hidden {
-            opacity: 0;
           }
           .nav-marker {
             width: 38px;
@@ -1357,17 +1368,11 @@ function scrollRevealFooterPageTemplate(): string {
           </footer>
         </div>
         <script>
-          const nav = document.querySelector('.fixed-nav');
           const footer = document.querySelector('footer');
-          let navWasScrolled = false;
           function renderFooter() {
             const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
             const progress = maxScroll <= 0 ? 1 : Math.max(0, Math.min(1, window.scrollY / maxScroll));
             footer.style.transform = 'translateY(' + Math.round(-500 + 500 * progress) + 'px)';
-            if (window.scrollY > 0) {
-              navWasScrolled = true;
-            }
-            nav.classList.toggle('is-hidden', navWasScrolled);
           }
           window.addEventListener('scroll', renderFooter, { passive: true });
           renderFooter();
@@ -2060,6 +2065,22 @@ describe("fullPage tiled capture", () => {
     expect(metadata.width).toBe(1920);
     expect(metadata.height).toBe(result.fullPageSize.height);
 
+    const topNavigationSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 36, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondTileBoundarySample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 4036, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(topNavigationSample[0]).toBeGreaterThan(200);
+    expect(topNavigationSample[1]).toBeLessThan(80);
+    expect(topNavigationSample[2]).toBeLessThan(120);
+    expect(secondTileBoundarySample[0]).toBeLessThan(secondTileBoundarySample[1] + 40);
+    expect(secondTileBoundarySample[0]).toBeLessThan(secondTileBoundarySample[2] + 40);
+    expect(logs.some((message) => message.includes("top_overlay_hidden_for_tiles"))).toBe(true);
+
     const sample = await sharp(fullPageAsset!.filePath)
       .extract({ left: 80, top: metadata.height! - 80, width: 1, height: 1 })
       .raw()
@@ -2148,6 +2169,10 @@ describe("footer scroll reveal preservation", () => {
       .extract({ left: 960, top: metadata.height! - 312, width: 1, height: 1 })
       .raw()
       .toBuffer();
+    const footerTopSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: metadata.height! - 680, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
     const lowerFooterSample = await sharp(fullPageAsset!.filePath)
       .extract({ left: 960, top: metadata.height! - 80, width: 1, height: 1 })
       .raw()
@@ -2155,6 +2180,9 @@ describe("footer scroll reveal preservation", () => {
 
     expect(navSample[0]).toBeGreaterThan(navSample[1] + 80);
     expect(navSample[0]).toBeGreaterThan(navSample[2] + 80);
+    expect(footerTopSample[0]).toBeLessThan(50);
+    expect(footerTopSample[1]).toBeLessThan(50);
+    expect(footerTopSample[2]).toBeLessThan(50);
     expect(markerSample[1]).toBeGreaterThan(markerSample[0] + 50);
     expect(markerSample[1]).toBeGreaterThan(markerSample[2] + 20);
     expect(lowerFooterSample[0]).toBeLessThan(40);

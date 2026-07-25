@@ -2163,6 +2163,105 @@ summary:focus-visible {
   box-shadow: 0 20px 42px rgba(15, 23, 42, 0.12);
 }
 
+.asset-preview-crop-stage {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 20px;
+}
+
+.asset-preview-crop-stage-active {
+  cursor: ns-resize;
+}
+
+.asset-crop-discard-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  min-height: 1px;
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  background: rgba(128, 42, 42, 0.56);
+  color: white;
+  font: inherit;
+  pointer-events: none;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.asset-crop-discard-overlay-movable {
+  z-index: 1;
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.asset-crop-discard-overlay-movable:active {
+  cursor: grabbing;
+}
+
+.asset-crop-discard-overlay span {
+  display: block;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: rgba(40, 18, 18, 0.82);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.asset-crop-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: ns-resize;
+  touch-action: none;
+  transform: translateY(-50%);
+}
+
+.asset-crop-handle span {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: #e64949;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.9),
+    0 2px 8px rgba(74, 16, 16, 0.28);
+  transform: translateY(-50%);
+}
+
+.asset-crop-handle span::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 40px;
+  height: 14px;
+  border-radius: 7px;
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0 13px,
+      rgba(255, 255, 255, 0.92) 13px 15px,
+      transparent 15px 19px,
+      rgba(255, 255, 255, 0.92) 19px 21px,
+      transparent 21px 25px,
+      rgba(255, 255, 255, 0.92) 25px 27px,
+      transparent 27px
+    ),
+    #e64949;
+  box-shadow: 0 3px 10px rgba(74, 16, 16, 0.28);
+  transform: translate(-50%, -50%);
+}
+
 .asset-preview-sidebar {
   min-height: 0;
   overflow: auto;
@@ -2171,6 +2270,136 @@ summary:focus-visible {
   align-content: start;
   gap: 14px;
   box-shadow: inset 1px 0 0 var(--divider);
+}
+
+.asset-crop-controls {
+  display: grid;
+  gap: 14px;
+  padding: 14px 0;
+  border-top: 1px solid var(--divider);
+  border-bottom: 1px solid var(--divider);
+}
+
+.asset-crop-mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--surface-soft);
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.06);
+}
+
+.asset-crop-mode-switch button {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.asset-crop-mode-switch button.active {
+  background: white;
+  color: var(--text);
+  box-shadow:
+    0 1px 4px rgba(15, 23, 42, 0.1),
+    inset 0 0 0 1px rgba(17, 24, 39, 0.05);
+}
+
+.asset-crop-summary {
+  display: grid;
+  gap: 4px;
+}
+
+.asset-crop-summary strong {
+  font-size: 0.88rem;
+}
+
+.asset-crop-summary span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.asset-crop-controls input[type="range"] {
+  width: 100%;
+  accent-color: #e64949;
+}
+
+.asset-crop-coordinate-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.asset-crop-coordinate-inputs > label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.asset-crop-number-field {
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--text-subtle);
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.07);
+}
+
+.asset-crop-number-field input {
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.asset-crop-number-field > span {
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.asset-crop-control-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.asset-crop-control-actions button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.06);
+}
+
+.asset-crop-control-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.asset-crop-control-actions .asset-crop-apply {
+  background: #202329;
+  color: white;
+  box-shadow: none;
 }
 
 .copy-feedback-state {
@@ -2467,6 +2696,10 @@ summary:focus-visible {
   background: rgba(246, 251, 246, 0.98);
 }
 
+.folder-picker-option-recent:not(.folder-picker-option-current):not(.folder-picker-option-suggested) {
+  background: rgba(247, 248, 250, 0.98);
+}
+
 .folder-picker-option-copy {
   display: grid;
   gap: 4px;
@@ -2514,6 +2747,11 @@ summary:focus-visible {
 .folder-picker-tag-suggested {
   background: rgba(228, 245, 233, 0.98);
   color: #5a9466;
+}
+
+.folder-picker-tag-recent {
+  background: rgba(17, 24, 39, 0.07);
+  color: var(--text-muted);
 }
 
 .folder-picker-empty {

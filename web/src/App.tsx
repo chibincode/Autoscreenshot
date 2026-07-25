@@ -10,6 +10,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
   buildFeedbackContext,
@@ -27,6 +28,9 @@ import {
   filterAndRankFolders,
   formatFolderNameForCard,
   formatFolderPathForCard,
+  parseRecentFolderIds,
+  RECENT_EAGLE_FOLDER_IDS_STORAGE_KEY,
+  rememberRecentFolderId,
   type EagleFolderOption,
   type RankedEagleFolderOption,
 } from "./folder-picker";
@@ -176,8 +180,25 @@ interface JobAsset {
   thumbnailUrl: string;
   thumbnailWidth: number;
   thumbnailHeight: number;
+  imageWidth: number;
+  imageHeight: number;
+  canRestoreOriginal: boolean;
   sourceUrl: string | null;
 }
+
+type AssetCropOperation =
+  | {
+      type: "remove-bottom";
+      keepHeight: number;
+    }
+  | {
+      type: "remove-band";
+      startY: number;
+      endY: number;
+    };
+
+type CropToolMode = "bottom" | "band";
+type CropDragTarget = "bottom" | "band-start" | "band-end" | "band-body";
 
 interface JobLog {
   id: number;
@@ -1714,6 +1735,8 @@ const PreviewModal = memo(function PreviewModal({
   onToggleSelection,
   onCopyFeedbackContext,
   onFocusAndClose,
+  onCrop,
+  onRestoreOriginal,
 }: {
   previewAsset: JobAsset;
   previewRoute: RouteTargetSummary | null;
@@ -1729,7 +1752,187 @@ const PreviewModal = memo(function PreviewModal({
   onToggleSelection: (assetId: number, checked: boolean) => void | Promise<void>;
   onCopyFeedbackContext: () => void | Promise<void>;
   onFocusAndClose: (asset: JobAsset) => void;
+  onCrop: (
+    assetId: number,
+    operation: AssetCropOperation,
+    expectedWidth: number,
+    expectedHeight: number,
+  ) => Promise<boolean>;
+  onRestoreOriginal: (assetId: number) => Promise<boolean>;
 }) {
+  const imageWrapRef = useRef<HTMLDivElement | null>(null);
+  const cropStageRef = useRef<HTMLDivElement | null>(null);
+  const [cropMode, setCropMode] = useState(false);
+  const [cropToolMode, setCropToolMode] = useState<CropToolMode>("bottom");
+  const [cropKeepHeight, setCropKeepHeight] = useState(previewAsset.imageHeight);
+  const [cropBandStartY, setCropBandStartY] = useState(0);
+  const [cropBandEndY, setCropBandEndY] = useState(0);
+  const cropDragRef = useRef<{
+    target: CropDragTarget;
+    anchorY: number;
+    startY: number;
+    endY: number;
+  } | null>(null);
+  const canEditImage =
+    !assetActionsDisabled &&
+    previewAsset.importStatus !== "imported" &&
+    previewAsset.imageHeight > 64;
+  const normalizedKeepHeight = Math.max(
+    64,
+    Math.min(previewAsset.imageHeight - 1, Math.round(cropKeepHeight)),
+  );
+  const normalizedBandStartY = Math.max(
+    0,
+    Math.min(previewAsset.imageHeight - 1, Math.round(cropBandStartY)),
+  );
+  const normalizedBandEndY = Math.max(
+    normalizedBandStartY + 1,
+    Math.min(previewAsset.imageHeight, Math.round(cropBandEndY)),
+  );
+  const removalStartY =
+    cropToolMode === "bottom" ? normalizedKeepHeight : normalizedBandStartY;
+  const removalEndY =
+    cropToolMode === "bottom" ? previewAsset.imageHeight : normalizedBandEndY;
+  const removedHeight = Math.max(0, removalEndY - removalStartY);
+  const removalStartPercent = (removalStartY / previewAsset.imageHeight) * 100;
+  const removalEndPercent = (removalEndY / previewAsset.imageHeight) * 100;
+
+  useEffect(() => {
+    setCropMode(false);
+    setCropToolMode("bottom");
+    setCropKeepHeight(previewAsset.imageHeight);
+    setCropBandStartY(0);
+    setCropBandEndY(0);
+    cropDragRef.current = null;
+  }, [previewAsset.id, previewAsset.imageHeight]);
+
+  const getNaturalYFromClientY = useCallback((clientY: number): number | null => {
+    const stage = cropStageRef.current;
+    if (!stage) {
+      return null;
+    }
+    const rect = stage.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+    return Math.round(ratio * previewAsset.imageHeight);
+  }, [previewAsset.imageHeight]);
+
+  const scrollToNaturalY = useCallback((naturalY: number): void => {
+    window.requestAnimationFrame(() => {
+      const wrap = imageWrapRef.current;
+      const stage = cropStageRef.current;
+      if (!wrap || !stage) {
+        return;
+      }
+      const lineY = stage.offsetHeight * (naturalY / previewAsset.imageHeight);
+      wrap.scrollTo({
+        top: Math.max(0, lineY - wrap.clientHeight * 0.5),
+        behavior: "smooth",
+      });
+    });
+  }, [previewAsset.imageHeight]);
+
+  const setDefaultCropForMode = useCallback((mode: CropToolMode, shouldScroll = true): void => {
+    if (mode === "bottom") {
+      const keepHeight = Math.max(64, Math.round(previewAsset.imageHeight * 0.9));
+      setCropKeepHeight(keepHeight);
+      if (shouldScroll) {
+        scrollToNaturalY(keepHeight);
+      }
+      return;
+    }
+
+    const bandHeight = Math.max(1, Math.round(previewAsset.imageHeight * 0.2));
+    const startY = Math.max(0, Math.round((previewAsset.imageHeight - bandHeight) / 2));
+    const endY = Math.min(previewAsset.imageHeight, startY + bandHeight);
+    setCropBandStartY(startY);
+    setCropBandEndY(endY);
+    if (shouldScroll) {
+      scrollToNaturalY(startY + (endY - startY) / 2);
+    }
+  }, [previewAsset.imageHeight, scrollToNaturalY]);
+
+  const beginCrop = useCallback((): void => {
+    setCropToolMode("bottom");
+    setDefaultCropForMode("bottom");
+    setCropMode(true);
+  }, [setDefaultCropForMode]);
+
+  const switchCropToolMode = useCallback((mode: CropToolMode): void => {
+    setCropToolMode(mode);
+    setDefaultCropForMode(mode);
+    cropDragRef.current = null;
+  }, [setDefaultCropForMode]);
+
+  const beginCropDrag = useCallback((
+    event: ReactPointerEvent<HTMLElement>,
+    target: CropDragTarget,
+  ): void => {
+    const naturalY = getNaturalYFromClientY(event.clientY);
+    if (naturalY === null) {
+      return;
+    }
+    event.currentTarget.setPointerCapture(event.pointerId);
+    cropDragRef.current = {
+      target,
+      anchorY: naturalY,
+      startY: normalizedBandStartY,
+      endY: normalizedBandEndY,
+    };
+    if (target === "bottom") {
+      setCropKeepHeight(
+        Math.max(64, Math.min(previewAsset.imageHeight - 1, naturalY)),
+      );
+    }
+  }, [
+    getNaturalYFromClientY,
+    normalizedBandEndY,
+    normalizedBandStartY,
+    previewAsset.imageHeight,
+  ]);
+
+  const moveCropDrag = useCallback((event: ReactPointerEvent<HTMLElement>): void => {
+    const drag = cropDragRef.current;
+    const naturalY = getNaturalYFromClientY(event.clientY);
+    if (!drag || naturalY === null) {
+      return;
+    }
+
+    if (drag.target === "bottom") {
+      setCropKeepHeight(
+        Math.max(64, Math.min(previewAsset.imageHeight - 1, naturalY)),
+      );
+      return;
+    }
+    if (drag.target === "band-start") {
+      setCropBandStartY(Math.max(0, Math.min(normalizedBandEndY - 1, naturalY)));
+      return;
+    }
+    if (drag.target === "band-end") {
+      setCropBandEndY(
+        Math.max(normalizedBandStartY + 1, Math.min(previewAsset.imageHeight, naturalY)),
+      );
+      return;
+    }
+
+    const bandHeight = drag.endY - drag.startY;
+    const requestedStartY = drag.startY + naturalY - drag.anchorY;
+    const nextStartY = Math.max(
+      0,
+      Math.min(previewAsset.imageHeight - bandHeight, requestedStartY),
+    );
+    setCropBandStartY(nextStartY);
+    setCropBandEndY(nextStartY + bandHeight);
+  }, [
+    getNaturalYFromClientY,
+    normalizedBandEndY,
+    normalizedBandStartY,
+    previewAsset.imageHeight,
+  ]);
+
+  const endCropDrag = useCallback((): void => {
+    cropDragRef.current = null;
+  }, []);
+
   return (
     <div className="asset-preview-modal-backdrop" onClick={onClose}>
       <div className="asset-preview-modal" onClick={(event) => event.stopPropagation()}>
@@ -1743,13 +1946,86 @@ const PreviewModal = memo(function PreviewModal({
           </button>
         </div>
         <div className="asset-preview-modal-body">
-          <div className="asset-preview-image-wrap">
-            <img
-              src={previewAsset.previewUrl}
-              alt={previewAsset.fileName}
-              className="asset-preview-image"
-              decoding="async"
-            />
+          <div className="asset-preview-image-wrap" ref={imageWrapRef}>
+            <div
+              className={cx("asset-preview-crop-stage", cropMode && "asset-preview-crop-stage-active")}
+              ref={cropStageRef}
+            >
+              <img
+                key={previewAsset.previewUrl}
+                src={previewAsset.previewUrl}
+                alt={previewAsset.fileName}
+                className="asset-preview-image"
+                decoding="async"
+              />
+              {cropMode ? (
+                <>
+                  <button
+                    type="button"
+                    className={cx(
+                      "asset-crop-discard-overlay",
+                      cropToolMode === "band" && "asset-crop-discard-overlay-movable",
+                    )}
+                    style={{
+                      top: `${removalStartPercent}%`,
+                      bottom: `${100 - removalEndPercent}%`,
+                    }}
+                    aria-label={
+                      cropToolMode === "band"
+                        ? "拖动待删除区段"
+                        : `将裁掉底部 ${removedHeight.toLocaleString()} px`
+                    }
+                    onPointerDown={
+                      cropToolMode === "band"
+                        ? (event) => beginCropDrag(event, "band-body")
+                        : undefined
+                    }
+                    onPointerMove={cropToolMode === "band" ? moveCropDrag : undefined}
+                    onPointerUp={cropToolMode === "band" ? endCropDrag : undefined}
+                    onPointerCancel={cropToolMode === "band" ? endCropDrag : undefined}
+                  >
+                    <span>
+                      {cropToolMode === "bottom" ? "裁掉底部" : "删除此区段"}
+                      {" · "}
+                      {removedHeight.toLocaleString()} px
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="asset-crop-handle asset-crop-handle-start"
+                    style={{ top: `${removalStartPercent}%` }}
+                    aria-label={
+                      cropToolMode === "bottom" ? "拖动底部裁切线" : "拖动区段上边界"
+                    }
+                    onPointerDown={(event) =>
+                      beginCropDrag(
+                        event,
+                        cropToolMode === "bottom" ? "bottom" : "band-start",
+                      )
+                    }
+                    onPointerMove={moveCropDrag}
+                    onPointerUp={endCropDrag}
+                    onPointerCancel={endCropDrag}
+                  >
+                    <span />
+                  </button>
+                  {cropToolMode === "band" ? (
+                    <button
+                      type="button"
+                      className="asset-crop-handle asset-crop-handle-end"
+                      style={{ top: `${removalEndPercent}%` }}
+                      aria-label="拖动区段下边界"
+                      onPointerDown={(event) => beginCropDrag(event, "band-end")}
+                      onPointerMove={moveCropDrag}
+                      onPointerUp={endCropDrag}
+                      onPointerCancel={endCropDrag}
+                    >
+                      <span />
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
           </div>
           <aside className="asset-preview-sidebar">
             <div className="asset-preview-actions">
@@ -1765,12 +2041,167 @@ const PreviewModal = memo(function PreviewModal({
               <button type="button" onClick={() => void onCopyFeedbackContext()}>
                 Copy Feedback Context
               </button>
+              {!cropMode ? (
+                <button
+                  type="button"
+                  disabled={!canEditImage}
+                  title={
+                    previewAsset.importStatus === "imported"
+                      ? "已导入 Eagle 的资产不能再裁切"
+                      : "裁掉截图中的不需要区域"
+                  }
+                  onClick={beginCrop}
+                >
+                  裁切
+                </button>
+              ) : null}
+              {!cropMode && previewAsset.canRestoreOriginal ? (
+                <button
+                  type="button"
+                  disabled={!canEditImage}
+                  onClick={() => void onRestoreOriginal(previewAsset.id)}
+                >
+                  恢复原图
+                </button>
+              ) : null}
               {canFocusDebugAsset(previewAsset, hasSectionDebug) ? (
                 <button type="button" onClick={() => onFocusAndClose(previewAsset)}>
                   Debug 聚焦
                 </button>
               ) : null}
             </div>
+            {cropMode ? (
+              <div className="asset-crop-controls">
+                <div className="asset-crop-mode-switch" role="tablist" aria-label="裁切模式">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={cropToolMode === "bottom"}
+                    className={cropToolMode === "bottom" ? "active" : undefined}
+                    onClick={() => switchCropToolMode("bottom")}
+                  >
+                    裁掉底部
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={cropToolMode === "band"}
+                    className={cropToolMode === "band" ? "active" : undefined}
+                    onClick={() => switchCropToolMode("band")}
+                  >
+                    删除区段
+                  </button>
+                </div>
+                <div className="asset-crop-summary">
+                  <strong>{cropToolMode === "bottom" ? "底部裁切" : "横向区段"}</strong>
+                  <span>
+                    {cropToolMode === "bottom"
+                      ? `保留 ${normalizedKeepHeight.toLocaleString()} px`
+                      : `${normalizedBandStartY.toLocaleString()}–${normalizedBandEndY.toLocaleString()} px`}
+                    {" · "}
+                    删除 {removedHeight.toLocaleString()} px
+                  </span>
+                </div>
+                {cropToolMode === "bottom" ? (
+                  <input
+                    type="range"
+                    min={64}
+                    max={Math.max(64, previewAsset.imageHeight - 1)}
+                    step={1}
+                    value={normalizedKeepHeight}
+                    aria-label="保留图片高度"
+                    onChange={(event) => setCropKeepHeight(Number(event.target.value))}
+                  />
+                ) : (
+                  <div className="asset-crop-coordinate-inputs">
+                    <label>
+                      <span>开始位置</span>
+                      <span className="asset-crop-number-field">
+                        <input
+                          type="number"
+                          min={0}
+                          max={normalizedBandEndY - 1}
+                          step={1}
+                          value={normalizedBandStartY}
+                          onChange={(event) =>
+                            setCropBandStartY(
+                              Math.max(
+                                0,
+                                Math.min(normalizedBandEndY - 1, Number(event.target.value)),
+                              ),
+                            )
+                          }
+                        />
+                        <span>px</span>
+                      </span>
+                    </label>
+                    <label>
+                      <span>结束位置</span>
+                      <span className="asset-crop-number-field">
+                        <input
+                          type="number"
+                          min={normalizedBandStartY + 1}
+                          max={previewAsset.imageHeight}
+                          step={1}
+                          value={normalizedBandEndY}
+                          onChange={(event) =>
+                            setCropBandEndY(
+                              Math.max(
+                                normalizedBandStartY + 1,
+                                Math.min(previewAsset.imageHeight, Number(event.target.value)),
+                              ),
+                            )
+                          }
+                        />
+                        <span>px</span>
+                      </span>
+                    </label>
+                  </div>
+                )}
+                <div className="asset-crop-control-actions">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCropMode(false);
+                      setCropKeepHeight(previewAsset.imageHeight);
+                      cropDragRef.current = null;
+                    }}
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="asset-crop-apply"
+                    disabled={assetActionsDisabled || removedHeight < 1}
+                    onClick={() => {
+                      const operation: AssetCropOperation =
+                        cropToolMode === "bottom"
+                          ? {
+                              type: "remove-bottom",
+                              keepHeight: normalizedKeepHeight,
+                            }
+                          : {
+                              type: "remove-band",
+                              startY: normalizedBandStartY,
+                              endY: normalizedBandEndY,
+                            };
+                      void onCrop(
+                        previewAsset.id,
+                        operation,
+                        previewAsset.imageWidth,
+                        previewAsset.imageHeight,
+                      ).then((saved) => {
+                        if (saved) {
+                          setCropMode(false);
+                        }
+                      });
+                    }}
+                  >
+                    应用裁切
+                  </button>
+                </div>
+              </div>
+            ) : null}
             {copyFeedbackState ? <div className="copy-feedback-state">{copyFeedbackState}</div> : null}
             <dl className="asset-preview-meta">
               <div>
@@ -1931,6 +2362,14 @@ export function App() {
   const [folderSavingAssetIds, setFolderSavingAssetIds] = useState<Set<number>>(() => new Set());
   const [folderPickerState, setFolderPickerState] = useState<FolderPickerState | null>(null);
   const [folderPickerSaving, setFolderPickerSaving] = useState(false);
+  const [assetCropPending, setAssetCropPending] = useState(false);
+  const [recentEagleFolderIds, setRecentEagleFolderIds] = useState<string[]>(() => {
+    try {
+      return parseRecentFolderIds(window.localStorage.getItem(RECENT_EAGLE_FOLDER_IDS_STORAGE_KEY));
+    } catch {
+      return [];
+    }
+  });
   const [logsExpanded, setLogsExpanded] = useState(false);
   const [manifestExpanded, setManifestExpanded] = useState(false);
   const sseRefreshTimerRef = useRef<number | null>(null);
@@ -2064,7 +2503,12 @@ export function App() {
     () => buildAssetLookupIndex(selectedJobDetail?.assets ?? []),
     [selectedJobDetail?.assets],
   );
-  const assetActionsDisabled = selectionSaving || importingSelected || retryingFailedImport || selectedJobIsBusy;
+  const assetActionsDisabled =
+    selectionSaving ||
+    importingSelected ||
+    retryingFailedImport ||
+    assetCropPending ||
+    selectedJobIsBusy;
   const canImportSelected =
     !assetActionsDisabled &&
     assetImportSummary.selectedPending > 0 &&
@@ -2111,9 +2555,10 @@ export function App() {
             folderPickerState?.query ?? "",
             folderPickerAsset.targetEagleFolderPath,
             folderPickerAsset.resolvedEagleFolderPath,
+            recentEagleFolderIds,
           )
         : [],
-    [eagleFolders, folderPickerAsset, folderPickerState],
+    [eagleFolders, folderPickerAsset, folderPickerState, recentEagleFolderIds],
   );
   const previewRoute = useMemo(() => {
     if (!previewAsset || !selectedJobDetail) {
@@ -2690,6 +3135,18 @@ export function App() {
     setFolderPickerSaving(false);
   }, []);
 
+  const rememberRecentEagleFolder = useCallback((folderId: string): void => {
+    setRecentEagleFolderIds((current) => {
+      const next = rememberRecentFolderId(current, folderId);
+      try {
+        window.localStorage.setItem(RECENT_EAGLE_FOLDER_IDS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Keep recency in memory when browser storage is unavailable.
+      }
+      return next;
+    });
+  }, []);
+
   const updateFolderPickerQuery = useCallback((query: string): void => {
     setFolderPickerState((current) =>
       current
@@ -2718,6 +3175,7 @@ export function App() {
       return;
     }
     if (folder.id === folderPickerAsset.targetEagleFolderId) {
+      rememberRecentEagleFolder(folder.id);
       closeFolderPicker();
       return;
     }
@@ -2725,11 +3183,18 @@ export function App() {
     setFolderPickerSaving(true);
     const saved = await saveAssetTargetFolder(folderPickerAsset.id, folder.id);
     if (saved) {
+      rememberRecentEagleFolder(folder.id);
       closeFolderPicker();
       return;
     }
     setFolderPickerSaving(false);
-  }, [closeFolderPicker, folderPickerAsset, folderPickerSaving, saveAssetTargetFolder]);
+  }, [
+    closeFolderPicker,
+    folderPickerAsset,
+    folderPickerSaving,
+    rememberRecentEagleFolder,
+    saveAssetTargetFolder,
+  ]);
 
   const toggleAssetSelection = useCallback(async (assetId: number, selected: boolean): Promise<void> => {
     if (!selectedJobDetail) {
@@ -2743,6 +3208,67 @@ export function App() {
     }
     await saveAssetSelection(selectedJobDetail.job.id, selectedAssetIds);
   }, [saveAssetSelection, selectedJobDetail]);
+
+  const cropAsset = useCallback(async (
+    assetId: number,
+    operation: AssetCropOperation,
+    expectedWidth: number,
+    expectedHeight: number,
+  ): Promise<boolean> => {
+    if (!selectedJobDetail) {
+      return false;
+    }
+    setAssetCropPending(true);
+    try {
+      const result = await apiFetch<{ removedHeight: number }>(
+        `/api/jobs/${selectedJobDetail.job.id}/assets/${assetId}/crop`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ operation, expectedWidth, expectedHeight }),
+        },
+      );
+      await Promise.all([
+        loadJobs(selectedJobDetail.job.id),
+        loadJobDetail(selectedJobDetail.job.id),
+      ]);
+      setErrorText(null);
+      showToast(
+        operation.type === "remove-bottom"
+          ? `已裁掉底部 ${result.removedHeight.toLocaleString()} px`
+          : `已删除区段 ${result.removedHeight.toLocaleString()} px`,
+      );
+      return true;
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "裁切图片失败");
+      return false;
+    } finally {
+      setAssetCropPending(false);
+    }
+  }, [loadJobDetail, loadJobs, selectedJobDetail, showToast]);
+
+  const restoreAssetOriginal = useCallback(async (assetId: number): Promise<boolean> => {
+    if (!selectedJobDetail) {
+      return false;
+    }
+    setAssetCropPending(true);
+    try {
+      await apiFetch(`/api/jobs/${selectedJobDetail.job.id}/assets/${assetId}/crop`, {
+        method: "DELETE",
+      });
+      await Promise.all([
+        loadJobs(selectedJobDetail.job.id),
+        loadJobDetail(selectedJobDetail.job.id),
+      ]);
+      setErrorText(null);
+      showToast("已恢复原图");
+      return true;
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "恢复原图失败");
+      return false;
+    } finally {
+      setAssetCropPending(false);
+    }
+  }, [loadJobDetail, loadJobs, selectedJobDetail, showToast]);
 
   const importSelected = useCallback(async (jobId: string): Promise<void> => {
     setImportingSelected(true);
@@ -3432,6 +3958,8 @@ export function App() {
           onClose={closePreview}
           onToggleSelection={toggleAssetSelection}
           onCopyFeedbackContext={copyFeedbackContext}
+          onCrop={cropAsset}
+          onRestoreOriginal={restoreAssetOriginal}
           onFocusAndClose={(asset) => {
             focusDebugFromAsset(asset);
             closePreview();

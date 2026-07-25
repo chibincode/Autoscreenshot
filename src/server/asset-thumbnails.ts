@@ -12,7 +12,7 @@ const MAX_THUMBNAIL_WIDTH = 960;
 const MIN_THUMBNAIL_QUALITY = 20;
 const MAX_THUMBNAIL_QUALITY = 80;
 
-const metadataCache = new Map<string, { width: number; height: number; mtimeMs: number }>();
+const metadataCache = new Map<string, AssetImageMetadata>();
 const thumbnailInflight = new Map<string, Promise<string>>();
 
 export interface ThumbnailDimensions {
@@ -22,6 +22,13 @@ export interface ThumbnailDimensions {
 
 export interface ThumbnailResult extends ThumbnailDimensions {
   filePath: string;
+}
+
+export interface AssetImageMetadata {
+  width: number;
+  height: number;
+  mtimeMs: number;
+  cacheVersion: string;
 }
 
 function clampThumbnailWidth(value?: number): number {
@@ -42,21 +49,25 @@ async function ensureThumbnailCacheDir(): Promise<void> {
   await mkdir(THUMBNAIL_CACHE_DIR, { recursive: true });
 }
 
-async function readAssetImageMetadata(filePath: string): Promise<{ width: number; height: number; mtimeMs: number }> {
-  const fileStat = await stat(filePath);
-  const cacheKey = `${filePath}:${fileStat.mtimeMs}`;
+export async function getAssetImageMetadata(
+  asset: Pick<AssetRecord, "filePath">,
+): Promise<AssetImageMetadata> {
+  const fileStat = await stat(asset.filePath, { bigint: true });
+  const cacheVersion = `${fileStat.mtimeNs}-${fileStat.ctimeNs}-${fileStat.size}`;
+  const cacheKey = `${asset.filePath}:${cacheVersion}`;
   const cached = metadataCache.get(cacheKey);
   if (cached) {
     return cached;
   }
 
-  const metadata = await sharp(filePath).metadata();
+  const metadata = await sharp(asset.filePath).metadata();
   const width = metadata.width && metadata.width > 0 ? metadata.width : DEFAULT_THUMBNAIL_WIDTH;
   const height = metadata.height && metadata.height > 0 ? metadata.height : Math.round(width * 0.75);
   const next = {
     width,
     height,
-    mtimeMs: fileStat.mtimeMs,
+    mtimeMs: Number(fileStat.mtimeNs) / 1_000_000,
+    cacheVersion,
   };
   metadataCache.set(cacheKey, next);
   return next;
@@ -71,11 +82,19 @@ function resolveThumbnailDimensions(width: number, height: number, requestedWidt
   };
 }
 
-export function buildThumbnailUrl(assetId: number, width?: number, quality?: number): string {
+export function buildThumbnailUrl(
+  assetId: number,
+  width?: number,
+  quality?: number,
+  cacheVersion?: string | number,
+): string {
   const params = new URLSearchParams({
     w: String(clampThumbnailWidth(width)),
     q: String(clampThumbnailQuality(quality)),
   });
+  if (cacheVersion !== undefined) {
+    params.set("v", String(cacheVersion));
+  }
   return `/api/assets/${assetId}/thumbnail?${params.toString()}`;
 }
 
@@ -83,7 +102,7 @@ export async function getThumbnailDimensions(
   asset: Pick<AssetRecord, "filePath">,
   requestedWidth?: number,
 ): Promise<ThumbnailDimensions> {
-  const metadata = await readAssetImageMetadata(asset.filePath);
+  const metadata = await getAssetImageMetadata(asset);
   return resolveThumbnailDimensions(metadata.width, metadata.height, requestedWidth);
 }
 
@@ -94,14 +113,14 @@ export async function getThumbnailPath(
     quality?: number;
   },
 ): Promise<ThumbnailResult> {
-  const metadata = await readAssetImageMetadata(asset.filePath);
+  const metadata = await getAssetImageMetadata(asset);
   const quality = clampThumbnailQuality(options?.quality);
   const { thumbnailWidth, thumbnailHeight } = resolveThumbnailDimensions(
     metadata.width,
     metadata.height,
     options?.width,
   );
-  const cacheKey = `${asset.id}-${thumbnailWidth}-${quality}-${Math.round(metadata.mtimeMs)}.jpg`;
+  const cacheKey = `${asset.id}-${thumbnailWidth}-${quality}-${metadata.cacheVersion}.jpg`;
   const targetPath = path.join(THUMBNAIL_CACHE_DIR, cacheKey);
 
   if (!existsSync(targetPath)) {

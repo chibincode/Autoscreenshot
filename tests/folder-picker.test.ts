@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   filterAndRankFolders,
   formatFolderPathForCard,
+  parseRecentFolderIds,
+  rememberRecentFolderId,
   type EagleFolderOption,
 } from "../web/src/folder-picker.js";
 
@@ -32,6 +34,53 @@ describe("folder picker helpers", () => {
       "Pages/Page_Project list",
       "Pages/Page_Projiect Detail",
       "Sections/Section_CTA",
+    ]);
+  });
+
+  it("puts recently used folders after the current folder in recency order", () => {
+    const result = filterAndRankFolders(
+      folders,
+      "",
+      "Pages/Page_General/Section_C",
+      "Pages/Page_General",
+      ["cta", "pricing"],
+    );
+
+    expect(result.map((item) => item.folder.id)).toEqual([
+      "section-c",
+      "cta",
+      "pricing",
+      "general",
+      "gerneral-legacy",
+      "project-list",
+      "project-detail-legacy",
+    ]);
+    expect(result.find((item) => item.folder.id === "cta")?.isRecent).toBe(true);
+    expect(result.find((item) => item.folder.id === "section-c")?.isRecent).toBe(false);
+  });
+
+  it("uses recency only as a tie-breaker while searching", () => {
+    const result = filterAndRankFolders(
+      folders,
+      "section",
+      null,
+      null,
+      ["cta", "section-c"],
+    ).map((item) => item.folder.id);
+
+    expect(result).toEqual(["cta", "section-c"]);
+  });
+
+  it("parses and updates bounded recent folder history", () => {
+    expect(parseRecentFolderIds('["pricing","cta","pricing","",42]')).toEqual([
+      "pricing",
+      "cta",
+    ]);
+    expect(parseRecentFolderIds("not-json")).toEqual([]);
+    expect(rememberRecentFolderId(["pricing", "cta", "general"], "cta", 3)).toEqual([
+      "cta",
+      "pricing",
+      "general",
     ]);
   });
 

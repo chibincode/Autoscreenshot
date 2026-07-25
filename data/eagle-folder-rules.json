@@ -67,11 +67,25 @@
     },
     "customers_list": {
       "folderId": "K0IC2N67H834Z",
-      "pathRules": ["/customers", "/use-cases"]
+      "pathRules": [
+        "/customers",
+        "/customer-stories",
+        "/case-study",
+        "/case-studies",
+        "/use-cases",
+        "/testimonials"
+      ]
     },
     "customer_detail": {
       "folderId": "K0IC2S1PICKEP",
-      "pathRules": ["/customers/:slug", "/use-cases/:slug"]
+      "pathRules": [
+        "/customers/:slug",
+        "/customer-stories/:slug",
+        "/case-study/:slug",
+        "/case-studies/:slug",
+        "/use-cases/:slug",
+        "/testimonials/:slug"
+      ]
     },
     "projects_list": {
       "folderId": "K9SL078IT4CHR",
@@ -147,11 +161,11 @@
     },
     "downloads_list": {
       "folderId": "KSHBG91WK448P",
-      "pathRules": ["/downloads"]
+      "pathRules": ["/download", "/downloads"]
     },
     "download_detail": {
       "folderId": "K6FY6W2TDCH1Q",
-      "pathRules": ["/downloads/:slug"]
+      "pathRules": ["/download/:slug", "/downloads/:slug"]
     },
     "integration": {
       "folderId": "LR5VC4L6FB0KO",
