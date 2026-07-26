@@ -34,6 +34,7 @@ export const DPR_PIXEL_THRESHOLD = 120_000_000;
 const FULLPAGE_INITIAL_SETTLE_MS = 2500;
 const FULLPAGE_SINGLE_CAPTURE_MAX_HEIGHT_PX = 16_000;
 const FULLPAGE_TILE_CSS_HEIGHT = 4_000;
+const FULLPAGE_SLICE_SETTLE_MS = 60;
 const IMAGE_READY_TIMEOUT_MS = 7_500;
 const IMAGE_READY_POLL_MS = 250;
 const IMAGE_READY_MIN_AREA_PX = 8_000;
@@ -152,6 +153,124 @@ async function getPageDimensions(page: import("playwright").Page): Promise<{
   });
 }
 
+/**
+ * Captures a tall page by scrolling the real viewport and stitching the slices.
+ *
+ * Chromium's `captureBeyondViewport` (used by both `fullPage: true` and the tiled
+ * CDP path) fails to rasterize some composited off-screen elements, which silently
+ * drops their background paint even though the DOM and computed styles are correct.
+ * Screenshotting only what is actually in the viewport avoids that entirely, and
+ * unlike resizing the viewport to the document height it keeps `vh` units intact.
+ */
+async function captureFullPageByScrollStitch(params: {
+  page: import("playwright").Page;
+  pageWidth: number;
+  pageHeight: number;
+  dpr: number;
+  log?: CaptureTaskOptions["log"];
+  beforeSliceCapture?: () => Promise<void>;
+}): Promise<Buffer> {
+  const viewportHeight = params.page.viewportSize()?.height ?? 0;
+  if (viewportHeight <= 0) {
+    throw new Error("scroll stitch requires a fixed viewport height");
+  }
+
+  const outputWidth = Math.max(1, Math.round(params.pageWidth * params.dpr));
+  const outputHeight = Math.max(1, Math.round(params.pageHeight * params.dpr));
+  const maxScroll = Math.max(0, Math.round(params.pageHeight - viewportHeight));
+  const slices: Array<{ buffer: Buffer; top: number }> = [];
+  let restoreTopOverlays: (() => Promise<void>) | null = null;
+
+  // Smooth scrolling would desync scrollTo() from the screenshot that follows it.
+  const styleHandle = await params.page
+    .addStyleTag({
+      content: `
+        html, body {
+          scroll-behavior: auto !important;
+        }
+      `,
+    })
+    .catch(() => null);
+
+  try {
+    let sliceCount = 0;
+    for (let top = 0; top < params.pageHeight; top += viewportHeight) {
+      const scrollTarget = Math.min(top, maxScroll);
+      // Scroll and let the new position paint. Two frames is enough for the
+      // compositor, and far cheaper than a fixed sleep once a page needs many slices.
+      await params.page.evaluate(
+        (scrollY) =>
+          new Promise<void>((resolve) => {
+            window.scrollTo(0, scrollY);
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          }),
+        scrollTarget,
+      );
+      await params.page.waitForTimeout(FULLPAGE_SLICE_SETTLE_MS);
+      await params.beforeSliceCapture?.();
+
+      // Pinned headers would otherwise repeat in every slice below the first.
+      if (top > 0 && !restoreTopOverlays) {
+        restoreTopOverlays = await hideTopOverlaysForCapture({
+          page: params.page,
+          pageWidth: params.pageWidth,
+          viewportHeight,
+          log: params.log,
+        });
+      }
+
+      const screenshot = await params.page.screenshot({ type: "png", fullPage: false });
+      // The final slice is clamped to maxScroll, so drop the rows it repeats.
+      const offsetWithinSlice = Math.max(0, Math.round((top - scrollTarget) * params.dpr));
+      const remaining = Math.round(Math.min(viewportHeight, params.pageHeight - top) * params.dpr);
+      // Only the clamped last slice needs cropping; re-encoding every other one
+      // would add a full decode/encode round-trip per slice for nothing.
+      let buffer = screenshot;
+      if (offsetWithinSlice > 0 || remaining < Math.round(viewportHeight * params.dpr)) {
+        const shot = await sharp(screenshot).metadata();
+        const available = Math.max(0, (shot.height ?? 0) - offsetWithinSlice);
+        buffer = await sharp(screenshot)
+          .extract({
+            left: 0,
+            top: offsetWithinSlice,
+            width: Math.max(1, Math.min(outputWidth, shot.width ?? outputWidth)),
+            height: Math.max(1, Math.min(remaining, available)),
+          })
+          .png()
+          .toBuffer();
+      }
+      slices.push({ buffer, top: Math.round(top * params.dpr) });
+      sliceCount += 1;
+    }
+
+    emitLog(
+      params.log,
+      "info",
+      `fullpage_capture_mode=scroll_stitch pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} viewportHeight=${viewportHeight} slices=${sliceCount}`,
+    );
+  } finally {
+    await restoreTopOverlays?.();
+    if (styleHandle) {
+      await styleHandle
+        .evaluate((node) => (node instanceof Element ? node.remove() : undefined))
+        .catch(() => undefined);
+    }
+    await params.page.evaluate(() => window.scrollTo(0, 0)).catch(() => undefined);
+  }
+
+  return sharp({
+    create: {
+      width: outputWidth,
+      height: outputHeight,
+      channels: 4,
+      background: { r: 255, g: 255, b: 255, alpha: 1 },
+    },
+  })
+    .composite(slices.map((slice) => ({ input: slice.buffer, left: 0, top: slice.top })))
+    .png()
+    .toBuffer();
+}
+
 async function captureFullPageByTiles(params: {
   page: import("playwright").Page;
   pageWidth: number;
@@ -236,6 +355,24 @@ async function captureFullPageImage(params: {
   beforeTileCapture?: () => Promise<void>;
 }): Promise<Buffer> {
   const physicalHeight = Math.max(1, Math.round(params.pageHeight * params.dpr));
+  const viewportHeight = params.page.viewportSize()?.height ?? 0;
+  // Anything taller than the viewport risks losing off-screen paint to
+  // captureBeyondViewport, so stitch real viewport slices instead.
+  if (viewportHeight > 0 && params.pageHeight > viewportHeight) {
+    try {
+      return await captureFullPageByScrollStitch({
+        ...params,
+        beforeSliceCapture: params.beforeTileCapture,
+      });
+    } catch (error) {
+      emitLog(
+        params.log,
+        "warn",
+        `fullpage_capture_scroll_stitch_failed pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} reason=${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   if (physicalHeight <= FULLPAGE_SINGLE_CAPTURE_MAX_HEIGHT_PX) {
     emitLog(
       params.log,

@@ -53,26 +53,22 @@ async function getRenderReadinessSnapshot(page: Page): Promise<RenderReadinessSn
     let visibleElementCount = 0;
     let loadingIndicatorCount = 0;
 
-    const isVisibleInViewport = (element: Element): { visible: boolean; area: number } => {
+    // Keep this body free of named inner functions: the transpiler wraps them in a
+    // `__name()` helper that only exists in the Node module scope, so the serialized
+    // callback throws as soon as it runs inside the page.
+    for (const element of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
       const rect = element.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
-        return { visible: false, area: 0 };
+        continue;
       }
       if (rect.bottom < 0 || rect.right < 0 || rect.top > viewportHeight || rect.left > viewportWidth) {
-        return { visible: false, area: 0 };
+        continue;
       }
       const style = window.getComputedStyle(element);
       if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) <= 0.01) {
-        return { visible: false, area: 0 };
-      }
-      return { visible: true, area: rect.width * rect.height };
-    };
-
-    for (const element of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-      const visibility = isVisibleInViewport(element);
-      if (!visibility.visible) {
         continue;
       }
+      const visibleArea = rect.width * rect.height;
 
       visibleElementCount += 1;
       const directText = Array.from(element.childNodes)
@@ -94,7 +90,7 @@ async function getRenderReadinessSnapshot(page: Page): Promise<RenderReadinessSn
         loadingPattern.test(classAndId) ||
         loadingTextPattern.test(text);
 
-      if (isLoadingElement && visibility.area >= 160) {
+      if (isLoadingElement && visibleArea >= 160) {
         loadingIndicatorCount += 1;
       }
     }
@@ -169,13 +165,24 @@ export async function waitForRenderStability(
   let lastSnapshot: RenderReadinessSnapshot | null = null;
   let lastVisualDiff = 1;
   let bypassedVisualStability = false;
+  let snapshotFailureLogged = false;
 
   await page
     .evaluate(() => document.fonts?.ready ?? Promise.resolve())
     .catch(() => undefined);
 
   while (Date.now() - startedAt < timeoutMs) {
-    const snapshot = await getRenderReadinessSnapshot(page).catch(() => null);
+    const snapshot = await getRenderReadinessSnapshot(page).catch((error: unknown) => {
+      if (!snapshotFailureLogged) {
+        snapshotFailureLogged = true;
+        emitLog(
+          options.log,
+          "warn",
+          `render_snapshot_failed phase=${options.phase} reason=${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      return null;
+    });
     const signature = visualStability ? await getViewportVisualSignature(page) : null;
     if (!snapshot) {
       await page.waitForTimeout(pollMs);

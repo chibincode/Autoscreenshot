@@ -2129,7 +2129,9 @@ describe("fullPage tiled capture", () => {
     expect(greenBandSample[1]).toBeGreaterThan(greenBandSample[2] + 40);
     expect(orangeBandSample[0]).toBeGreaterThan(orangeBandSample[1] + 40);
     expect(orangeBandSample[1]).toBeGreaterThan(orangeBandSample[2] + 20);
-  }, 30_000);
+    // This 32000px fixture is now captured as ~30 scrolled viewport slices instead of
+    // 8 static tiles, which is deliberately more work than the original 30s budget.
+  }, 45_000);
 });
 
 describe("footer scroll reveal preservation", () => {
@@ -2413,7 +2415,16 @@ describe("scroll scene unfolding", () => {
     const firstScene = result.scrollSceneDebug?.[0];
     expect(fullPageAsset).toBeTruthy();
     expect(firstScene?.layoutMode).toBe("sticky_only_unfold");
-    expect(logs.some((message) => message.includes("overlay_action phase=scroll_scene_sampling"))).toBe(true);
+    // The full-page capture scrolls the viewport now, so a scroll-triggered overlay is
+    // usually caught while slicing rather than during scene sampling. Either phase proves
+    // it was acted on; this fixture only creates the overlay once.
+    expect(
+      logs.some(
+        (message) =>
+          message.includes("overlay_action phase=scroll_scene_sampling") ||
+          message.includes("overlay_action phase=tile_capture"),
+      ),
+    ).toBe(true);
 
     const gap = 24;
     const sampleOffsets = Array.from({ length: firstScene!.distinctFrameCount }, (_value, index) =>

@@ -251,8 +251,11 @@ export async function hideTopOverlaysForCapture(params: {
     return async () => undefined;
   }
 
+  // Descendants must be hidden explicitly too: an inherited `visibility: hidden`
+  // is overridden by any child that sets `visibility: visible` itself, which is how
+  // a pinned header's logo survives and gets baked into scrolled slices.
   const styleHandle = await params.page.addStyleTag({
-    content: `[${TOP_OVERLAY_HIDDEN_ATTR}="true"] { visibility: hidden !important; }`,
+    content: `[${TOP_OVERLAY_HIDDEN_ATTR}="true"], [${TOP_OVERLAY_HIDDEN_ATTR}="true"] * { visibility: hidden !important; }`,
   });
   params.log?.("info", `top_overlay_hidden_for_tiles count=${hiddenCount}`);
 
