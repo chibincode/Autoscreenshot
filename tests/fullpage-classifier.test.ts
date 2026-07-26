@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyFullPageType } from "../src/core/fullpage-classifier.js";
-import { normalizeEagleFolderRules } from "../src/core/eagle-folder-rules.js";
+import { loadEagleFolderRules, normalizeEagleFolderRules } from "../src/core/eagle-folder-rules.js";
 
 const rules = normalizeEagleFolderRules({
   fullPage: {
@@ -256,5 +256,38 @@ describe("classifyFullPageType", () => {
   it("returns unmatched when no rule matches", () => {
     const result = classifyFullPageType("https://example.com/platform/edge-ai", rules);
     expect(result.type).toBe("unmatched");
+  });
+});
+
+// The cases above run against an inline fixture, so they cannot catch a synonym being
+// dropped from the rules file that actually ships.
+describe("shipped eagle folder rules", () => {
+  it("routes common pricing path synonyms to pricing", async () => {
+    const { rules: shippedRules, loadedFromFile } = await loadEagleFolderRules();
+    expect(loadedFromFile).toBe(true);
+
+    for (const pathname of ["/pricing", "/plans", "/plan", "/prices", "/price", "/pricing-plans"]) {
+      expect(classifyFullPageType(`https://www.cloudflare.com${pathname}`, shippedRules).type).toBe(
+        "pricing",
+      );
+    }
+  });
+
+  it("keeps pricing synonyms from shadowing other page types", async () => {
+    const { rules: shippedRules } = await loadEagleFolderRules();
+    const expectations: Array<[string, string]> = [
+      ["/", "home"],
+      ["/products", "products_list"],
+      ["/projects", "projects_list"],
+      ["/project/atlas", "project_detail"],
+      ["/blog", "blog_list"],
+      ["/security", "security"],
+    ];
+
+    for (const [pathname, expected] of expectations) {
+      expect(classifyFullPageType(`https://example.com${pathname}`, shippedRules).type).toBe(
+        expected,
+      );
+    }
   });
 });

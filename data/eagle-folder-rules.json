@@ -51,7 +51,7 @@
     },
     "pricing": {
       "folderId": "K0NKU4XF3F9QH",
-      "pathRules": ["/pricing"]
+      "pathRules": ["/pricing", "/plans", "/plan", "/prices", "/price", "/pricing-plans"]
     },
     "about": {
       "folderId": "JZULJID2HWWPV",
