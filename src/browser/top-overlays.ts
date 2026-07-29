@@ -19,7 +19,10 @@ const TOP_OVERLAY_SELECTORS = [
 const TOP_OVERLAY_MAX_TOP = 24;
 const TOP_OVERLAY_MAX_HEIGHT = 240;
 const TOP_OVERLAY_MIN_HEIGHT = 24;
-const TOP_OVERLAY_MIN_WIDTH_RATIO = 0.35;
+// Some desktop sites pin only the centered menu while leaving the logo and
+// account actions in a static header. Griffin's menu is roughly 31% wide, so a
+// 35% threshold misses it and bakes the menu into every scroll-stitched slice.
+const TOP_OVERLAY_MIN_WIDTH_RATIO = 0.25;
 const TOP_OVERLAY_MIN_CAPTURE_HEIGHT = 64;
 const TOP_OVERLAY_EXTRA_PADDING = 8;
 const TOP_OVERLAY_HIDDEN_ATTR = "data-autosnap-top-overlay-hidden";

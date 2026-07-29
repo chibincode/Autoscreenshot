@@ -12,6 +12,7 @@ import {
   stabilizeFullPageViewport,
 } from "../src/browser/capture.js";
 import { stabilizeCaptureMotion } from "../src/browser/motion-stabilizer.js";
+import { hideTopOverlaysForCapture } from "../src/browser/top-overlays.js";
 import type { ParsedTask } from "../src/types.js";
 
 let server: http.Server | null = null;
@@ -2402,6 +2403,59 @@ describe("fullPage stabilization", () => {
       await browser.close();
     }
   }, 15_000);
+});
+
+describe("top overlay capture", () => {
+  it("hides a centered narrow fixed navigation after the first slice", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      viewport: { width: 1920, height: 1080 },
+      deviceScaleFactor: 1,
+    });
+    const page = await context.newPage();
+    const logs: string[] = [];
+
+    try {
+      await page.setContent(`
+        <style>
+          body { margin: 0; min-height: 3000px; }
+          header { height: 64px; background: #111; }
+          .centered-menu {
+            position: fixed;
+            z-index: 10;
+            top: 12px;
+            left: 50%;
+            width: 600px;
+            height: 40px;
+            transform: translateX(-50%);
+          }
+        </style>
+        <header>
+          <nav class="centered-menu"><a href="/">Products</a><a href="/pricing">Pricing</a></nav>
+        </header>
+      `);
+
+      const isVisible = async () =>
+        page.locator(".centered-menu").evaluate((element) => getComputedStyle(element).visibility === "visible");
+
+      expect(await isVisible()).toBe(true);
+      const restore = await hideTopOverlaysForCapture({
+        page,
+        pageWidth: 1920,
+        viewportHeight: 1080,
+        log: (_level, message) => logs.push(message),
+      });
+
+      expect(await isVisible()).toBe(false);
+      expect(logs).toContain("top_overlay_hidden_for_tiles count=1");
+
+      await restore();
+      expect(await isVisible()).toBe(true);
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+  });
 });
 
 describe("fullPage tiled capture", () => {
