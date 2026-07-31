@@ -1060,6 +1060,109 @@ describe("server api", () => {
     expect(Buffer.byteLength(thumbnailResponse.body)).toBeGreaterThan(0);
   });
 
+  it("rescans Core Pages and Section jobs with their original configuration", async () => {
+    mockEagleFolderList();
+
+    const cases = [
+      {
+        mode: "core-routes" as const,
+        instruction: "open https://example.com and map the core pages",
+        options: {
+          quality: 87,
+          dpr: 1 as const,
+          sectionScope: "all-top-level" as const,
+          classicMaxSections: 7,
+          maxRoutes: 8,
+          outputDir: tmpDir,
+        },
+      },
+      {
+        mode: "single" as const,
+        instruction: "open https://example.com and capture the pricing section",
+        options: {
+          quality: 90,
+          dpr: "auto" as const,
+          sectionScope: "manual" as const,
+          classicMaxSections: 4,
+          maxRoutes: 5,
+          outputDir: tmpDir,
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const createResponse = await app.inject({
+        method: "POST",
+        url: "/api/jobs",
+        payload: {
+          instruction: testCase.instruction,
+          mode: testCase.mode,
+          ...testCase.options,
+        },
+      });
+      expect(createResponse.statusCode).toBe(202);
+      const sourceJobId = (createResponse.json() as { jobId: string }).jobId;
+      const sourceStatus = await waitForTerminalStatus(app, sourceJobId);
+      const sourceBefore = repo.getJob(sourceJobId);
+      expect(sourceBefore).toBeDefined();
+
+      const rescanResponse = await app.inject({
+        method: "POST",
+        url: `/api/jobs/${sourceJobId}/rescan`,
+      });
+      expect(rescanResponse.statusCode).toBe(202);
+      const rescanData = rescanResponse.json() as {
+        jobId: string;
+        sourceJobId: string;
+        status: string;
+        mode: string;
+      };
+      expect(rescanData).toMatchObject({
+        sourceJobId,
+        status: "queued",
+        mode: testCase.mode,
+      });
+      expect(rescanData.jobId).not.toBe(sourceJobId);
+
+      await waitForTerminalStatus(app, rescanData.jobId);
+      const sourceAfter = repo.getJob(sourceJobId);
+      const rescannedJob = repo.getJob(rescanData.jobId);
+      expect(sourceAfter?.status).toBe(sourceStatus);
+      expect(sourceAfter?.optionsJson).toBe(sourceBefore?.optionsJson);
+      expect(rescannedJob?.instruction).toBe(testCase.instruction);
+      expect(JSON.parse(rescannedJob?.optionsJson ?? "{}")).toEqual(
+        JSON.parse(sourceBefore?.optionsJson ?? "{}"),
+      );
+      expect(repo.getLogs(rescanData.jobId).some((log) => log.message.includes(sourceJobId))).toBe(true);
+    }
+  });
+
+  it("rejects rescan while the source job is still active", async () => {
+    const jobId = "active-rescan-job";
+    repo.createJob({
+      id: jobId,
+      instruction: "open https://example.com",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "core-routes",
+        maxRoutes: 8,
+        outputDir: tmpDir,
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/rescan`,
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: "Rescan is only available after the current job finishes",
+    });
+  });
+
   it("crops the bottom of a pending asset and restores the original", async () => {
     mockEagleFolderList();
 
@@ -1512,6 +1615,88 @@ describe("server api", () => {
     expect(retriedStatus).toBe("awaiting_confirmation");
   });
 
+  it("rescans one successful route without rerunning the other core pages", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and map core routes",
+        mode: "core-routes",
+        maxRoutes: 8,
+      },
+    });
+
+    expect(createResponse.statusCode).toBe(202);
+    const createData = createResponse.json() as { jobId: string };
+    const initialStatus = await waitForTerminalStatus(app, createData.jobId);
+    expect(initialStatus).toBe("partial_success");
+
+    const detailBeforeResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${createData.jobId}`,
+    });
+    const detailBefore = detailBeforeResponse.json() as {
+      routes: Array<{
+        id: number;
+        url: string;
+        status: string;
+        attemptCount: number;
+      }>;
+      assets: Array<{
+        id: number;
+        sourceUrl: string;
+        fileName: string;
+      }>;
+    };
+    const successfulRoute = detailBefore.routes.find((route) => route.status === "success");
+    expect(successfulRoute).toBeDefined();
+    const previousRouteAssets = detailBefore.assets.filter(
+      (asset) => asset.sourceUrl === successfulRoute!.url,
+    );
+    expect(previousRouteAssets).toHaveLength(1);
+
+    const rescanResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${createData.jobId}/retry-route`,
+      payload: {
+        routeId: successfulRoute!.id,
+      },
+    });
+    expect(rescanResponse.statusCode).toBe(202);
+
+    const rescannedStatus = await waitForNextTerminalStatus(app, createData.jobId, initialStatus);
+    expect(rescannedStatus).toBe("partial_success");
+
+    const detailAfterResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${createData.jobId}`,
+    });
+    const detailAfter = detailAfterResponse.json() as {
+      routes: Array<{
+        id: number;
+        url: string;
+        status: string;
+        attemptCount: number;
+      }>;
+      assets: Array<{
+        id: number;
+        sourceUrl: string;
+        fileName: string;
+      }>;
+    };
+    const rescannedRoute = detailAfter.routes.find((route) => route.id === successfulRoute!.id);
+    expect(rescannedRoute).toMatchObject({
+      status: "success",
+      attemptCount: successfulRoute!.attemptCount + 1,
+    });
+    const nextRouteAssets = detailAfter.assets.filter(
+      (asset) => asset.sourceUrl === successfulRoute!.url,
+    );
+    expect(nextRouteAssets).toHaveLength(1);
+    expect(nextRouteAssets[0]?.id).not.toBe(previousRouteAssets[0]?.id);
+    expect(nextRouteAssets[0]?.fileName).toContain("retry-");
+  });
+
   it("shows general Eagle folders for unmatched page and unknown section assets", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input);
@@ -1784,6 +1969,291 @@ describe("server api", () => {
     });
   });
 
+  it("cleans local files while preserving the lightweight job history", async () => {
+    const jobId = "clean-finished-job";
+    const outputRoot = path.join(tmpDir, "clean-output");
+    const outputDir = path.join(outputRoot, jobId);
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(path.join(outputDir, "capture.jpg"), "screenshot", "utf8");
+    const manifestPath = path.join(outputDir, "manifest.json");
+    await fs.writeFile(manifestPath, JSON.stringify({ runId: jobId }), "utf8");
+
+    repo.createJob({
+      id: jobId,
+      instruction: "clean local files",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "core-routes",
+        maxRoutes: 12,
+        outputDir: outputRoot,
+      },
+    });
+    repo.setJobResult({
+      jobId,
+      status: "success",
+      manifestPath,
+      outputDir,
+      taskJson: JSON.stringify({ url: "https://example.com" }),
+    });
+    repo.replaceAssets(jobId, {
+      runId: jobId,
+      instruction: "clean local files",
+      createdAt: new Date().toISOString(),
+      task: {
+        url: "https://example.com",
+        waitUntil: "networkidle",
+        captures: [{ mode: "fullPage" }],
+        image: { format: "jpg", quality: 92, dpr: 2 },
+        viewport: { width: 1920, height: 1080 },
+        tags: [],
+        eagle: {},
+      },
+      sectionScope: "classic",
+      outputDir,
+      assets: [
+        {
+          kind: "fullPage",
+          label: "full_page",
+          filePath: path.join(outputDir, "capture.jpg"),
+          fileName: "capture.jpg",
+          sourceUrl: "https://example.com",
+          quality: 92,
+          dpr: 2,
+          capturedAt: new Date().toISOString(),
+          import: createPendingImportResult(),
+        },
+      ],
+    });
+    repo.replaceRouteTargets(jobId, [
+      {
+        url: "https://example.com/",
+        path: "/",
+        source: "nav",
+        depth: 0,
+        priorityScore: 100,
+      },
+    ]);
+    repo.addLog(jobId, "info", "ready for cleanup");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/cleanup`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ jobId, filesDeleted: true });
+    expect(response.json().cleanedAt).toEqual(expect.any(String));
+    expect(response.json().archivedAt).toEqual(expect.any(String));
+
+    const preservedJob = repo.getJob(jobId);
+    expect(preservedJob).toMatchObject({
+      id: jobId,
+      status: "success",
+      manifestPath: null,
+      outputDir: null,
+    });
+    expect(preservedJob?.cleanedAt).toBeTruthy();
+    expect(preservedJob?.archivedAt).toBeTruthy();
+    await expect(fs.access(outputDir)).rejects.toThrow();
+
+    const rawDb = new Database(dbPath);
+    expect((rawDb.prepare("SELECT COUNT(*) AS count FROM assets WHERE job_id = ?").get(jobId) as { count: number }).count).toBe(0);
+    expect((rawDb.prepare("SELECT COUNT(*) AS count FROM job_logs WHERE job_id = ?").get(jobId) as { count: number }).count).toBe(0);
+    expect((rawDb.prepare("SELECT COUNT(*) AS count FROM route_targets WHERE job_id = ?").get(jobId) as { count: number }).count).toBe(0);
+    expect((rawDb.prepare("SELECT COUNT(*) AS count FROM job_history_urls WHERE job_id = ?").get(jobId) as { count: number }).count).toBe(1);
+    rawDb.close();
+
+    const archivedSummary = repo
+      .listJobs({ archivedOnly: true })
+      .items.find((job) => job.id === jobId);
+    expect(archivedSummary).toMatchObject({
+      assetCount: 1,
+      pendingConfirmationCount: 1,
+      importSuccessCount: 0,
+      importFailedCount: 0,
+    });
+
+    const repeatedCleanup = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/cleanup`,
+    });
+    expect(repeatedCleanup.statusCode).toBe(409);
+    expect(repeatedCleanup.json()).toEqual({
+      error: "Local files for this job have already been cleaned",
+    });
+
+    const unarchiveResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/archive`,
+      payload: { archived: false },
+    });
+    expect(unarchiveResponse.statusCode).toBe(409);
+    expect(unarchiveResponse.json()).toEqual({
+      error: "Jobs with cleaned local files must remain in history",
+    });
+  });
+
+  it("rejects local file cleanup while a job is running", async () => {
+    const jobId = "clean-running-job";
+    repo.createJob({
+      id: jobId,
+      instruction: "still running",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir: path.join(tmpDir, "clean-running-output"),
+      },
+    });
+    repo.setJobRunning(jobId);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/cleanup`,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "Local files can only be cleaned after the job finishes",
+    });
+    expect(repo.getJob(jobId)).not.toBeNull();
+  });
+
+  it("cleans files for every eligible archived job without touching active jobs", async () => {
+    const isolatedTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-api-bulk-cleanup-"));
+    const isolatedRepo = new JobsRepository(path.join(isolatedTmpDir, "jobs.db"));
+    const isolatedApp = await buildServer({
+      repo: isolatedRepo,
+      queue: new JobQueue(),
+    });
+    const outputRoot = path.join(isolatedTmpDir, "output");
+    const archivedJobIds = ["bulk-clean-archived-1", "bulk-clean-archived-2"];
+    const activeJobId = "bulk-clean-active";
+
+    const createFinishedJob = async (jobId: string, archived: boolean): Promise<string> => {
+      const outputDir = path.join(outputRoot, jobId);
+      const capturePath = path.join(outputDir, "capture.jpg");
+      const manifestPath = path.join(outputDir, "manifest.json");
+      await fs.mkdir(outputDir, { recursive: true });
+      await fs.writeFile(capturePath, "screenshot", "utf8");
+
+      const manifest: RunManifest = {
+        runId: jobId,
+        instruction: `capture ${jobId}`,
+        createdAt: new Date().toISOString(),
+        task: {
+          url: `https://example.com/${jobId}`,
+          waitUntil: "networkidle",
+          captures: [{ mode: "fullPage" }],
+          image: { format: "jpg", quality: 92, dpr: 2 },
+          viewport: { width: 1920, height: 1080 },
+          tags: [],
+          eagle: {},
+        },
+        sectionScope: "classic",
+        outputDir,
+        assets: [
+          {
+            kind: "fullPage",
+            label: "full_page",
+            filePath: capturePath,
+            fileName: "capture.jpg",
+            sourceUrl: `https://example.com/${jobId}`,
+            quality: 92,
+            dpr: 2,
+            capturedAt: new Date().toISOString(),
+            import: createPendingImportResult(),
+          },
+        ],
+      };
+      await fs.writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      isolatedRepo.createJob({
+        id: jobId,
+        instruction: manifest.instruction,
+        options: {
+          quality: 92,
+          dpr: "auto",
+          sectionScope: "classic",
+          classicMaxSections: 10,
+          mode: "single",
+          maxRoutes: 12,
+          outputDir: outputRoot,
+        },
+      });
+      isolatedRepo.setJobResult({
+        jobId,
+        status: "success",
+        manifestPath,
+        outputDir,
+        taskJson: JSON.stringify(manifest.task),
+      });
+      isolatedRepo.replaceAssets(jobId, manifest);
+      if (archived) {
+        isolatedRepo.setJobArchived(jobId, true);
+      }
+      return outputDir;
+    };
+
+    try {
+      const archivedOutputDirs = await Promise.all(
+        archivedJobIds.map((jobId) => createFinishedJob(jobId, true)),
+      );
+      const activeOutputDir = await createFinishedJob(activeJobId, false);
+
+      const previewResponse = await isolatedApp.inject({
+        method: "GET",
+        url: "/api/cleanup/archived",
+      });
+      expect(previewResponse.statusCode).toBe(200);
+      expect(previewResponse.json()).toEqual({
+        jobCount: 2,
+        assetCount: 2,
+      });
+
+      const cleanupResponse = await isolatedApp.inject({
+        method: "POST",
+        url: "/api/cleanup/archived",
+      });
+      expect(cleanupResponse.statusCode).toBe(200);
+      expect(cleanupResponse.json()).toMatchObject({
+        eligibleJobCount: 2,
+        eligibleAssetCount: 2,
+        cleanedCount: 2,
+        filesDeletedCount: 2,
+        failedCount: 0,
+        failures: [],
+      });
+
+      for (const [index, jobId] of archivedJobIds.entries()) {
+        expect(isolatedRepo.getJob(jobId)?.cleanedAt).toBeTruthy();
+        expect(isolatedRepo.getAssets(jobId)).toEqual([]);
+        await expect(fs.access(archivedOutputDirs[index])).rejects.toThrow();
+      }
+      expect(isolatedRepo.getJob(activeJobId)?.cleanedAt).toBeNull();
+      expect(isolatedRepo.getAssets(activeJobId)).toHaveLength(1);
+      await expect(fs.access(activeOutputDir)).resolves.toBeUndefined();
+
+      const emptyPreviewResponse = await isolatedApp.inject({
+        method: "GET",
+        url: "/api/cleanup/archived",
+      });
+      expect(emptyPreviewResponse.json()).toEqual({
+        jobCount: 0,
+        assetCount: 0,
+      });
+    } finally {
+      await isolatedApp.close();
+      isolatedRepo.close();
+      await fs.rm(isolatedTmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("auto-archives finished jobs older than a week on server startup", async () => {
     const isolatedTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-api-auto-archive-"));
     const isolatedDbPath = path.join(isolatedTmpDir, "jobs.db");
@@ -1911,11 +2381,11 @@ describe("server api", () => {
     });
   });
 
-  it("rejects retry-route for routes that are not failed", async () => {
+  it("rejects retry-route for routes that are neither successful nor failed", async () => {
     const seeded = await createManualCoreRoutesJob(repo, tmpDir, {
-      id: "manual-success-job",
+      id: "manual-skipped-job",
       jobStatus: "partial_success",
-      routeStatus: "success",
+      routeStatus: "skipped",
     });
 
     const retryResponse = await app.inject({
@@ -1928,7 +2398,7 @@ describe("server api", () => {
 
     expect(retryResponse.statusCode).toBe(400);
     expect(retryResponse.json()).toEqual({
-      error: "retry-route is only available for failed routes",
+      error: "retry-route is only available for successful or failed routes",
     });
   });
 

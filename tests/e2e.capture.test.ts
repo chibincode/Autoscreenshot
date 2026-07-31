@@ -11,6 +11,7 @@ import {
   resolveDpr,
   stabilizeFullPageViewport,
 } from "../src/browser/capture.js";
+import { stabilizeCaptureMotion } from "../src/browser/motion-stabilizer.js";
 import type { ParsedTask } from "../src/types.js";
 
 let server: http.Server | null = null;
@@ -162,6 +163,68 @@ function smoothScrollPageTemplate(): string {
           <h1>Smooth scroll demo</h1>
           <p>Used to verify fullPage viewport stabilization.</p>
         </main>
+      </body>
+    </html>
+  `;
+}
+
+function fixedCanvasRulerPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Fixed Canvas Ruler</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+          }
+          section {
+            min-height: 1080px;
+            padding: 96px;
+            box-sizing: border-box;
+          }
+          .panel-one {
+            background: rgb(238, 242, 255);
+          }
+          .panel-two {
+            background: rgb(220, 252, 231);
+          }
+          .panel-three {
+            background: rgb(255, 237, 213);
+          }
+          .horizontal-ruler {
+            position: fixed;
+            inset: 0 0 auto 0;
+            width: 100vw;
+            height: 24px;
+            z-index: 9999;
+          }
+          .vertical-ruler {
+            position: fixed;
+            inset: 0 auto 0 0;
+            width: 24px;
+            height: 100vh;
+            z-index: 9999;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <section class="panel-one"><h1>Canvas ruler hero</h1></section>
+          <section class="panel-two"><h2>Second viewport</h2></section>
+          <section class="panel-three"><h2>Third viewport</h2></section>
+        </main>
+        <canvas class="horizontal-ruler" width="1920" height="24"></canvas>
+        <canvas class="vertical-ruler" width="24" height="1080"></canvas>
+        <script>
+          const horizontal = document.querySelector('.horizontal-ruler').getContext('2d');
+          horizontal.fillStyle = 'rgb(220, 38, 38)';
+          horizontal.fillRect(0, 0, 1920, 24);
+
+          const vertical = document.querySelector('.vertical-ruler').getContext('2d');
+          vertical.fillStyle = 'rgb(37, 99, 235)';
+          vertical.fillRect(0, 0, 24, 1080);
+        </script>
       </body>
     </html>
   `;
@@ -1731,6 +1794,11 @@ beforeAll(async () => {
       res.end(smoothScrollPageTemplate());
       return;
     }
+    if (pathname.startsWith("/fixed-canvas-ruler")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(fixedCanvasRulerPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/section-sticky-nav")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(sectionStickyNavPageTemplate());
@@ -1905,6 +1973,49 @@ describe("fullPage stabilization", () => {
 });
 
 describe("fullPage tiled capture", () => {
+  it("keeps a fixed canvas ruler once instead of repeating it at every viewport seam", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-fixed-canvas-ruler-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/fixed-canvas-ruler`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs.some((message) => message.includes("top_overlay_hidden_for_tiles"))).toBe(true);
+
+    const topHorizontalRuler = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 500, top: 10, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondViewportContent = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 500, top: 1090, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondViewportVerticalRuler = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 10, top: 1090, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(topHorizontalRuler[0]).toBeGreaterThan(topHorizontalRuler[1] + 100);
+    expect(secondViewportContent[1]).toBeGreaterThan(secondViewportContent[0]);
+    expect(secondViewportContent[1]).toBeGreaterThan(secondViewportContent[2]);
+    expect(secondViewportVerticalRuler[2]).toBeGreaterThan(secondViewportVerticalRuler[0] + 100);
+  }, 40_000);
+
   it("waits for delayed hero content before fullPage capture", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-delayed-hero-"));
     const logs: string[] = [];
@@ -2703,6 +2814,93 @@ describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {
     expect(featureCount).toBeGreaterThanOrEqual(2);
     expect(new Set(featureAssets.map((asset) => asset.fileName)).size).toBe(featureCount);
     expect(sectionAssets.some((asset) => asset.sectionType === "faq")).toBe(true);
+  });
+
+  it("finishes finite animations and freezes looping motion before capture", async () => {
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+      reducedMotion: "reduce",
+    });
+    const page = await context.newPage();
+
+    try {
+      await page.setContent(`
+        <style>
+          .word {
+            display: inline-block;
+            transition: transform 20s linear;
+          }
+          .finite {
+            animation: settle-word 20s both;
+          }
+          .loop {
+            animation: loop-word 20s linear infinite;
+          }
+          @keyframes settle-word {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+          @keyframes loop-word {
+            from { transform: translateX(0); }
+            to { transform: translateX(200px); }
+          }
+        </style>
+        <h1>
+          Move <span class="word finite">fast</span>
+          <span class="word loop">safely</span>
+        </h1>
+        <video autoplay muted></video>
+        <script>
+          const video = document.querySelector("video");
+          let currentTime = 0.5;
+          Object.defineProperty(video, "duration", { value: 10 });
+          Object.defineProperty(video, "readyState", {
+            value: HTMLMediaElement.HAVE_ENOUGH_DATA,
+          });
+          Object.defineProperty(video, "currentTime", {
+            get: () => currentTime,
+            set: (value) => {
+              currentTime = value;
+              queueMicrotask(() => video.dispatchEvent(new Event("seeked")));
+            },
+          });
+        </script>
+      `);
+
+      const logs: string[] = [];
+      const result = await stabilizeCaptureMotion(page, (_level, message) => logs.push(message), "test");
+      const firstState = await page.evaluate(() => ({
+        finite: getComputedStyle(document.querySelector(".finite")!).transform,
+        loop: getComputedStyle(document.querySelector(".loop")!).transform,
+        duration: getComputedStyle(document.querySelector(".finite")!).animationDuration,
+        transition: getComputedStyle(document.querySelector(".word")!).transitionDuration,
+        videoTime: document.querySelector("video")!.currentTime,
+        videoFrame: document.querySelector("video")!.getAttribute("data-autosnap-video-frame"),
+      }));
+      await page.waitForTimeout(120);
+      const secondState = await page.evaluate(() => ({
+        finite: getComputedStyle(document.querySelector(".finite")!).transform,
+        loop: getComputedStyle(document.querySelector(".loop")!).transform,
+        duration: getComputedStyle(document.querySelector(".finite")!).animationDuration,
+        transition: getComputedStyle(document.querySelector(".word")!).transitionDuration,
+        videoTime: document.querySelector("video")!.currentTime,
+        videoFrame: document.querySelector("video")!.getAttribute("data-autosnap-video-frame"),
+      }));
+
+      expect(result.animationsFound).toBeGreaterThanOrEqual(1);
+      expect(result.mediaFound).toBe(1);
+      expect(result.videoFramesSeeked).toBe(1);
+      expect(firstState).toEqual(secondState);
+      expect(firstState.duration).toBe("0.001s");
+      expect(firstState.transition).toBe("0s");
+      expect(firstState.videoTime).toBeCloseTo(8.5, 2);
+      expect(firstState.videoFrame).toBe("8.500");
+      expect(logs.some((message) => message.includes("motion_stabilized phase=test"))).toBe(true);
+    } finally {
+      await context.close();
+      await browser.close();
+    }
   });
 
   it("captures blog page", async () => {

@@ -46,7 +46,7 @@ export interface DiscoverySettleEvent {
 }
 
 const RESOURCE_EXT_RE = /\.(pdf|zip|png|jpe?g|gif|svg|webp|mp4|webm|mov|mp3|wav|json|xml|txt|ico)$/i;
-const EXCLUDED_PREFIXES = ["/search", "/tag", "/tags", "/author", "/category"];
+const EXCLUDED_PREFIXES = ["/search", "/tag", "/tags", "/author", "/category", "/legal"];
 const EXCLUDED_EXACT = new Set(["/privacy", "/privacy-policy", "/terms", "/terms-of-service", "/cookie", "/cookies"]);
 const PAGE_PAGINATION_RE = /^\/page\/\d+\/?$/i;
 const REDIRECT_RESOLVE_TIMEOUT_MS = 10_000;

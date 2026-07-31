@@ -11,6 +11,7 @@ import {
 } from "./navigation.js";
 import { cleanupCaptureOverlays } from "./overlay-cleanup.js";
 import { waitForRenderStability } from "./render-readiness.js";
+import { stabilizeCaptureMotion } from "./motion-stabilizer.js";
 import { captureFooterRevealReplacements } from "./footer-reveals.js";
 import {
   captureTopOverlayReplacement,
@@ -423,6 +424,7 @@ async function captureSectionClipImage(params: {
     await params.page.evaluate((targetY) => window.scrollTo(0, targetY), scrollY);
     await params.page.waitForTimeout(120);
     await waitForRenderableMedia(params.page, params.log, "viewport");
+    await stabilizeCaptureMotion(params.page, params.log, "section_clip");
 
     const actualScrollY = await params.page
       .evaluate(() => Math.round(window.scrollY || document.documentElement.scrollTop || 0))
@@ -1061,6 +1063,7 @@ async function captureOnce(
   const context = await browser.newContext({
     viewport: task.viewport,
     deviceScaleFactor: forcedDpr,
+    reducedMotion: "reduce",
   });
   const page = await context.newPage();
 
@@ -1087,6 +1090,7 @@ async function captureOnce(
       log: options.log,
       phase: "pre_capture",
     });
+    await stabilizeCaptureMotion(page, options.log, "initial");
     const topOverlayReplacements = hasFullPageCapture
       ? await captureTopOverlayReplacement({
           page,
@@ -1114,6 +1118,7 @@ async function captureOnce(
       log: options.log,
       phase: "pre_capture",
     });
+    await stabilizeCaptureMotion(page, options.log, "post_warmup");
 
     const pageTitle = (await page.title()).trim() || undefined;
     let pageSize = await getPageDimensions(page);
@@ -1155,6 +1160,7 @@ async function captureOnce(
         dpr: forcedDpr,
         log: options.log,
         beforeTileCapture: async () => {
+          await stabilizeCaptureMotion(page, options.log, "tile_capture");
           await sweepCaptureOverlays({
             page,
             log: options.log,
@@ -1298,6 +1304,7 @@ export async function captureTask(
   const probeContext = await probeBrowser.newContext({
     viewport: task.viewport,
     deviceScaleFactor: preferredDpr,
+    reducedMotion: "reduce",
   });
   const probePage = await probeContext.newPage();
   let resolvedDpr = preferredDpr;

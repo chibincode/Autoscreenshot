@@ -53,6 +53,11 @@ interface JobRow {
   started_at: string | null;
   finished_at: string | null;
   archived_at: string | null;
+  cleaned_at: string | null;
+  cleaned_asset_count: number;
+  cleaned_pending_count: number;
+  cleaned_imported_count: number;
+  cleaned_failed_count: number;
   updated_at: string;
 }
 
@@ -119,6 +124,8 @@ interface HistoryLookupRow {
   created_at: string;
   options_json: string;
   latest_captured_at: string;
+  cleaned_at: string | null;
+  cleaned_asset_count: number;
 }
 
 interface AssetByEagleIdRow {
@@ -141,6 +148,7 @@ function toJobRecord(row: JobRow): JobRecord {
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     archivedAt: row.archived_at,
+    cleanedAt: row.cleaned_at,
     updatedAt: row.updated_at,
   };
 }
@@ -269,6 +277,11 @@ export class JobsRepository {
         started_at TEXT,
         finished_at TEXT,
         archived_at TEXT,
+        cleaned_at TEXT,
+        cleaned_asset_count INTEGER NOT NULL DEFAULT 0,
+        cleaned_pending_count INTEGER NOT NULL DEFAULT 0,
+        cleaned_imported_count INTEGER NOT NULL DEFAULT 0,
+        cleaned_failed_count INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
 
@@ -321,19 +334,51 @@ export class JobsRepository {
         UNIQUE(job_id, url)
       );
 
+      CREATE TABLE IF NOT EXISTS job_history_urls (
+        job_id TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        captured_at TEXT NOT NULL,
+        PRIMARY KEY(job_id, source_url),
+        FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+      );
+
       CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_assets_job_id ON assets(job_id);
       CREATE INDEX IF NOT EXISTS idx_logs_job_id ON job_logs(job_id);
       CREATE INDEX IF NOT EXISTS idx_route_targets_job_id ON route_targets(job_id);
       CREATE INDEX IF NOT EXISTS idx_route_targets_status ON route_targets(status);
+      CREATE INDEX IF NOT EXISTS idx_job_history_urls_source_url ON job_history_urls(source_url);
     `);
 
     const columns = this.db.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>;
     if (!columns.some((column) => column.name === "archived_at")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN archived_at TEXT;");
     }
+    if (!columns.some((column) => column.name === "cleaned_at")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN cleaned_at TEXT;");
+    }
+    if (!columns.some((column) => column.name === "cleaned_asset_count")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN cleaned_asset_count INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!columns.some((column) => column.name === "cleaned_pending_count")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN cleaned_pending_count INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!columns.some((column) => column.name === "cleaned_imported_count")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN cleaned_imported_count INTEGER NOT NULL DEFAULT 0;");
+    }
+    if (!columns.some((column) => column.name === "cleaned_failed_count")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN cleaned_failed_count INTEGER NOT NULL DEFAULT 0;");
+    }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_archived_created_at ON jobs(archived_at, created_at DESC);");
+    this.db.exec(`
+      INSERT INTO job_history_urls (job_id, source_url, captured_at)
+      SELECT job_id, source_url, MAX(captured_at)
+      FROM assets
+      GROUP BY job_id, source_url
+      ON CONFLICT(job_id, source_url) DO UPDATE SET
+        captured_at = MAX(job_history_urls.captured_at, excluded.captured_at);
+    `);
   }
 
   private migrateAssetImportState(): void {
@@ -717,6 +762,12 @@ export class JobsRepository {
           @folderOverrideId
         )
       `);
+      const upsertHistoryUrl = this.db.prepare(`
+        INSERT INTO job_history_urls (job_id, source_url, captured_at)
+        VALUES (@jobId, @sourceUrl, @capturedAt)
+        ON CONFLICT(job_id, source_url) DO UPDATE SET
+          captured_at = MAX(job_history_urls.captured_at, excluded.captured_at)
+      `);
       const seenIds = new Set<number>();
 
       for (const asset of currentManifest.assets) {
@@ -738,6 +789,11 @@ export class JobsRepository {
           eagleId: importState.eagleId ?? null,
           folderOverrideId: asset.folderOverrideId ?? null,
         };
+        upsertHistoryUrl.run({
+          jobId: id,
+          sourceUrl: asset.sourceUrl,
+          capturedAt: asset.capturedAt,
+        });
         const fingerprint = buildManifestAssetFingerprint(asset);
         const matched = existingByFingerprint.get(fingerprint)?.shift();
         if (matched) {
@@ -763,6 +819,124 @@ export class JobsRepository {
     });
     tx(jobId, manifest);
     this.touchJob(jobId, now);
+  }
+
+  cleanJobFiles(jobId: string): JobRecord | null {
+    const job = this.getJob(jobId);
+    if (!job) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const tx = this.db.transaction((id: string, cleanedAt: string) => {
+      const current = this.db
+        .prepare("SELECT cleaned_at FROM jobs WHERE id = ?")
+        .get(id) as { cleaned_at: string | null } | undefined;
+      if (!current || current.cleaned_at) {
+        return;
+      }
+
+      this.db
+        .prepare(
+          `
+          INSERT INTO job_history_urls (job_id, source_url, captured_at)
+          SELECT job_id, source_url, MAX(captured_at)
+          FROM assets
+          WHERE job_id = ?
+          GROUP BY job_id, source_url
+          ON CONFLICT(job_id, source_url) DO UPDATE SET
+            captured_at = MAX(job_history_urls.captured_at, excluded.captured_at)
+        `,
+        )
+        .run(id);
+
+      const counts = this.db
+        .prepare(
+          `
+          SELECT
+            COUNT(*) AS asset_count,
+            SUM(CASE WHEN import_status = 'pending_confirmation' AND selected_for_import = 1 THEN 1 ELSE 0 END) AS pending_count,
+            SUM(CASE WHEN import_status = 'imported' THEN 1 ELSE 0 END) AS imported_count,
+            SUM(CASE WHEN import_status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+          FROM assets
+          WHERE job_id = ?
+        `,
+        )
+        .get(id) as {
+        asset_count: number;
+        pending_count: number | null;
+        imported_count: number | null;
+        failed_count: number | null;
+      };
+
+      this.db.prepare("DELETE FROM assets WHERE job_id = ?").run(id);
+      this.db.prepare("DELETE FROM job_logs WHERE job_id = ?").run(id);
+      this.db.prepare("DELETE FROM route_targets WHERE job_id = ?").run(id);
+      this.db
+        .prepare(
+          `
+          UPDATE jobs
+          SET manifest_path = NULL,
+              output_dir = NULL,
+              cleaned_at = @cleanedAt,
+              archived_at = COALESCE(archived_at, @cleanedAt),
+              cleaned_asset_count = @assetCount,
+              cleaned_pending_count = @pendingCount,
+              cleaned_imported_count = @importedCount,
+              cleaned_failed_count = @failedCount,
+              updated_at = @cleanedAt
+          WHERE id = @jobId
+        `,
+        )
+        .run({
+          jobId: id,
+          cleanedAt,
+          assetCount: Number(counts.asset_count) || 0,
+          pendingCount: Number(counts.pending_count) || 0,
+          importedCount: Number(counts.imported_count) || 0,
+          failedCount: Number(counts.failed_count) || 0,
+        });
+    });
+
+    tx(jobId, now);
+    return this.getJob(jobId);
+  }
+
+  listArchivedJobsWithFiles(): JobRecord[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM jobs
+        WHERE archived_at IS NOT NULL
+          AND cleaned_at IS NULL
+          AND status NOT IN ('queued', 'running')
+        ORDER BY created_at DESC
+      `,
+      )
+      .all() as JobRow[];
+    return rows.map(toJobRecord);
+  }
+
+  getArchivedCleanupSummary(): { jobCount: number; assetCount: number } {
+    const row = this.db
+      .prepare(
+        `
+        SELECT
+          COUNT(DISTINCT j.id) AS job_count,
+          COUNT(a.id) AS asset_count
+        FROM jobs j
+        LEFT JOIN assets a ON a.job_id = j.id
+        WHERE j.archived_at IS NOT NULL
+          AND j.cleaned_at IS NULL
+          AND j.status NOT IN ('queued', 'running')
+      `,
+      )
+      .get() as { job_count: number; asset_count: number };
+    return {
+      jobCount: Number(row.job_count) || 0,
+      assetCount: Number(row.asset_count) || 0,
+    };
   }
 
   getAssets(jobId: string): AssetRecord[] {
@@ -833,10 +1007,19 @@ export class JobsRepository {
         `
       SELECT
         j.*,
-        COUNT(a.id) AS asset_count,
-        SUM(CASE WHEN a.import_status = 'pending_confirmation' AND a.selected_for_import = 1 THEN 1 ELSE 0 END) AS pending_confirmation_count,
-        SUM(CASE WHEN a.import_status = 'imported' THEN 1 ELSE 0 END) AS import_success_count,
-        SUM(CASE WHEN a.import_status = 'failed' THEN 1 ELSE 0 END) AS import_failed_count
+        CASE WHEN j.cleaned_at IS NOT NULL THEN j.cleaned_asset_count ELSE COUNT(a.id) END AS asset_count,
+        CASE
+          WHEN j.cleaned_at IS NOT NULL THEN j.cleaned_pending_count
+          ELSE SUM(CASE WHEN a.import_status = 'pending_confirmation' AND a.selected_for_import = 1 THEN 1 ELSE 0 END)
+        END AS pending_confirmation_count,
+        CASE
+          WHEN j.cleaned_at IS NOT NULL THEN j.cleaned_imported_count
+          ELSE SUM(CASE WHEN a.import_status = 'imported' THEN 1 ELSE 0 END)
+        END AS import_success_count,
+        CASE
+          WHEN j.cleaned_at IS NOT NULL THEN j.cleaned_failed_count
+          ELSE SUM(CASE WHEN a.import_status = 'failed' THEN 1 ELSE 0 END)
+        END AS import_failed_count
       FROM jobs j
       LEFT JOIN assets a ON a.job_id = j.id
       ${whereSql}
@@ -872,6 +1055,7 @@ export class JobsRepository {
       importFailedCount: Number(row.import_failed_count) || 0,
       sourceUrl: resolveJobSourceUrl(row),
       archivedAt: row.archived_at,
+      cleanedAt: row.cleaned_at,
     }));
 
     return {
@@ -899,14 +1083,16 @@ export class JobsRepository {
         j.status,
         j.created_at,
         j.options_json,
-        MAX(a.captured_at) AS latest_captured_at
+        j.cleaned_at,
+        j.cleaned_asset_count,
+        MAX(h.captured_at) AS latest_captured_at
       FROM jobs j
-      INNER JOIN assets a ON a.job_id = j.id
+      INNER JOIN job_history_urls h ON h.job_id = j.id
       WHERE (
-        a.source_url LIKE @httpsHost
-        OR a.source_url LIKE @httpHost
-        OR a.source_url LIKE @httpsWwwHost
-        OR a.source_url LIKE @httpWwwHost
+        h.source_url LIKE @httpsHost
+        OR h.source_url LIKE @httpHost
+        OR h.source_url LIKE @httpsWwwHost
+        OR h.source_url LIKE @httpWwwHost
       )
       GROUP BY j.id
       ORDER BY latest_captured_at DESC
@@ -922,10 +1108,12 @@ export class JobsRepository {
 
     const matchedJobs: PluginContextHistoryJob[] = [];
     for (const candidate of candidates) {
-      const assets = this.getAssets(candidate.id);
-      const hasMatch = assets.some((asset) => {
+      const historyUrls = this.db
+        .prepare("SELECT source_url FROM job_history_urls WHERE job_id = ?")
+        .all(candidate.id) as Array<{ source_url: string }>;
+      const hasMatch = historyUrls.some((row) => {
         const normalizedSourceUrl = normalizeUrlForComparison(
-          asset.sourceUrl,
+          row.source_url,
           params.urlNormalization,
         );
         return normalizedSourceUrl === params.normalizedUrl;
@@ -939,7 +1127,10 @@ export class JobsRepository {
         status: candidate.status,
         createdAt: candidate.created_at,
         mode: parseJobMode(candidate.options_json),
-        assetCount: assets.length,
+        assetCount:
+          candidate.cleaned_at !== null
+            ? Number(candidate.cleaned_asset_count) || 0
+            : this.getAssets(candidate.id).length,
       });
       if (matchedJobs.length >= limit) {
         break;

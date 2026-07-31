@@ -11,6 +11,10 @@ const TOP_OVERLAY_SELECTORS = [
   '[data-framer-name*="Header" i]',
   '[class*="nav" i]',
   '[class*="header" i]',
+  // Some design-tool sites render viewport rulers as fixed canvases instead of
+  // semantic navigation. The geometry checks below keep ordinary in-flow and
+  // full-screen WebGL canvases out of this cleanup path.
+  "canvas",
 ].join(",");
 const TOP_OVERLAY_MAX_TOP = 24;
 const TOP_OVERLAY_MAX_HEIGHT = 240;
@@ -69,7 +73,7 @@ async function findTopOverlayCandidate(params: {
         const isTopPinned =
           (style.position === "fixed" || style.position === "sticky") &&
           rect.top <= maxTop &&
-          rect.bottom > minHeight;
+          rect.bottom >= minHeight;
 
         if (
           !isTopPinned ||
@@ -87,7 +91,9 @@ async function findTopOverlayCandidate(params: {
         const hasMeaningfulContent =
           (element.textContent || pinnedElement.textContent || "").trim().length > 0 ||
           element.querySelector("a, button, img, svg") !== null ||
-          pinnedElement.querySelector("a, button, img, svg") !== null;
+          pinnedElement.querySelector("a, button, img, svg") !== null ||
+          element.tagName.toLowerCase() === "canvas" ||
+          pinnedElement.tagName.toLowerCase() === "canvas";
         if (!hasMeaningfulContent) {
           continue;
         }
@@ -213,12 +219,14 @@ export async function hideTopOverlaysForCapture(params: {
         const hasMeaningfulContent =
           (element.textContent || pinnedElement.textContent || "").trim().length > 0 ||
           element.querySelector("a, button, img, svg") !== null ||
-          pinnedElement.querySelector("a, button, img, svg") !== null;
+          pinnedElement.querySelector("a, button, img, svg") !== null ||
+          element.tagName.toLowerCase() === "canvas" ||
+          pinnedElement.tagName.toLowerCase() === "canvas";
 
         if (
           (pinnedStyle.position === "fixed" || pinnedStyle.position === "sticky") &&
           rect.top <= maxTop &&
-          rect.bottom > minHeight &&
+          rect.bottom >= minHeight &&
           rect.top < viewportHeight &&
           rect.width >= pageWidth * minWidthRatio &&
           rect.height >= minHeight &&

@@ -423,6 +423,7 @@ summary:focus-visible {
 .detail-actions button,
 .pagination button,
 .core-route-card-actions button,
+.route-rerun-button,
 .asset-card-actions button,
 .asset-preview-actions button,
 .route-row button,
@@ -461,6 +462,7 @@ summary:focus-visible {
 .detail-actions button:disabled,
 .pagination button:disabled,
 .core-route-card-actions button:disabled,
+.route-rerun-button:disabled,
 .asset-card-actions button:disabled,
 .asset-preview-actions button:disabled,
 .route-row button:disabled,
@@ -477,6 +479,7 @@ summary:focus-visible {
 .detail-actions button,
 .pagination button,
 .core-route-card-actions button,
+.route-rerun-button,
 .asset-card-actions button,
 .asset-preview-actions button,
 .route-row button,
@@ -491,14 +494,15 @@ summary:focus-visible {
     0 1px 0 rgba(255, 255, 255, 0.75);
 }
 
-.detail-actions button:hover,
+.detail-actions button:hover:not(:disabled),
 .pagination button:hover:not(:disabled),
-.core-route-card-actions button:hover,
-.asset-card-actions button:hover,
-.asset-preview-actions button:hover,
-.route-row button:hover,
-.asset-preview-close:hover,
-.focus-clear-btn:hover {
+.core-route-card-actions button:hover:not(:disabled),
+.route-rerun-button:hover:not(:disabled),
+.asset-card-actions button:hover:not(:disabled),
+.asset-preview-actions button:hover:not(:disabled),
+.route-row button:hover:not(:disabled),
+.asset-preview-close:hover:not(:disabled),
+.focus-clear-btn:hover:not(:disabled) {
   transform: translateY(-1px);
   background: var(--surface);
   box-shadow:
@@ -512,7 +516,7 @@ summary:focus-visible {
   box-shadow: inset 0 0 0 1px rgba(123, 87, 65, 0.08);
 }
 
-.detail-actions .danger-button:hover {
+.detail-actions .danger-button:hover:not(:disabled) {
   background: var(--warm-tint-strong);
 }
 
@@ -547,6 +551,67 @@ summary:focus-visible {
   font-size: 1.5rem;
   font-weight: 650;
   letter-spacing: -0.03em;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bulk-clean-button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--warm-tint);
+  color: var(--warm-text);
+  font-size: 0.84rem;
+  font-weight: 650;
+  box-shadow:
+    inset 0 0 0 1px rgba(123, 87, 65, 0.1),
+    0 7px 16px rgba(123, 87, 65, 0.06);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    transform 160ms ease,
+    background-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.bulk-clean-button:hover:not(:disabled),
+.bulk-clean-button:focus-visible:not(:disabled) {
+  transform: translateY(-1px);
+  background: var(--warm-tint-strong);
+  box-shadow:
+    inset 0 0 0 1px rgba(123, 87, 65, 0.14),
+    0 10px 20px rgba(123, 87, 65, 0.09);
+}
+
+.bulk-clean-button:disabled {
+  cursor: default;
+  opacity: 0.58;
+  box-shadow: inset 0 0 0 1px rgba(123, 87, 65, 0.08);
+}
+
+.bulk-clean-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.68);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .filters {
@@ -838,10 +903,22 @@ summary:focus-visible {
     0 10px 22px rgba(10, 132, 255, 0.11);
 }
 
-.job-card-quick-action {
+.job-card-quick-actions {
   position: absolute;
   right: 14px;
   bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.job-card-quick-action {
   min-height: 30px;
   padding: 0 12px;
   border: 0;
@@ -855,20 +932,15 @@ summary:focus-visible {
   box-shadow:
     inset 0 0 0 1px rgba(17, 24, 39, 0.05),
     0 6px 16px rgba(15, 23, 42, 0.06);
-  opacity: 0;
-  transform: translateY(4px);
-  pointer-events: none;
   transition:
-    opacity 160ms ease,
-    transform 160ms ease,
     background-color 160ms ease,
     color 160ms ease,
     box-shadow 160ms ease;
 }
 
-.job-card:hover .job-card-quick-action,
-.job-card.selected .job-card-quick-action,
-.job-card:focus-within .job-card-quick-action {
+.job-card:hover .job-card-quick-actions,
+.job-card.selected .job-card-quick-actions,
+.job-card:focus-within .job-card-quick-actions {
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
@@ -897,6 +969,26 @@ summary:focus-visible {
   box-shadow:
     inset 0 0 0 1px rgba(10, 132, 255, 0.18),
     0 10px 20px rgba(10, 132, 255, 0.1);
+}
+
+.job-card .job-card-clean-action,
+.job-card.selected .job-card-clean-action {
+  background: var(--warm-tint);
+  color: var(--warm-text);
+  box-shadow:
+    inset 0 0 0 1px rgba(123, 87, 65, 0.1),
+    0 6px 16px rgba(123, 87, 65, 0.06);
+}
+
+.job-card .job-card-clean-action:hover,
+.job-card .job-card-clean-action:focus-visible,
+.job-card.selected .job-card-clean-action:hover,
+.job-card.selected .job-card-clean-action:focus-visible {
+  background: var(--warm-tint-strong);
+  color: var(--warm-text);
+  box-shadow:
+    inset 0 0 0 1px rgba(123, 87, 65, 0.14),
+    0 10px 20px rgba(123, 87, 65, 0.09);
 }
 
 .job-top {
@@ -966,7 +1058,8 @@ summary:focus-visible {
   min-width: 0;
 }
 
-.job-archived-pill {
+.job-archived-pill,
+.job-cleaned-pill {
   display: inline-flex;
   align-items: center;
   min-height: 28px;
@@ -980,6 +1073,11 @@ summary:focus-visible {
   text-transform: lowercase;
 }
 
+.job-cleaned-pill {
+  background: rgba(224, 237, 230, 0.94);
+  color: #426353;
+}
+
 .job-time {
   flex: 0 1 auto;
   font-size: 0.75rem;
@@ -988,10 +1086,15 @@ summary:focus-visible {
   white-space: nowrap;
 }
 
-.job-archived-note {
+.job-archived-note,
+.job-cleaned-note {
   font-size: 0.76rem;
   color: var(--text-subtle);
   white-space: nowrap;
+}
+
+.job-cleaned-note {
+  color: #557064;
 }
 
 .status {
@@ -1147,6 +1250,20 @@ summary:focus-visible {
   line-height: 1.55;
 }
 
+.design-system-link {
+  width: fit-content;
+  margin-top: 4px;
+  color: var(--accent-blue-text);
+  font-size: 0.78rem;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.design-system-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .detail-status {
   display: grid;
   justify-items: end;
@@ -1177,6 +1294,32 @@ summary:focus-visible {
   gap: 8px 10px;
   color: var(--text-muted);
   font-size: 0.81rem;
+}
+
+.detail-cleaned-note {
+  color: #426353;
+  font-weight: 650;
+}
+
+.cleaned-history-state {
+  padding: 24px;
+  border: 1px solid rgba(72, 105, 87, 0.14);
+  border-radius: 8px;
+  background: rgba(239, 246, 242, 0.78);
+  color: #426353;
+}
+
+.cleaned-history-state strong {
+  display: block;
+  font-size: 0.92rem;
+}
+
+.cleaned-history-state p {
+  max-width: 620px;
+  margin: 7px 0 0;
+  color: #62786d;
+  font-size: 0.81rem;
+  line-height: 1.5;
 }
 
 .detail-actions .primary-button {
@@ -1908,6 +2051,19 @@ summary:focus-visible {
   gap: 10px;
   padding: 0;
   min-height: 30px;
+}
+
+.asset-toolbar-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.route-rerun-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .asset-icon-button {
@@ -3034,6 +3190,26 @@ summary:focus-visible {
   font-size: 0.88rem;
 }
 
+@media (max-width: 1440px) {
+  .detail-header {
+    flex-direction: column;
+  }
+
+  .core-route-card-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detail-status {
+    justify-items: start;
+  }
+
+  .detail-status-note {
+    max-width: 100%;
+    text-align: left;
+    white-space: normal;
+  }
+}
+
 @media (max-width: 1180px) {
   body {
     overflow: auto;
@@ -3077,6 +3253,10 @@ summary:focus-visible {
     align-items: stretch;
   }
 
+  .toolbar-actions {
+    justify-content: stretch;
+  }
+
   .runtime-banner {
     flex-direction: column;
     align-items: stretch;
@@ -3088,6 +3268,10 @@ summary:focus-visible {
 
   .filters {
     width: 100%;
+  }
+
+  .bulk-clean-button {
+    min-width: 168px;
   }
 
   .core-route-card-list {
@@ -3144,7 +3328,7 @@ summary:focus-visible {
     border-radius: 22px;
   }
 
-  .job-card-quick-action {
+  .job-card-quick-actions {
     opacity: 1;
     transform: none;
     pointer-events: auto;
@@ -3152,6 +3336,15 @@ summary:focus-visible {
 
   .filters {
     flex-direction: column;
+  }
+
+  .toolbar-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .bulk-clean-button {
+    width: 100%;
   }
 
   .core-route-card-list {

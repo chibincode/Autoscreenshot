@@ -1,4 +1,5 @@
 import { useEffect, useId } from "react";
+import { Button } from "./ui/Button";
 
 export type ActionDialogTone = "default" | "danger";
 
@@ -62,17 +63,18 @@ export function ActionDialog({
           <p id={descriptionId}>{description}</p>
         </div>
         <div className="confirm-modal-actions">
-          <button type="button" className="confirm-secondary-button" onClick={onCancel} disabled={pending}>
+          <Button variant="secondary" size="md" onClick={onCancel} disabled={pending}>
             {cancelLabel}
-          </button>
-          <button
-            type="button"
-            className={tone === "danger" ? "confirm-danger-button" : "confirm-primary-button"}
+          </Button>
+          <Button
+            variant={tone === "danger" ? "danger" : "primary"}
+            size="md"
             onClick={onConfirm}
-            disabled={pending}
+            loading={pending}
+            loadingLabel="处理中..."
           >
-            {pending ? "处理中..." : confirmLabel}
-          </button>
+            {confirmLabel}
+          </Button>
         </div>
       </div>
     </div>

@@ -368,6 +368,7 @@ export interface JobRecord {
   startedAt: string | null;
   finishedAt: string | null;
   archivedAt: string | null;
+  cleanedAt: string | null;
   updatedAt: string;
 }
 
@@ -419,6 +420,7 @@ export interface JobSummary {
   importFailedCount: number;
   sourceUrl: string | null;
   archivedAt: string | null;
+  cleanedAt: string | null;
 }
 
 export interface PluginContextHistoryJob {

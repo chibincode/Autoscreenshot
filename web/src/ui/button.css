@@ -1,0 +1,216 @@
+:root {
+  --control-height-sm: 34px;
+  --control-height-md: 38px;
+  --control-height-lg: 46px;
+  --control-radius: 999px;
+  --control-pad-sm: 12px;
+  --control-pad-md: 15px;
+  --control-pad-lg: 18px;
+  --action-primary-top: #2f3742;
+  --action-primary-bottom: #1f252d;
+  --action-primary-hover-top: #36404d;
+  --action-primary-hover-bottom: #232a33;
+  --action-danger-top: #946347;
+  --action-danger-bottom: #76513d;
+}
+
+.ui-button {
+  position: relative;
+  isolation: isolate;
+  display: inline-grid;
+  place-items: center;
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
+  border-radius: var(--control-radius);
+  color: var(--text);
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-font-smoothing: antialiased;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease,
+    opacity 160ms ease;
+}
+
+.ui-button.ui-button--sm {
+  min-height: var(--control-height-sm);
+  padding: 0 var(--control-pad-sm);
+  font-size: 0.81rem;
+}
+
+.ui-button.ui-button--md {
+  min-height: var(--control-height-md);
+  padding: 0 var(--control-pad-md);
+  font-size: 0.85rem;
+}
+
+.ui-button.ui-button--lg {
+  min-height: var(--control-height-lg);
+  padding: 0 var(--control-pad-lg);
+  font-size: 0.9rem;
+}
+
+.ui-button.ui-button--block {
+  width: 100%;
+}
+
+.ui-button__content,
+.ui-button__label,
+.ui-button__loading-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.ui-button__content {
+  display: grid;
+}
+
+.ui-button__label,
+.ui-button__loading-label {
+  grid-area: 1 / 1;
+}
+
+.ui-button__loading-label {
+  visibility: hidden;
+}
+
+.ui-button[data-loading="true"] .ui-button__label {
+  visibility: hidden;
+}
+
+.ui-button[data-loading="true"] .ui-button__loading-label {
+  visibility: visible;
+}
+
+.ui-button__spinner {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ui-button-spin 720ms linear infinite;
+}
+
+.ui-button.ui-button--primary {
+  background: linear-gradient(180deg, var(--action-primary-top), var(--action-primary-bottom));
+  color: #f8f9fb;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 12px 24px rgba(15, 23, 42, 0.16);
+}
+
+.ui-button.ui-button--primary:hover:not(:disabled),
+.ui-button.ui-button--primary:focus-visible:not(:disabled) {
+  background: linear-gradient(180deg, var(--action-primary-hover-top), var(--action-primary-hover-bottom));
+  color: #fff;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 15px 28px rgba(15, 23, 42, 0.19);
+}
+
+.ui-button.ui-button--primary[data-blocked="true"] {
+  background: linear-gradient(180deg, rgba(255, 247, 236, 0.98), rgba(255, 238, 216, 0.96));
+  color: var(--warm-text);
+  box-shadow:
+    inset 0 0 0 1px rgba(155, 107, 55, 0.14),
+    0 10px 20px rgba(155, 107, 55, 0.08);
+}
+
+.ui-button.ui-button--primary[data-blocked="true"]:hover:not(:disabled),
+.ui-button.ui-button--primary[data-blocked="true"]:focus-visible:not(:disabled) {
+  background: linear-gradient(180deg, rgba(255, 242, 222, 1), rgba(255, 231, 199, 0.98));
+  color: var(--warm-text);
+  box-shadow:
+    inset 0 0 0 1px rgba(155, 107, 55, 0.2),
+    0 12px 24px rgba(155, 107, 55, 0.12);
+}
+
+.ui-button.ui-button--secondary {
+  background: var(--surface-soft);
+  color: var(--text);
+  box-shadow:
+    inset 0 0 0 1px rgba(17, 24, 39, 0.05),
+    0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.ui-button.ui-button--secondary:hover:not(:disabled),
+.ui-button.ui-button--secondary:focus-visible:not(:disabled) {
+  background: var(--surface);
+  box-shadow:
+    inset 0 0 0 1px rgba(17, 24, 39, 0.06),
+    0 12px 22px rgba(15, 23, 42, 0.07);
+}
+
+.ui-button.ui-button--danger {
+  background: linear-gradient(180deg, var(--action-danger-top), var(--action-danger-bottom));
+  color: #fffaf7;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 10px 20px rgba(123, 87, 65, 0.15);
+}
+
+.ui-button.ui-button--danger:hover:not(:disabled),
+.ui-button.ui-button--danger:focus-visible:not(:disabled) {
+  background: linear-gradient(180deg, #9d6b4c, #7b5741);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 14px 24px rgba(123, 87, 65, 0.2);
+}
+
+.ui-button.ui-button--ghost {
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+.ui-button.ui-button--ghost:hover:not(:disabled),
+.ui-button.ui-button--ghost:focus-visible:not(:disabled) {
+  background: rgba(17, 24, 39, 0.055);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.ui-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.ui-button:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+
+.ui-button:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.05);
+}
+
+.ui-button[data-loading="true"] {
+  cursor: wait;
+}
+
+@keyframes ui-button-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-button {
+    transition: none;
+  }
+
+  .ui-button__spinner {
+    animation-duration: 1.4s;
+  }
+}

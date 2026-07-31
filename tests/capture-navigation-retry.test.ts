@@ -3,6 +3,7 @@ import type { ParsedTask } from "../src/types.js";
 
 const {
   gotoMock,
+  addStyleTagMock,
   evaluateMock,
   waitForTimeoutMock,
   titleMock,
@@ -14,6 +15,7 @@ const {
   cleanupCaptureOverlaysMock,
 } = vi.hoisted(() => ({
   gotoMock: vi.fn(),
+  addStyleTagMock: vi.fn(),
   evaluateMock: vi.fn(),
   waitForTimeoutMock: vi.fn(),
   titleMock: vi.fn(),
@@ -60,6 +62,7 @@ describe("captureTask recoverable navigation retry", () => {
 
     const page = {
       goto: gotoMock,
+      addStyleTag: addStyleTagMock,
       evaluate: evaluateMock,
       waitForTimeout: waitForTimeoutMock,
       title: titleMock,
@@ -75,6 +78,9 @@ describe("captureTask recoverable navigation retry", () => {
 
     launchMock.mockResolvedValue(browser);
     cleanupCaptureOverlaysMock.mockResolvedValue(undefined);
+    addStyleTagMock.mockResolvedValue({
+      evaluate: vi.fn().mockResolvedValue(undefined),
+    });
     waitForTimeoutMock.mockResolvedValue(undefined);
     titleMock.mockResolvedValue("Example");
     evaluateMock.mockImplementation(async (fn: unknown) => {
@@ -87,6 +93,16 @@ describe("captureTask recoverable navigation retry", () => {
       }
       if (source.includes("__autosnapBackgroundImageReady")) {
         return { total: 0, loaded: 0, failed: 0, timedOut: 0 };
+      }
+      if (source.includes("document.getAnimations")) {
+        return {
+          animationsFound: 0,
+          animationsFinished: 0,
+          animationsPaused: 0,
+          mediaFound: 0,
+          mediaPaused: 0,
+          videoFramesSeeked: 0,
+        };
       }
       return undefined;
     });

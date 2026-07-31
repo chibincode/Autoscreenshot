@@ -36,7 +36,10 @@ vi.mock("../src/core/job-service.js", () => ({
   resolveJobOptions: resolveJobOptionsMock,
 }));
 
-import { executeCoreRoutesInstruction } from "../src/core/core-routes-service.js";
+import {
+  executeCoreRoutesInstruction,
+  retryCoreRouteByManifest,
+} from "../src/core/core-routes-service.js";
 
 describe("core-routes-service", () => {
   beforeEach(() => {
@@ -79,6 +82,118 @@ describe("core-routes-service", () => {
       ],
     });
     importManifestAssetsMock.mockImplementation(async (manifest: unknown) => manifest);
+  });
+
+  it("rescans a successful route without discarding imported history or draft choices", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-core-route-rescan-"));
+    const outputDir = path.join(tmpDir, "run");
+    const manifestPath = path.join(outputDir, "manifest.json");
+    await fs.mkdir(outputDir, { recursive: true });
+
+    await fs.writeFile(
+      manifestPath,
+      JSON.stringify({
+        runId: "job-route-rescan",
+        instruction: "open https://example.com and map core routes",
+        createdAt: "2026-07-31T00:00:00.000Z",
+        task: {
+          url: "https://example.com",
+          waitUntil: "networkidle",
+          captures: [{ mode: "fullPage" }],
+          image: { format: "jpg", quality: 92, dpr: 1 },
+          viewport: { width: 1920, height: 1080 },
+          tags: [],
+          eagle: {},
+        },
+        sectionScope: "classic",
+        outputDir,
+        routes: [],
+        assets: [
+          {
+            kind: "fullPage",
+            label: "full_page",
+            filePath: path.join(outputDir, "home-imported.jpg"),
+            fileName: "home-imported.jpg",
+            sourceUrl: "https://example.com/",
+            quality: 92,
+            dpr: 1,
+            capturedAt: "2026-07-30T00:00:00.000Z",
+            import: {
+              ok: true,
+              selected: true,
+              status: "imported",
+              eagleId: "eagle-home-1",
+            },
+          },
+          {
+            kind: "fullPage",
+            label: "full_page",
+            filePath: path.join(outputDir, "home-pending.jpg"),
+            fileName: "home-pending.jpg",
+            sourceUrl: "https://example.com/",
+            quality: 92,
+            dpr: 1,
+            capturedAt: "2026-07-31T00:00:00.000Z",
+            import: {
+              ok: false,
+              selected: false,
+              status: "pending_confirmation",
+            },
+            folderOverrideId: "manual-home-folder",
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    captureTaskMock.mockResolvedValueOnce({
+      assets: [
+        {
+          kind: "fullPage",
+          label: "full_page",
+          filePath: path.join(outputDir, "home-rescanned.jpg"),
+          fileName: "home-rescanned.jpg",
+          sourceUrl: "https://example.com/",
+          quality: 92,
+          dpr: 1,
+          capturedAt: "2026-07-31T01:00:00.000Z",
+        },
+      ],
+    });
+
+    const result = await retryCoreRouteByManifest({
+      manifestPath,
+      routeUrl: "https://example.com/",
+      routePath: "/",
+      routeTitle: "Home",
+      routeSource: "nav",
+      routeDepth: 0,
+      routePriorityScore: 1000,
+      routeAttemptCount: 1,
+    });
+
+    expect(captureTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        image: expect.objectContaining({ dpr: 1 }),
+      }),
+      expect.anything(),
+    );
+    const routeAssets = result.manifest.assets.filter(
+      (asset) => asset.kind === "fullPage" && asset.sourceUrl === "https://example.com/",
+    );
+    expect(routeAssets).toHaveLength(2);
+    expect(routeAssets.find((asset) => asset.import.status === "imported")?.import.eagleId).toBe("eagle-home-1");
+    expect(routeAssets.find((asset) => asset.import.status === "pending_confirmation")).toMatchObject({
+      fileName: "home-rescanned.jpg",
+      folderOverrideId: "manual-home-folder",
+      import: {
+        selected: false,
+        status: "pending_confirmation",
+      },
+    });
+    expect(result.route.assetCount).toBe(2);
+
+    await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
   it("retries route with dpr=1 after retryable failure and keeps per-route status", async () => {

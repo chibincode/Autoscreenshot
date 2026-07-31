@@ -15,10 +15,14 @@ describe("route-discovery", () => {
 
   it("applies exclusion rules", () => {
     expect(shouldExcludeRoute("/privacy")).toBe(true);
+    expect(shouldExcludeRoute("/legal")).toBe(true);
+    expect(shouldExcludeRoute("/legal/terms")).toBe(true);
+    expect(shouldExcludeRoute("/legal/privacy-policy")).toBe(true);
     expect(shouldExcludeRoute("/search")).toBe(true);
     expect(shouldExcludeRoute("/page/2")).toBe(true);
     expect(shouldExcludeRoute("/assets/guide.pdf")).toBe(true);
     expect(shouldExcludeRoute("/pricing")).toBe(false);
+    expect(shouldExcludeRoute("/solutions/legal")).toBe(false);
     expect(shouldExcludeRoute("/security")).toBe(false);
     expect(shouldExcludeRoute("/")).toBe(false);
   });
@@ -43,6 +47,9 @@ describe("route-discovery", () => {
 
     const external = helpers.normalizeSameDomainUrl("https://other.com/pricing", entry);
     expect(external).toBeNull();
+
+    const legal = helpers.normalizeSameDomainUrl("https://example.com/legal/terms", entry);
+    expect(legal).toBeNull();
 
     const brandBlog = helpers.normalizeSameDomainUrl("https://blog.example.com/", entry);
     expect(brandBlog).toEqual({

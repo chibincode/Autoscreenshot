@@ -13,6 +13,9 @@ export function isTerminalJobStatus(status: RetryableJobStatus): boolean {
   return status !== "queued" && status !== "running";
 }
 
-export function canRetryRoute(jobStatus: RetryableJobStatus, routeStatus: RetryableRouteStatus): boolean {
-  return isTerminalJobStatus(jobStatus) && routeStatus === "failed";
+export function canRerunRoute(jobStatus: RetryableJobStatus, routeStatus: RetryableRouteStatus): boolean {
+  return (
+    isTerminalJobStatus(jobStatus) &&
+    (routeStatus === "success" || routeStatus === "failed")
+  );
 }

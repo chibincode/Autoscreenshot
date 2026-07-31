@@ -251,6 +251,33 @@ describe("jobs repository route targets", () => {
     expect(matches.map((job) => job.id)).toEqual(["job-dedupe-2", "job-dedupe-1"]);
     expect(matches.every((job) => job.mode === "single")).toBe(true);
     expect(matches[0]?.assetCount).toBe(1);
+
+    repo.setJobResult({
+      jobId: "job-dedupe-2",
+      status: "success",
+      taskJson: JSON.stringify({ url: "https://example.com/pricing" }),
+    });
+    const cleanedJob = repo.cleanJobFiles("job-dedupe-2");
+    const matchesAfterCleanup = repo.findRecentJobsBySourceUrl({
+      normalizedUrl: "https://example.com/pricing",
+      urlNormalization: rules.urlNormalization,
+      limit: 3,
+    });
+    const archivedSummary = repo
+      .listJobs({ archivedOnly: true })
+      .items.find((job) => job.id === "job-dedupe-2");
+
+    expect(cleanedJob?.cleanedAt).toBeTruthy();
+    expect(cleanedJob?.archivedAt).toBeTruthy();
+    expect(repo.getAssets("job-dedupe-2")).toEqual([]);
+    expect(matchesAfterCleanup.map((job) => job.id)).toEqual(["job-dedupe-2", "job-dedupe-1"]);
+    expect(matchesAfterCleanup[0]?.assetCount).toBe(1);
+    expect(archivedSummary).toMatchObject({
+      id: "job-dedupe-2",
+      assetCount: 1,
+      pendingConfirmationCount: 1,
+    });
+    expect(archivedSummary?.cleanedAt).toBeTruthy();
   });
 
   it("falls back to instruction url in job summaries when task_json is still empty", () => {

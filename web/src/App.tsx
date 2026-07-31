@@ -11,6 +11,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
 import {
   buildFeedbackContext,
@@ -24,6 +25,7 @@ import {
 import { ActionDialog, type ActionDialogTone } from "./ActionDialog";
 import { ActionToast, type ActionToastTone } from "./ActionToast";
 import { FolderPickerDialog } from "./FolderPickerDialog";
+import { Button } from "./ui/Button";
 import {
   filterAndRankFolders,
   formatFolderNameForCard,
@@ -41,7 +43,8 @@ import {
   isActiveStatus,
 } from "./job-progress";
 import { getNextSelectedJobId } from "./job-selection";
-import { canRetryRoute } from "./route-retry";
+import { buildRestoreOriginalConfirmation } from "./restore-original-confirmation";
+import { canRerunRoute } from "./route-retry";
 import {
   readSelectedAssetIdFromSearch,
   readSelectedJobIdFromSearch,
@@ -151,6 +154,7 @@ interface JobSummary {
   importFailedCount: number;
   sourceUrl: string | null;
   archivedAt: string | null;
+  cleanedAt: string | null;
 }
 
 interface JobAsset {
@@ -217,6 +221,7 @@ interface JobDetail {
     startedAt: string | null;
     finishedAt: string | null;
     archivedAt: string | null;
+    cleanedAt: string | null;
     error: string | null;
     outputDir: string | null;
     updatedAt: string;
@@ -263,6 +268,20 @@ interface FolderPickerState {
 interface ActionToastState {
   message: string;
   tone?: ActionToastTone;
+}
+
+interface ArchivedCleanupPreview {
+  jobCount: number;
+  assetCount: number;
+}
+
+interface ArchivedCleanupResult {
+  eligibleJobCount: number;
+  eligibleAssetCount: number;
+  cleanedCount: number;
+  filesDeletedCount: number;
+  failedCount: number;
+  failures: Array<{ jobId: string; error: string }>;
 }
 
 type PendingQueueActionKind = "import-selected" | "retry-import";
@@ -504,6 +523,14 @@ function formatPartialSuccessJobBadge(params: {
 }
 
 function canQuickArchiveJob(job: JobSummary): boolean {
+  return !job.cleanedAt && !isActiveStatus(job.status) && job.status !== "queued";
+}
+
+function canCleanJobFiles(job: Pick<JobSummary, "status" | "cleanedAt">): boolean {
+  return !job.cleanedAt && !isActiveStatus(job.status) && job.status !== "queued";
+}
+
+function canRescanJob(job: Pick<JobSummary, "status">): boolean {
   return !isActiveStatus(job.status) && job.status !== "queued";
 }
 
@@ -559,7 +586,8 @@ function areJobSummariesEqual(left: JobSummary[], right: JobSummary[]): boolean 
       leftItem.importSuccessCount !== rightItem.importSuccessCount ||
       leftItem.importFailedCount !== rightItem.importFailedCount ||
       leftItem.sourceUrl !== rightItem.sourceUrl ||
-      leftItem.archivedAt !== rightItem.archivedAt
+      leftItem.archivedAt !== rightItem.archivedAt ||
+      leftItem.cleanedAt !== rightItem.cleanedAt
     ) {
       return false;
     }
@@ -1066,6 +1094,7 @@ const AssetCard = memo(function AssetCard({
   onOpenFolderPicker,
   onOpenPreview,
   onFocusDebug,
+  trailingToolbarAction,
 }: {
   asset: JobAsset;
   selected: boolean;
@@ -1077,6 +1106,7 @@ const AssetCard = memo(function AssetCard({
   onOpenFolderPicker: (assetId: number) => void;
   onOpenPreview: (assetId: number) => void;
   onFocusDebug: (asset: JobAsset) => void;
+  trailingToolbarAction?: ReactNode;
 }) {
   const needsFolderSelection =
     asset.selectedForImport && asset.importStatus !== "imported" && asset.folderSelectionSource === "missing";
@@ -1103,19 +1133,24 @@ const AssetCard = memo(function AssetCard({
           />
           <span>Import</span>
         </label>
-        {canFocusDebug ? (
-          <button
-            type="button"
-            className="asset-icon-button"
-            onClick={() => onFocusDebug(asset)}
-            aria-label="Focus debug"
-            title="Focus debug"
-          >
-            <span className="asset-focus-icon" aria-hidden="true">
-              <span className="asset-focus-icon-corners" />
-              <span className="asset-focus-icon-dot" />
-            </span>
-          </button>
+        {trailingToolbarAction || canFocusDebug ? (
+          <div className="asset-toolbar-actions">
+            {trailingToolbarAction}
+            {canFocusDebug ? (
+              <button
+                type="button"
+                className="asset-icon-button"
+                onClick={() => onFocusDebug(asset)}
+                aria-label="Focus debug"
+                title="Focus debug"
+              >
+                <span className="asset-focus-icon" aria-hidden="true">
+                  <span className="asset-focus-icon-corners" />
+                  <span className="asset-focus-icon-dot" />
+                </span>
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </div>
       <button
@@ -1156,6 +1191,7 @@ const JobsListPanel = memo(function JobsListPanel({
   page,
   onSelectJob,
   onArchiveJob,
+  onCleanJob,
   onPreviousPage,
   onNextPage,
 }: {
@@ -1167,6 +1203,7 @@ const JobsListPanel = memo(function JobsListPanel({
   page: number;
   onSelectJob: (jobId: string) => void;
   onArchiveJob: (jobId: string, archived: boolean) => void;
+  onCleanJob: (jobId: string) => void;
   onPreviousPage: () => void;
   onNextPage: () => void;
 }) {
@@ -1175,6 +1212,8 @@ const JobsListPanel = memo(function JobsListPanel({
       {jobs.map((job) => {
         const jobIsLive = runningJobId === job.id || isActiveStatus(job.status);
         const showQuickArchive = canQuickArchiveJob(job);
+        const showCleanFiles = canCleanJobFiles(job);
+        const showQuickActions = showQuickArchive || showCleanFiles;
         const nextArchivedState = !Boolean(job.archivedAt);
         const isExiting = exitingJobIds.has(job.id);
         return (
@@ -1184,7 +1223,7 @@ const JobsListPanel = memo(function JobsListPanel({
                 "job-card",
                 selectedJobId === job.id && "selected",
                 jobIsLive && "job-card-live",
-                showQuickArchive && "job-card-has-action",
+                showQuickActions && "job-card-has-action",
                 isExiting && "job-card-exiting",
               )}
               role="button"
@@ -1214,7 +1253,11 @@ const JobsListPanel = memo(function JobsListPanel({
                         : null;
                     return <StatusBadge status={job.status} label={badge?.label} tone={badge?.tone} />;
                   })()}
-                  {job.archivedAt ? <span className="job-archived-pill">archived</span> : null}
+                  {job.cleanedAt ? (
+                    <span className="job-cleaned-pill">files cleaned</span>
+                  ) : job.archivedAt ? (
+                    <span className="job-archived-pill">archived</span>
+                  ) : null}
                 </div>
               </div>
               <div className="job-title">
@@ -1233,21 +1276,42 @@ const JobsListPanel = memo(function JobsListPanel({
               </div>
               <div className="job-meta-row">
                 <span className="job-time">{formatDate(job.createdAt)}</span>
-                {job.archivedAt ? <div className="job-archived-note">Archived · {formatDate(job.archivedAt)}</div> : null}
+                {job.cleanedAt ? (
+                  <div className="job-cleaned-note">Files cleaned · {formatDate(job.cleanedAt)}</div>
+                ) : job.archivedAt ? (
+                  <div className="job-archived-note">Archived · {formatDate(job.archivedAt)}</div>
+                ) : null}
               </div>
               {runningJobId === job.id ? <div className="job-live-note">Running</div> : null}
-              {showQuickArchive ? (
-                <button
-                  type="button"
-                  className="job-card-quick-action"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onArchiveJob(job.id, nextArchivedState);
-                  }}
-                  aria-label={nextArchivedState ? "Archive job" : "Unarchive job"}
-                >
-                  {nextArchivedState ? "Archive" : "Unarchive"}
-                </button>
+              {showQuickActions ? (
+                <div className="job-card-quick-actions">
+                  {showQuickArchive ? (
+                    <button
+                      type="button"
+                      className="job-card-quick-action"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onArchiveJob(job.id, nextArchivedState);
+                      }}
+                      aria-label={nextArchivedState ? "Archive job" : "Unarchive job"}
+                    >
+                      {nextArchivedState ? "Archive" : "Unarchive"}
+                    </button>
+                  ) : null}
+                  {showCleanFiles ? (
+                    <button
+                      type="button"
+                      className="job-card-quick-action job-card-clean-action"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onCleanJob(job.id);
+                      }}
+                      aria-label="Clean local job files"
+                    >
+                      Clean files
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
             </article>
           </div>
@@ -1276,6 +1340,11 @@ const JobDetailSummary = memo(function JobDetailSummary({
   isRunning,
   canCancel,
   canArchive,
+  canClean,
+  canRescan,
+  rescanDisabled,
+  rescanning,
+  mode,
   assetImportSummary,
   canImportSelected,
   canRetryFailedImport,
@@ -1283,6 +1352,8 @@ const JobDetailSummary = memo(function JobDetailSummary({
   retryingFailedImport,
   onCancel,
   onArchive,
+  onClean,
+  onRescan,
   onImportSelected,
   onRevealImportBlocker,
   onRetryImport,
@@ -1292,6 +1363,11 @@ const JobDetailSummary = memo(function JobDetailSummary({
   isRunning: boolean;
   canCancel: boolean;
   canArchive: boolean;
+  canClean: boolean;
+  canRescan: boolean;
+  rescanDisabled: boolean;
+  rescanning: boolean;
+  mode: JobMode;
   assetImportSummary: ReturnType<typeof summarizeAssets>;
   canImportSelected: boolean;
   canRetryFailedImport: boolean;
@@ -1299,6 +1375,8 @@ const JobDetailSummary = memo(function JobDetailSummary({
   retryingFailedImport: boolean;
   onCancel: (jobId: string) => void;
   onArchive: (jobId: string, archived: boolean) => void;
+  onClean: (jobId: string) => void;
+  onRescan: (jobId: string) => void | Promise<void>;
   onImportSelected: (jobId: string) => void | Promise<void>;
   onRevealImportBlocker: () => void;
   onRetryImport: (jobId: string) => void | Promise<void>;
@@ -1321,7 +1399,7 @@ const JobDetailSummary = memo(function JobDetailSummary({
         <div className={cx("detail-status", isRunning && "detail-status-live")}>
           {(() => {
             const badge =
-              detail.job.status === "partial_success"
+              detail.job.status === "partial_success" && !detail.job.cleanedAt
                 ? formatPartialSuccessJobBadge({
                     imported: assetImportSummary.imported,
                     failed: assetImportSummary.failed,
@@ -1335,51 +1413,86 @@ const JobDetailSummary = memo(function JobDetailSummary({
       </div>
 
       <div className="detail-actions">
+        {!detail.job.cleanedAt ? (
+          <>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!canImportSelected && !importBlockedByFolders}
+              data-blocked={importBlockedByFolders ? "true" : undefined}
+              loading={importingSelected}
+              loadingLabel="Queueing..."
+              title={importBlockedByFolders ? "Jump to the first selected asset that needs a folder" : undefined}
+              onClick={() => {
+                if (canImportSelected) {
+                  void onImportSelected(detail.job.id);
+                  return;
+                }
+                if (importBlockedByFolders) {
+                  onRevealImportBlocker();
+                }
+              }}
+            >
+              {importBlockedByFolders ? "Fix folders" : "Import selected"}
+            </Button>
+            {assetImportSummary.failed > 0 ? (
+              <Button
+                size="sm"
+                disabled={!canRetryFailedImport}
+                loading={retryingFailedImport}
+                loadingLabel="Queueing retry..."
+                onClick={() => void onRetryImport(detail.job.id)}
+              >
+                Retry failed
+              </Button>
+            ) : null}
+          </>
+        ) : null}
         {canCancel ? (
-          <button type="button" className="danger-button" onClick={() => onCancel(detail.job.id)}>
+          <Button variant="danger" size="sm" onClick={() => onCancel(detail.job.id)}>
             Cancel
-          </button>
+          </Button>
+        ) : null}
+        {canRescan ? (
+          <Button
+            size="sm"
+            disabled={rescanDisabled || rescanning}
+            loading={rescanning}
+            loadingLabel="Queueing..."
+            onClick={() => void onRescan(detail.job.id)}
+          >
+            Rescan {formatJobModeLabel(mode)}
+          </Button>
         ) : null}
         {canArchive ? (
-          <button type="button" onClick={() => onArchive(detail.job.id, !Boolean(detail.job.archivedAt))}>
+          <Button size="sm" onClick={() => onArchive(detail.job.id, !Boolean(detail.job.archivedAt))}>
             {detail.job.archivedAt ? "Unarchive" : "Archive"}
-          </button>
+          </Button>
         ) : null}
-        <button
-          type="button"
-          className={cx("primary-button", importBlockedByFolders && "primary-button-blocked")}
-          disabled={!canImportSelected && !importBlockedByFolders}
-          data-blocked={importBlockedByFolders ? "true" : undefined}
-          title={importBlockedByFolders ? "Jump to the first selected asset that needs a folder" : undefined}
-          onClick={() => {
-            if (canImportSelected) {
-              void onImportSelected(detail.job.id);
-              return;
-            }
-            if (importBlockedByFolders) {
-              onRevealImportBlocker();
-            }
-          }}
-        >
-          {importingSelected ? "Queueing..." : importBlockedByFolders ? "Fix folders" : "Import selected"}
-        </button>
-        {assetImportSummary.failed > 0 ? (
-          <button type="button" disabled={!canRetryFailedImport} onClick={() => void onRetryImport(detail.job.id)}>
-            {retryingFailedImport ? "Queueing retry..." : "Retry failed"}
-          </button>
+        {canClean ? (
+          <Button variant="danger" size="sm" onClick={() => onClean(detail.job.id)}>
+            Clean files
+          </Button>
         ) : null}
-        <span>Pending: {assetImportSummary.pending}</span>
-        {assetImportSummary.selectedPendingMissingFolderCount > 0 ? (
-          <span>Pending folders: {assetImportSummary.selectedPendingMissingFolderCount}</span>
-        ) : null}
-        {assetImportSummary.selectedFailedMissingFolderCount > 0 ? (
-          <span>Retry folders: {assetImportSummary.selectedFailedMissingFolderCount}</span>
-        ) : null}
-        <span>Imported: {assetImportSummary.imported}</span>
-        <span>Failed: {assetImportSummary.failed}</span>
+        {detail.job.cleanedAt ? (
+          <span className="detail-cleaned-note">Local files cleaned · history retained</span>
+        ) : (
+          <>
+            <span>Pending: {assetImportSummary.pending}</span>
+            {assetImportSummary.selectedPendingMissingFolderCount > 0 ? (
+              <span>Pending folders: {assetImportSummary.selectedPendingMissingFolderCount}</span>
+            ) : null}
+            {assetImportSummary.selectedFailedMissingFolderCount > 0 ? (
+              <span>Retry folders: {assetImportSummary.selectedFailedMissingFolderCount}</span>
+            ) : null}
+            <span>Imported: {assetImportSummary.imported}</span>
+            <span>Failed: {assetImportSummary.failed}</span>
+          </>
+        )}
         <span>Started: {formatDate(detail.job.startedAt)}</span>
         <span>Finished: {formatDate(detail.job.finishedAt)}</span>
         {detail.job.archivedAt ? <span>Archived: {formatDate(detail.job.archivedAt)}</span> : null}
+        {detail.job.cleanedAt ? <span>Cleaned: {formatDate(detail.job.cleanedAt)}</span> : null}
       </div>
     </>
   );
@@ -1396,7 +1509,8 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
   onOpenFolderPicker,
   onOpenPreview,
   onFocusDebug,
-  onRetryRoute,
+  onRerunRoute,
+  rerunningRouteId,
   browserActionsDisabled,
 }: {
   detail: JobDetail;
@@ -1409,7 +1523,8 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
   onOpenFolderPicker: (assetId: number) => void;
   onOpenPreview: (assetId: number) => void;
   onFocusDebug: (asset: JobAsset) => void;
-  onRetryRoute: (jobId: string, routeId: number) => void | Promise<void>;
+  onRerunRoute: (jobId: string, route: RouteTargetSummary) => void | Promise<void>;
+  rerunningRouteId: number | null;
   browserActionsDisabled: boolean;
 }) {
   return detail.routes.length > 0 ? (
@@ -1420,6 +1535,20 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
           const asset = findAssetForRouteFromIndex(route, assetLookup);
           const assets = findAssetsForRouteFromIndex(route, assetLookup);
           const previewState = getCoreRoutePreviewState(route.status, asset);
+          const rerunAction = canRerunRoute(detail.job.status, route.status) ? (
+            <Button
+              size="sm"
+              className="route-rerun-button"
+              disabled={browserActionsDisabled || rerunningRouteId !== null}
+              loading={rerunningRouteId === route.id}
+              loadingLabel={route.status === "failed" ? "Retrying..." : "Rescanning..."}
+              aria-label={`${route.status === "failed" ? "Retry" : "Rescan"} ${formatCoreRouteCardLabel(route.path)}`}
+              onClick={() => void onRerunRoute(detail.job.id, route)}
+            >
+              {route.status === "failed" ? "Retry page" : "Rescan page"}
+            </Button>
+          ) : null;
+          const canFocusRouteDebug = asset ? canFocusDebugAsset(asset, hasSectionDebug) : false;
 
           return (
             <article
@@ -1440,22 +1569,16 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                   className="core-route-card-path"
                   title={route.url}
                 />
-                <div className="core-route-card-actions">
-                  {asset && canFocusDebugAsset(asset, hasSectionDebug) ? (
-                    <button type="button" onClick={() => onFocusDebug(asset)}>
-                      Focus Debug
-                    </button>
-                  ) : null}
-                  {canRetryRoute(detail.job.status, route.status) ? (
-                    <button
-                      type="button"
-                      disabled={browserActionsDisabled}
-                      onClick={() => void onRetryRoute(detail.job.id, route.id)}
-                    >
-                      Retry page
-                    </button>
-                  ) : null}
-                </div>
+                {canFocusRouteDebug || (!asset && rerunAction) ? (
+                  <div className="core-route-card-actions">
+                    {asset && canFocusRouteDebug ? (
+                      <button type="button" onClick={() => onFocusDebug(asset)}>
+                        Focus Debug
+                      </button>
+                    ) : null}
+                    {!asset ? rerunAction : null}
+                  </div>
+                ) : null}
               </div>
               <div className="core-route-card-preview">
                 {assets.length > 0 ? (
@@ -1473,6 +1596,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                         onOpenFolderPicker={onOpenFolderPicker}
                         onOpenPreview={onOpenPreview}
                         onFocusDebug={onFocusDebug}
+                        trailingToolbarAction={routeAsset.id === asset?.id ? rerunAction : null}
                       />
                     ))}
                   </div>
@@ -1758,7 +1882,7 @@ const PreviewModal = memo(function PreviewModal({
     expectedWidth: number,
     expectedHeight: number,
   ) => Promise<boolean>;
-  onRestoreOriginal: (assetId: number) => Promise<boolean>;
+  onRestoreOriginal: (assetId: number) => void;
 }) {
   const imageWrapRef = useRef<HTMLDivElement | null>(null);
   const cropStageRef = useRef<HTMLDivElement | null>(null);
@@ -2059,7 +2183,7 @@ const PreviewModal = memo(function PreviewModal({
                 <button
                   type="button"
                   disabled={!canEditImage}
-                  onClick={() => void onRestoreOriginal(previewAsset.id)}
+                  onClick={() => onRestoreOriginal(previewAsset.id)}
                 >
                   恢复原图
                 </button>
@@ -2351,9 +2475,13 @@ export function App() {
   const [actionDialog, setActionDialog] = useState<ActionDialogState | null>(null);
   const [actionDialogBusy, setActionDialogBusy] = useState(false);
   const [actionToast, setActionToast] = useState<ActionToastState | null>(null);
+  const [archivedCleanupPreview, setArchivedCleanupPreview] = useState<ArchivedCleanupPreview | null>(null);
+  const [archivedCleanupBusy, setArchivedCleanupBusy] = useState(false);
   const [selectionSaving, setSelectionSaving] = useState(false);
   const [importingSelected, setImportingSelected] = useState(false);
   const [retryingFailedImport, setRetryingFailedImport] = useState(false);
+  const [rescanningJobId, setRescanningJobId] = useState<string | null>(null);
+  const [rerunningRouteId, setRerunningRouteId] = useState<number | null>(null);
   const [exitingJobIds, setExitingJobIds] = useState<Set<string>>(() => new Set());
   const [pendingQueueAction, setPendingQueueAction] = useState<{
     jobId: string;
@@ -2412,6 +2540,9 @@ export function App() {
   const selectedJobStatusNote = useMemo(() => {
     if (!selectedJobDetail) {
       return null;
+    }
+    if (selectedJobDetail.job.cleanedAt) {
+      return "Local files cleaned · history retained";
     }
     if (selectedPendingQueueActionKind === "import-selected") {
       return "Sending Eagle import request...";
@@ -2488,8 +2619,26 @@ export function App() {
     if (!selectedJobDetail) {
       return false;
     }
-    return !isActiveStatus(selectedJobDetail.job.status) && selectedJobDetail.job.status !== "queued";
+    return (
+      !selectedJobDetail.job.cleanedAt &&
+      !isActiveStatus(selectedJobDetail.job.status) &&
+      selectedJobDetail.job.status !== "queued"
+    );
   }, [selectedJobDetail]);
+  const canCleanSelectedJob = useMemo(() => {
+    if (!selectedJobDetail) {
+      return false;
+    }
+    return canCleanJobFiles(selectedJobDetail.job);
+  }, [selectedJobDetail]);
+  const canRescanSelectedJob = useMemo(() => {
+    if (!selectedJobDetail) {
+      return false;
+    }
+    return canRescanJob(selectedJobDetail.job);
+  }, [selectedJobDetail]);
+  const selectedJobIsRescanning =
+    selectedJobDetail !== null && rescanningJobId === selectedJobDetail.job.id;
   const sectionDebug = useMemo(
     () => readSectionDebug(selectedJobDetail?.manifest ?? null),
     [selectedJobDetail?.manifest],
@@ -2770,6 +2919,11 @@ export function App() {
     });
   }, []);
 
+  const loadArchivedCleanupPreview = useCallback(async (): Promise<void> => {
+    const preview = await apiFetch<ArchivedCleanupPreview>("/api/cleanup/archived");
+    setArchivedCleanupPreview(preview);
+  }, []);
+
   useEffect(() => {
     void loadConfig();
     void loadPlaywrightRuntime().catch((error: unknown) => {
@@ -2806,6 +2960,22 @@ export function App() {
       setErrorText(error instanceof Error ? error.message : "Failed loading jobs");
     });
   }, [archivedOnly, keywordFilter, loadJobs, page, pageSize, statusFilter]);
+
+  useEffect(() => {
+    if (!archivedOnly) {
+      setArchivedCleanupPreview(null);
+      return;
+    }
+
+    const refresh = (): void => {
+      void loadArchivedCleanupPreview().catch(() => {
+        // Keep the archived list usable if the cleanup preview is temporarily unavailable.
+      });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => window.clearInterval(timer);
+  }, [archivedOnly, loadArchivedCleanupPreview]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -3047,6 +3217,49 @@ export function App() {
     }
   }
 
+  const rescanJob = useCallback(async (jobId: string): Promise<void> => {
+    if (browserActionsDisabled) {
+      setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
+      return;
+    }
+
+    setRescanningJobId(jobId);
+    setErrorText(null);
+    try {
+      const result = await apiFetch<{ jobId: string; mode: JobMode }>(`/api/jobs/${jobId}/rescan`, {
+        method: "POST",
+      });
+      selectJob(result.jobId);
+      if (archivedOnly) {
+        setArchivedOnly(false);
+        setPage(1);
+      }
+      await Promise.all([
+        loadJobs(result.jobId),
+        loadJobDetail(result.jobId),
+      ]);
+      showToast(`已按原配置重新扫描 ${formatJobModeLabel(result.mode)}`, "info");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "重新扫描任务失败";
+      setErrorText(message);
+      if (isRepairablePlaywrightMessage(message)) {
+        void loadPlaywrightRuntime().catch(() => {
+          // no-op
+        });
+      }
+    } finally {
+      setRescanningJobId((current) => (current === jobId ? null : current));
+    }
+  }, [
+    archivedOnly,
+    browserActionsDisabled,
+    loadJobDetail,
+    loadJobs,
+    playwrightRuntime?.message,
+    selectJob,
+    showToast,
+  ]);
+
   const retryImport = useCallback(async (jobId: string): Promise<void> => {
     setRetryingFailedImport(true);
     setPendingQueueAction({ jobId, kind: "retry-import" });
@@ -3270,6 +3483,10 @@ export function App() {
     }
   }, [loadJobDetail, loadJobs, selectedJobDetail, showToast]);
 
+  const confirmRestoreAssetOriginal = useCallback((assetId: number): void => {
+    setActionDialog(buildRestoreOriginalConfirmation(assetId, restoreAssetOriginal));
+  }, [restoreAssetOriginal]);
+
   const importSelected = useCallback(async (jobId: string): Promise<void> => {
     setImportingSelected(true);
     setPendingQueueAction({ jobId, kind: "import-selected" });
@@ -3294,11 +3511,16 @@ export function App() {
     }
   }, [refreshJobSoon, showToast]);
 
-  const retryRoute = useCallback(async (jobId: string, routeId: number): Promise<void> => {
+  const executeRerunRoute = useCallback(async (
+    jobId: string,
+    routeId: number,
+    routeStatus: RouteTargetSummary["status"],
+  ): Promise<void> => {
     if (browserActionsDisabled) {
       setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
       return;
     }
+    setRerunningRouteId(routeId);
     try {
       await apiFetch(`/api/jobs/${jobId}/retry-route`, {
         method: "POST",
@@ -3306,17 +3528,40 @@ export function App() {
       });
       await loadJobs();
       await loadJobDetail(jobId);
-      showToast("已重新加入该路由", "info");
+      setErrorText(null);
+      showToast(
+        routeStatus === "failed" ? "已重新加入该页面" : "已加入单页重扫队列",
+        "info",
+      );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "重试路由失败";
+      const message = error instanceof Error ? error.message : "重新扫描页面失败";
       setErrorText(message);
       if (isRepairablePlaywrightMessage(message)) {
         void loadPlaywrightRuntime().catch(() => {
           // no-op
         });
       }
+    } finally {
+      setRerunningRouteId((current) => (current === routeId ? null : current));
     }
   }, [browserActionsDisabled, loadJobDetail, loadJobs, playwrightRuntime?.message, showToast]);
+
+  const rerunRoute = useCallback((jobId: string, route: RouteTargetSummary): void => {
+    if (route.status === "failed") {
+      void executeRerunRoute(jobId, route.id, route.status);
+      return;
+    }
+
+    const routeLabel = formatCoreRouteCardLabel(route.path);
+    setActionDialog({
+      title: `Rescan ${routeLabel}?`,
+      description:
+        "A new pending screenshot will replace the current unimported capture for this page. Imported Eagle items stay untouched, and the current folder choice is preserved.",
+      confirmLabel: "Rescan page",
+      cancelLabel: "Keep current",
+      onConfirm: () => executeRerunRoute(jobId, route.id, route.status),
+    });
+  }, [executeRerunRoute]);
 
   const executeCancelJob = useCallback(async (jobId: string): Promise<void> => {
     try {
@@ -3390,6 +3635,107 @@ export function App() {
   const archiveJob = useCallback((jobId: string, archived: boolean): void => {
     void executeArchiveJob(jobId, archived);
   }, [executeArchiveJob]);
+
+  const executeCleanJobFiles = useCallback(async (jobId: string): Promise<void> => {
+    let animatedRemoval = false;
+    try {
+      const result = await apiFetch<{ cleanedAt: string; archivedAt: string; filesDeleted: boolean }>(
+        `/api/jobs/${jobId}/cleanup`,
+        {
+          method: "POST",
+        },
+      );
+      const selectedJobWasCleaned = selectedJobId === jobId;
+      const hiddenByCurrentFilter = !archivedOnly;
+      if (hiddenByCurrentFilter) {
+        animatedRemoval = true;
+        setExitingJobIds((current) => {
+          const next = new Set(current);
+          next.add(jobId);
+          return next;
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, ARCHIVE_EXIT_MS));
+      }
+      await loadJobs(selectedJobWasCleaned && !hiddenByCurrentFilter ? jobId : null);
+      if (selectedJobWasCleaned && hiddenByCurrentFilter) {
+        setSelectedJobDetail(null);
+      } else if (selectedJobWasCleaned) {
+        await loadJobDetail(jobId);
+      }
+      setErrorText(null);
+      showToast(
+        result.filesDeleted
+          ? "本地文件已清理，历史记录已保留"
+          : "历史记录已保留，但部分本地文件清理失败",
+        result.filesDeleted ? "success" : "info",
+      );
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "清理本地文件失败");
+    } finally {
+      if (animatedRemoval) {
+        setExitingJobIds((current) => {
+          const next = new Set(current);
+          next.delete(jobId);
+          return next;
+        });
+      }
+    }
+  }, [archivedOnly, loadJobDetail, loadJobs, selectedJobId, showToast]);
+
+  const cleanJobFiles = useCallback((jobId: string): void => {
+    setActionDialog({
+      title: "清理这个任务的本地文件？",
+      description:
+        "截图、Manifest、运行日志、路由和裁切备份会被删除；URL、时间、模式、状态和统计会保留，浏览器插件仍可用于历史查重。已经导入 Eagle 的图片不会受影响。",
+      confirmLabel: "清理文件",
+      cancelLabel: "保留文件",
+      tone: "danger",
+      onConfirm: () => executeCleanJobFiles(jobId),
+    });
+  }, [executeCleanJobFiles]);
+
+  const executeCleanArchivedFiles = useCallback(async (): Promise<void> => {
+    setArchivedCleanupBusy(true);
+    try {
+      const result = await apiFetch<ArchivedCleanupResult>("/api/cleanup/archived", {
+        method: "POST",
+      });
+      await Promise.all([
+        loadJobs(selectedJobId),
+        loadArchivedCleanupPreview(),
+      ]);
+      if (selectedJobId) {
+        await loadJobDetail(selectedJobId);
+      }
+      setErrorText(null);
+      showToast(
+        result.failedCount === 0
+          ? `已清理 ${result.cleanedCount} 个归档任务的本地文件，历史记录已保留`
+          : `已处理 ${result.cleanedCount} 个归档任务，${result.failedCount} 个文件清理不完整`,
+        result.failedCount === 0 ? "success" : "info",
+      );
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : "批量清理归档文件失败");
+    } finally {
+      setArchivedCleanupBusy(false);
+    }
+  }, [loadArchivedCleanupPreview, loadJobDetail, loadJobs, selectedJobId, showToast]);
+
+  const cleanArchivedFiles = useCallback((): void => {
+    if (!archivedCleanupPreview || archivedCleanupPreview.jobCount === 0) {
+      return;
+    }
+    setActionDialog({
+      title: "清理全部已归档任务的本地文件？",
+      description:
+        `将清理 ${archivedCleanupPreview.jobCount} 个归档任务中的 ${archivedCleanupPreview.assetCount} 张截图，以及对应的 Manifest、运行日志、路由和裁切备份。` +
+        "URL、时间、模式、状态和统计会保留，浏览器插件仍可用于历史查重；已经导入 Eagle 的图片不会受影响。",
+      confirmLabel: "清理全部文件",
+      cancelLabel: "保留文件",
+      tone: "danger",
+      onConfirm: executeCleanArchivedFiles,
+    });
+  }, [archivedCleanupPreview, executeCleanArchivedFiles]);
 
   function closeActionDialog(): void {
     if (actionDialogBusy) {
@@ -3647,14 +3993,17 @@ export function App() {
           </div>
         </details>
 
-        <button
-          className="submit-btn"
-          type="button"
+        <Button
+          variant="primary"
+          size="lg"
+          block
           onClick={() => void submitJob()}
           disabled={submitting || !config || browserActionsDisabled}
+          loading={submitting}
+          loadingLabel="Submitting..."
         >
-          {submitting ? "Submitting..." : "Run"}
-        </button>
+          Run
+        </Button>
 
         {errorText ? <div className="error-text">{errorText}</div> : null}
 
@@ -3668,47 +4017,79 @@ export function App() {
             Folder policy:
             {config?.eagleImportPolicy?.allowCreateFolder ? " create allowed" : " reuse only"}
           </div>
+          <a className="design-system-link" href="/design-system">Design System</a>
         </div>
       </aside>
 
       <main className="panel panel-main">
         <div className="toolbar">
           <h2>Queue</h2>
-          <div className="filters">
-            <select value={statusFilter} onChange={(event) => {
-              setStatusFilter(event.target.value);
-              setPage(1);
-            }}>
-              <option value="">All</option>
-              <option value="queued">queued</option>
-              <option value="running">running</option>
-              <option value="awaiting_confirmation">awaiting_confirmation</option>
-              <option value="success">success</option>
-              <option value="partial_success">partial_success</option>
-              <option value="failed">failed</option>
-            </select>
-            <input
-              placeholder="Search prompt"
-              value={keywordFilter}
-              onChange={(event) => {
-                setKeywordFilter(event.target.value);
+          <div className="toolbar-actions">
+            {archivedOnly ? (
+              <button
+                type="button"
+                className="bulk-clean-button"
+                disabled={
+                  archivedCleanupBusy ||
+                  !archivedCleanupPreview ||
+                  archivedCleanupPreview.jobCount === 0
+                }
+                onClick={cleanArchivedFiles}
+                aria-label="Clean local files for all archived jobs"
+              >
+                <span>
+                  {archivedCleanupBusy
+                    ? "Cleaning..."
+                    : archivedCleanupPreview?.jobCount
+                      ? "Clean all files"
+                      : archivedCleanupPreview
+                        ? "No files to clean"
+                        : "Checking files..."}
+                </span>
+                {archivedCleanupPreview?.jobCount ? (
+                  <span className="bulk-clean-count">{archivedCleanupPreview.jobCount}</span>
+                ) : null}
+              </button>
+            ) : null}
+            <div className="filters">
+              <select value={statusFilter} onChange={(event) => {
+                setStatusFilter(event.target.value);
                 setPage(1);
               }}
-            />
-            <label className={cx("filter-toggle", archivedOnly && "active")}>
+              >
+                <option value="">All</option>
+                <option value="queued">queued</option>
+                <option value="running">running</option>
+                <option value="awaiting_confirmation">awaiting_confirmation</option>
+                <option value="success">success</option>
+                <option value="partial_success">partial_success</option>
+                <option value="failed">failed</option>
+              </select>
               <input
-                type="checkbox"
-                checked={archivedOnly}
+                placeholder="Search prompt"
+                value={keywordFilter}
                 onChange={(event) => {
-                  setArchivedOnly(event.target.checked);
+                  setKeywordFilter(event.target.value);
                   setPage(1);
                 }}
               />
-              <span className="filter-toggle-indicator" aria-hidden="true">
-                <span className="filter-toggle-knob" />
-              </span>
-              <span>Archived</span>
-            </label>
+              <label className={cx("filter-toggle", archivedOnly && "active")}>
+                <input
+                  type="checkbox"
+                  checked={archivedOnly}
+                  onChange={(event) => {
+                    selectJob(null);
+                    setSelectedJobDetail(null);
+                    setArchivedOnly(event.target.checked);
+                    setPage(1);
+                  }}
+                />
+                <span className="filter-toggle-indicator" aria-hidden="true">
+                  <span className="filter-toggle-knob" />
+                </span>
+                <span>Archived</span>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -3722,6 +4103,7 @@ export function App() {
             page={page}
             onSelectJob={selectJob}
             onArchiveJob={archiveJob}
+            onCleanJob={cleanJobFiles}
             onPreviousPage={() => setPage((prev) => Math.max(1, prev - 1))}
             onNextPage={() => setPage((prev) => Math.min(totalPages, prev + 1))}
           />
@@ -3737,6 +4119,11 @@ export function App() {
                   isRunning={selectedJobIsRunning}
                   canCancel={canCancelSelectedJob}
                   canArchive={canArchiveSelectedJob}
+                  canClean={canCleanSelectedJob}
+                  canRescan={canRescanSelectedJob}
+                  rescanDisabled={browserActionsDisabled}
+                  rescanning={selectedJobIsRescanning}
+                  mode={selectedJobMode}
                   assetImportSummary={assetImportSummary}
                   canImportSelected={canImportSelected}
                   canRetryFailedImport={canRetryFailedImport}
@@ -3744,13 +4131,15 @@ export function App() {
                   retryingFailedImport={retryingFailedImport}
                   onCancel={cancelJob}
                   onArchive={archiveJob}
+                  onClean={cleanJobFiles}
+                  onRescan={rescanJob}
                   onImportSelected={importSelected}
                   onRevealImportBlocker={revealImportBlocker}
                   onRetryImport={retryImport}
                 />
                 {eagleFoldersError ? <div className="detail-inline-warning">{eagleFoldersError}</div> : null}
 
-                {selectedJobMode === "core-routes" ? (
+                {!selectedJobDetail.job.cleanedAt && selectedJobMode === "core-routes" ? (
                   <div className={cx("progress-panel", selectedJobIsRunning && "progress-panel-live")}>
                     <div className="progress-panel-top">
                       <div>
@@ -3788,7 +4177,14 @@ export function App() {
                   </div>
                 ) : null}
 
-                {selectedJobMode === "core-routes" ? (
+                {selectedJobDetail.job.cleanedAt ? (
+                  <div className="cleaned-history-state">
+                    <strong>Local files cleaned</strong>
+                    <p>
+                      The lightweight job record remains available for history and browser-plugin duplicate checks.
+                    </p>
+                  </div>
+                ) : selectedJobMode === "core-routes" ? (
                   <CoreRoutesPanel
                     detail={selectedJobDetail}
                     assetLookup={assetLookup}
@@ -3800,7 +4196,8 @@ export function App() {
                     onOpenFolderPicker={openFolderPicker}
                     onOpenPreview={openPreview}
                     onFocusDebug={focusDebugFromAsset}
-                    onRetryRoute={retryRoute}
+                    onRerunRoute={rerunRoute}
+                    rerunningRouteId={rerunningRouteId}
                     browserActionsDisabled={browserActionsDisabled}
                   />
                 ) : (
@@ -3925,18 +4322,20 @@ export function App() {
                   </details>
                 ) : null}
 
-                <div className="detail-columns">
-                  <LogsPanel
-                    logs={selectedJobDetail.logs}
-                    expanded={logsExpanded}
-                    onToggle={() => setLogsExpanded((current) => !current)}
-                  />
-                  <ManifestPanel
-                    manifest={selectedJobDetail.manifest}
-                    expanded={manifestExpanded}
-                    onToggle={() => setManifestExpanded((current) => !current)}
-                  />
-                </div>
+                {!selectedJobDetail.job.cleanedAt ? (
+                  <div className="detail-columns">
+                    <LogsPanel
+                      logs={selectedJobDetail.logs}
+                      expanded={logsExpanded}
+                      onToggle={() => setLogsExpanded((current) => !current)}
+                    />
+                    <ManifestPanel
+                      manifest={selectedJobDetail.manifest}
+                      expanded={manifestExpanded}
+                      onToggle={() => setManifestExpanded((current) => !current)}
+                    />
+                  </div>
+                ) : null}
               </>
             )}
           </section>
@@ -3959,7 +4358,7 @@ export function App() {
           onToggleSelection={toggleAssetSelection}
           onCopyFeedbackContext={copyFeedbackContext}
           onCrop={cropAsset}
-          onRestoreOriginal={restoreAssetOriginal}
+          onRestoreOriginal={confirmRestoreAssetOriginal}
           onFocusAndClose={(asset) => {
             focusDebugFromAsset(asset);
             closePreview();

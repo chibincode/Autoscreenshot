@@ -262,6 +262,16 @@ describe("classifyFullPageType", () => {
 // The cases above run against an inline fixture, so they cannot catch a synonym being
 // dropped from the rules file that actually ships.
 describe("shipped eagle folder rules", () => {
+  it("routes /downloads to the current Page_Downloads folder", async () => {
+    const { rules: shippedRules, loadedFromFile } = await loadEagleFolderRules();
+    expect(loadedFromFile).toBe(true);
+
+    expect(
+      classifyFullPageType("https://wonder.design/downloads", shippedRules).type,
+    ).toBe("downloads_list");
+    expect(shippedRules.fullPage.downloads_list?.folderId).toBe("K3G20LWYMREYF");
+  });
+
   it("routes common pricing path synonyms to pricing", async () => {
     const { rules: shippedRules, loadedFromFile } = await loadEagleFolderRules();
     expect(loadedFromFile).toBe(true);

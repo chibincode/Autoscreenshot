@@ -1,4 +1,4 @@
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
@@ -102,6 +102,7 @@ const AUTO_ARCHIVE_TERMINAL_STATUSES: JobStatus[] = [
   "cancelled",
 ];
 const EAGLE_IMPORT_ALREADY_QUEUED_MESSAGE = "Eagle import for this job is already queued or running";
+const ROUTE_RERUN_ALREADY_QUEUED_MESSAGE = "A page rerun for this job is already queued or running";
 
 function statusFromManifest(manifest: RunManifest | null): JobStatus {
   if (!manifest) {
@@ -126,6 +127,122 @@ function statusFromCoreRouteState(manifest: RunManifest | null, routes: RouteTar
 
 function isTerminalJobStatus(status: JobStatus): boolean {
   return status !== "queued" && status !== "running";
+}
+
+function resolveJobOutputCleanupTarget(job: JobRecord): string | null {
+  if (!job.outputDir) {
+    return null;
+  }
+
+  let configuredOutputDir: unknown;
+  try {
+    configuredOutputDir = (JSON.parse(job.optionsJson) as { outputDir?: unknown }).outputDir;
+  } catch {
+    throw new Error("Job output configuration is invalid");
+  }
+  if (typeof configuredOutputDir !== "string" || !configuredOutputDir.trim()) {
+    throw new Error("Job output configuration is missing");
+  }
+
+  const outputRoot = path.resolve(process.cwd(), configuredOutputDir);
+  const outputTarget = path.resolve(job.outputDir);
+  const relativeTarget = path.relative(outputRoot, outputTarget);
+  const targetIsInsideRoot =
+    relativeTarget === job.id &&
+    !relativeTarget.startsWith("..") &&
+    !path.isAbsolute(relativeTarget);
+  if (!targetIsInsideRoot) {
+    throw new Error("Job output directory is outside its configured output root");
+  }
+
+  return outputTarget;
+}
+
+class JobCleanupError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number,
+  ) {
+    super(message);
+    this.name = "JobCleanupError";
+  }
+}
+
+async function cleanJobLocalFiles(params: {
+  repo: JobsRepository;
+  job: JobRecord;
+  log: FastifyInstance["log"];
+}): Promise<{ job: JobRecord; filesDeleted: boolean }> {
+  const { repo, job, log } = params;
+  if (!isTerminalJobStatus(job.status)) {
+    throw new JobCleanupError("Local files can only be cleaned after the job finishes", 409);
+  }
+  if (job.cleanedAt) {
+    throw new JobCleanupError("Local files for this job have already been cleaned", 409);
+  }
+
+  let outputTarget: string | null;
+  try {
+    outputTarget = resolveJobOutputCleanupTarget(job);
+  } catch (error) {
+    throw new JobCleanupError(
+      error instanceof Error ? error.message : "Job output directory cannot be safely cleaned",
+      409,
+    );
+  }
+
+  let stagedOutputDir: string | null = null;
+  if (outputTarget && existsSync(outputTarget)) {
+    stagedOutputDir = path.join(
+      path.dirname(outputTarget),
+      `.${path.basename(outputTarget)}.cleaning-${nanoid(6)}`,
+    );
+    try {
+      await fs.rename(outputTarget, stagedOutputDir);
+    } catch (error) {
+      log.error({ err: error, jobId: job.id, outputTarget }, "Failed to stage job output cleanup");
+      throw new JobCleanupError("Failed to prepare local screenshot files for cleanup", 500);
+    }
+  }
+
+  let cleanedJob: JobRecord | null = null;
+  try {
+    cleanedJob = repo.cleanJobFiles(job.id);
+    if (!cleanedJob) {
+      throw new Error("Job history record was not updated");
+    }
+  } catch (error) {
+    if (stagedOutputDir && outputTarget) {
+      try {
+        await fs.rename(stagedOutputDir, outputTarget);
+      } catch (rollbackError) {
+        log.error(
+          { err: rollbackError, jobId: job.id, stagedOutputDir, outputTarget },
+          "Failed to restore staged job output after database cleanup error",
+        );
+      }
+    }
+    log.error({ err: error, jobId: job.id }, "Failed to clean job database detail");
+    throw new JobCleanupError("Failed to clean local job files", 500);
+  }
+
+  let filesDeleted = true;
+  if (stagedOutputDir) {
+    try {
+      await fs.rm(stagedOutputDir, { recursive: true, force: true });
+    } catch (error) {
+      filesDeleted = false;
+      log.error(
+        { err: error, jobId: job.id, stagedOutputDir },
+        "Job history was preserved but staged output cleanup failed",
+      );
+    }
+  }
+
+  return {
+    job: cleanedJob,
+    filesDeleted,
+  };
 }
 
 function parseJobMode(optionsJson: string): JobMode {
@@ -160,6 +277,19 @@ function normalizeCreateJobRequest(body: CreateJobRequest): {
     instruction: body.instruction.trim(),
     options,
   };
+}
+
+function parseStoredJobOptions(optionsJson: string): JobExecutionOptions {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(optionsJson);
+  } catch {
+    throw new Error("Stored job options are invalid");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Stored job options are invalid");
+  }
+  return resolveJobOptions(parsed as Partial<JobExecutionOptions>);
 }
 
 function emitToQueue(queue: JobQueue, event: JobEvent): void {
@@ -681,139 +811,152 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     return playwrightRuntimeService.repair();
   });
 
-  app.post<{ Body: CreateJobRequest }>("/api/jobs", async (request, reply) => {
-    try {
-      const { instruction, options: jobOptions } = normalizeCreateJobRequest(request.body);
-      const jobId = nanoid(12);
-      const parsedUrl = extractFirstHttpUrl(instruction);
-      repo.createJob({
-        id: jobId,
-        instruction,
-        options: jobOptions,
-        taskJson: parsedUrl ? JSON.stringify({ url: parsedUrl }) : null,
+  const createAndEnqueueJob = (params: {
+    instruction: string;
+    jobOptions: JobExecutionOptions;
+    sourceJobId?: string;
+  }): string => {
+    const { instruction, jobOptions, sourceJobId } = params;
+    const jobId = nanoid(12);
+    const parsedUrl = extractFirstHttpUrl(instruction);
+    repo.createJob({
+      id: jobId,
+      instruction,
+      options: jobOptions,
+      taskJson: parsedUrl ? JSON.stringify({ url: parsedUrl }) : null,
+    });
+    repo.addLog(jobId, "info", "Job created");
+    if (sourceJobId) {
+      repo.addLog(jobId, "info", `Rescan created from job ${sourceJobId}`);
+    }
+
+    queue.enqueue(jobId, async () => {
+      repo.setJobRunning(jobId);
+      repo.addLog(jobId, "info", "Job started");
+      const log: ExecuteInstructionParams["log"] = (level, message) => {
+        repo.addLog(jobId, level, message);
+        emitToQueue(queue, {
+          type: "log",
+          jobId,
+          level,
+          message,
+          at: new Date().toISOString(),
+        });
+      };
+
+      emitToQueue(queue, {
+        type: "status",
+        jobId,
+        status: "running",
+        at: new Date().toISOString(),
       });
-      repo.addLog(jobId, "info", "Job created");
 
-      queue.enqueue(jobId, async () => {
-        repo.setJobRunning(jobId);
-        repo.addLog(jobId, "info", "Job started");
-        const log: ExecuteInstructionParams["log"] = (level, message) => {
-          repo.addLog(jobId, level, message);
-          emitToQueue(queue, {
-            type: "log",
-            jobId,
-            level,
-            message,
-            at: new Date().toISOString(),
-          });
-        };
+      try {
+        const outputDir = path.join(path.resolve(process.cwd(), jobOptions.outputDir), jobId);
+        const manifestPath = path.join(outputDir, "manifest.json");
 
+        const result =
+          jobOptions.mode === "core-routes"
+            ? await executeCoreRoutesInstructionFn({
+                instruction,
+                options: jobOptions,
+                runId: jobId,
+                outputDir,
+                manifestPath,
+                log,
+                shouldCancel: () => queue.isCancellationRequested(jobId),
+                onRoutesDiscovered: async (routes) => {
+                  repo.replaceRouteTargets(jobId, routes);
+                  emitToQueue(queue, {
+                    type: "assets_updated",
+                    jobId,
+                    at: new Date().toISOString(),
+                  });
+                },
+                onRouteStatus: async (update) => {
+                  repo.updateRouteTargetStatus({
+                    jobId,
+                    url: update.route.url,
+                    status: update.status,
+                    error: update.error ?? null,
+                    attemptCount: update.attemptCount,
+                    startedAt: update.startedAt ?? null,
+                    finishedAt: update.finishedAt ?? null,
+                  });
+                  emitToQueue(queue, {
+                    type: "assets_updated",
+                    jobId,
+                    at: new Date().toISOString(),
+                  });
+                },
+              })
+            : await executeInstructionFn({
+                instruction,
+                options: jobOptions,
+                runId: jobId,
+                log,
+              });
+
+        repo.replaceAssets(jobId, result.manifest);
+        const wasCancelled = jobOptions.mode === "core-routes" && "cancelled" in result && result.cancelled;
+        const finalStatus =
+          jobOptions.mode === "core-routes"
+            ? wasCancelled
+              ? "cancelled"
+              : statusFromCoreRouteState(result.manifest, repo.listRouteTargets(jobId))
+            : statusFromManifest(result.manifest);
+        repo.setJobResult({
+          jobId,
+          status: finalStatus,
+          taskJson: JSON.stringify(result.manifest.task),
+          manifestPath: result.manifestPath,
+          outputDir: result.manifest.outputDir,
+          error:
+            finalStatus === "success" || finalStatus === "awaiting_confirmation" || finalStatus === "partial_success"
+              ? null
+              : finalStatus === "cancelled"
+                ? "Cancelled by user"
+                : "Some assets still require attention",
+        });
+
+        emitToQueue(queue, {
+          type: "assets_updated",
+          jobId,
+          at: new Date().toISOString(),
+        });
         emitToQueue(queue, {
           type: "status",
           jobId,
-          status: "running",
+          status: finalStatus,
           at: new Date().toISOString(),
         });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        repo.addLog(jobId, "error", message);
+        const parsedUrl = extractFirstHttpUrl(instruction);
+        repo.setJobResult({
+          jobId,
+          status: "failed",
+          taskJson: parsedUrl ? JSON.stringify({ url: parsedUrl }) : undefined,
+          error: message,
+        });
+        emitToQueue(queue, {
+          type: "status",
+          jobId,
+          status: "failed",
+          at: new Date().toISOString(),
+          message,
+        });
+      }
+    });
 
-        try {
-          const outputDir = path.join(path.resolve(process.cwd(), jobOptions.outputDir), jobId);
-          const manifestPath = path.join(outputDir, "manifest.json");
+    return jobId;
+  };
 
-          const result =
-            jobOptions.mode === "core-routes"
-              ? await executeCoreRoutesInstructionFn({
-                  instruction,
-                  options: jobOptions,
-                  runId: jobId,
-                  outputDir,
-                  manifestPath,
-                  log,
-                  shouldCancel: () => queue.isCancellationRequested(jobId),
-                  onRoutesDiscovered: async (routes) => {
-                    repo.replaceRouteTargets(jobId, routes);
-                    emitToQueue(queue, {
-                      type: "assets_updated",
-                      jobId,
-                      at: new Date().toISOString(),
-                    });
-                  },
-                  onRouteStatus: async (update) => {
-                    repo.updateRouteTargetStatus({
-                      jobId,
-                      url: update.route.url,
-                      status: update.status,
-                      error: update.error ?? null,
-                      attemptCount: update.attemptCount,
-                      startedAt: update.startedAt ?? null,
-                      finishedAt: update.finishedAt ?? null,
-                    });
-                    emitToQueue(queue, {
-                      type: "assets_updated",
-                      jobId,
-                      at: new Date().toISOString(),
-                    });
-                  },
-                })
-              : await executeInstructionFn({
-                  instruction,
-                  options: jobOptions,
-                  runId: jobId,
-                  log,
-                });
-
-          repo.replaceAssets(jobId, result.manifest);
-          const wasCancelled = jobOptions.mode === "core-routes" && "cancelled" in result && result.cancelled;
-          const finalStatus =
-            jobOptions.mode === "core-routes"
-              ? wasCancelled
-                ? "cancelled"
-                : statusFromCoreRouteState(result.manifest, repo.listRouteTargets(jobId))
-              : statusFromManifest(result.manifest);
-          repo.setJobResult({
-            jobId,
-            status: finalStatus,
-            taskJson: JSON.stringify(result.manifest.task),
-            manifestPath: result.manifestPath,
-            outputDir: result.manifest.outputDir,
-            error:
-              finalStatus === "success" || finalStatus === "awaiting_confirmation" || finalStatus === "partial_success"
-                ? null
-                : finalStatus === "cancelled"
-                  ? "Cancelled by user"
-                  : "Some assets still require attention",
-          });
-
-          emitToQueue(queue, {
-            type: "assets_updated",
-            jobId,
-            at: new Date().toISOString(),
-          });
-          emitToQueue(queue, {
-            type: "status",
-            jobId,
-            status: finalStatus,
-            at: new Date().toISOString(),
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          repo.addLog(jobId, "error", message);
-          const parsedUrl = extractFirstHttpUrl(instruction);
-          repo.setJobResult({
-            jobId,
-            status: "failed",
-            taskJson: parsedUrl ? JSON.stringify({ url: parsedUrl }) : undefined,
-            error: message,
-          });
-          emitToQueue(queue, {
-            type: "status",
-            jobId,
-            status: "failed",
-            at: new Date().toISOString(),
-            message,
-          });
-        }
-      });
-
+  app.post<{ Body: CreateJobRequest }>("/api/jobs", async (request, reply) => {
+    try {
+      const { instruction, options: jobOptions } = normalizeCreateJobRequest(request.body);
+      const jobId = createAndEnqueueJob({ instruction, jobOptions });
       reply.code(202);
       return {
         jobId,
@@ -823,6 +966,39 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       reply.code(400);
       return {
         error: error instanceof Error ? error.message : "Invalid payload",
+      };
+    }
+  });
+
+  app.post<{ Params: { jobId: string } }>("/api/jobs/:jobId/rescan", async (request, reply) => {
+    const sourceJob = repo.getJob(request.params.jobId);
+    if (!sourceJob) {
+      reply.code(404);
+      return { error: "Job not found" };
+    }
+    if (!isTerminalJobStatus(sourceJob.status)) {
+      reply.code(409);
+      return { error: "Rescan is only available after the current job finishes" };
+    }
+
+    try {
+      const jobOptions = parseStoredJobOptions(sourceJob.optionsJson);
+      const jobId = createAndEnqueueJob({
+        instruction: sourceJob.instruction,
+        jobOptions,
+        sourceJobId: sourceJob.id,
+      });
+      reply.code(202);
+      return {
+        jobId,
+        sourceJobId: sourceJob.id,
+        status: "queued" as const,
+        mode: jobOptions.mode,
+      };
+    } catch (error) {
+      reply.code(409);
+      return {
+        error: error instanceof Error ? error.message : "Stored job configuration is invalid",
       };
     }
   });
@@ -971,6 +1147,18 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     }
 
     const shouldArchive = request.body?.archived ?? true;
+    if (job.cleanedAt) {
+      if (!shouldArchive) {
+        reply.code(409);
+        return { error: "Jobs with cleaned local files must remain in history" };
+      }
+      return {
+        jobId: job.id,
+        status: job.status,
+        archivedAt: job.archivedAt,
+      };
+    }
+
     repo.setJobArchived(job.id, shouldArchive);
     const updatedJob = repo.getJob(job.id);
     if (!updatedJob) {
@@ -993,6 +1181,75 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       status: updatedJob.status,
       archivedAt: updatedJob.archivedAt,
     };
+  });
+
+  app.get("/api/cleanup/archived", async () => repo.getArchivedCleanupSummary());
+
+  app.post("/api/cleanup/archived", async (request) => {
+    const candidates = repo.listArchivedJobsWithFiles();
+    const summary = repo.getArchivedCleanupSummary();
+    const failures: Array<{ jobId: string; error: string }> = [];
+    let cleanedCount = 0;
+    let filesDeletedCount = 0;
+
+    for (const job of candidates) {
+      try {
+        const result = await cleanJobLocalFiles({
+          repo,
+          job,
+          log: request.log,
+        });
+        cleanedCount += 1;
+        if (result.filesDeleted) {
+          filesDeletedCount += 1;
+        } else {
+          failures.push({
+            jobId: job.id,
+            error: "History was preserved but some staged files could not be removed",
+          });
+        }
+      } catch (error) {
+        failures.push({
+          jobId: job.id,
+          error: error instanceof Error ? error.message : "Local file cleanup failed",
+        });
+      }
+    }
+
+    return {
+      eligibleJobCount: candidates.length,
+      eligibleAssetCount: summary.assetCount,
+      cleanedCount,
+      filesDeletedCount,
+      failedCount: failures.length,
+      failures,
+    };
+  });
+
+  app.post<{ Params: { jobId: string } }>("/api/jobs/:jobId/cleanup", async (request, reply) => {
+    const job = repo.getJob(request.params.jobId);
+    if (!job) {
+      reply.code(404);
+      return { error: "Job not found" };
+    }
+    try {
+      const result = await cleanJobLocalFiles({
+        repo,
+        job,
+        log: request.log,
+      });
+      return {
+        jobId: job.id,
+        cleanedAt: result.job.cleanedAt,
+        archivedAt: result.job.archivedAt,
+        filesDeleted: result.filesDeleted,
+      };
+    } catch (error) {
+      reply.code(error instanceof JobCleanupError ? error.statusCode : 500);
+      return {
+        error: error instanceof Error ? error.message : "Failed to clean local job files",
+      };
+    }
   });
 
   app.get<{ Params: { jobId: string } }>("/api/jobs/:jobId", async (request, reply) => {
@@ -1718,6 +1975,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       reply.code(404);
       return { error: "Job not found" };
     }
+    if (queue.hasJob(job.id)) {
+      reply.code(409);
+      return { error: ROUTE_RERUN_ALREADY_QUEUED_MESSAGE };
+    }
     if (!job.manifestPath) {
       reply.code(400);
       return { error: "No manifest for this job" };
@@ -1741,14 +2002,23 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       reply.code(400);
       return { error: "retry-route is only available after the core-routes job has finished" };
     }
-    if (route.status !== "failed") {
+    if (route.status !== "success" && route.status !== "failed") {
       reply.code(400);
-      return { error: "retry-route is only available for failed routes" };
+      return { error: "retry-route is only available for successful or failed routes" };
     }
 
+    repo.setJobResult({
+      jobId: job.id,
+      status: "queued",
+      taskJson: job.taskJson,
+      manifestPath: job.manifestPath,
+      outputDir: job.outputDir,
+      error: null,
+    });
+    repo.addLog(job.id, "info", `Page rerun queued: ${route.path}`);
     queue.enqueue(job.id, async () => {
       repo.setJobRunning(job.id);
-      repo.addLog(job.id, "info", `Retry route started: ${route.path}`);
+      repo.addLog(job.id, "info", `Page rerun started: ${route.path}`);
       emitToQueue(queue, {
         type: "status",
         jobId: job.id,

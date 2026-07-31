@@ -13,7 +13,7 @@ import type {
 } from "../types.js";
 import { loadEagleFolderRules } from "./eagle-folder-rules.js";
 import { classifyFullPageType } from "./fullpage-classifier.js";
-import { createPendingImportResult } from "./import-state.js";
+import { createPendingImportResult, normalizeImportResult } from "./import-state.js";
 import { discoverCoreRoutes } from "./route-discovery.js";
 import { resolveJobOptions } from "./job-service.js";
 import { ensureDir, readManifest, writeManifestToPath } from "../utils/manifest.js";
@@ -843,21 +843,41 @@ export async function retryCoreRouteByManifest(
     baseTask,
     route,
     outputDir: manifestRaw.outputDir,
-    sectionScope: options.sectionScope,
+    sectionScope: manifestRaw.sectionScope ?? options.sectionScope,
     classicMaxSections: options.classicMaxSections,
-    initialDpr: 2,
+    initialDpr: baseTask.image.dpr === 1 ? 1 : 2,
     log,
   });
 
-  const filteredAssets = manifestRaw.assets.filter((asset) => !(asset.kind === "fullPage" && asset.sourceUrl === route.url));
-  manifestRaw.assets = [...filteredAssets, ...captured.assets];
+  const existingRouteAssets = manifestRaw.assets.filter(
+    (asset) => asset.kind === "fullPage" && asset.sourceUrl === route.url,
+  );
+  const replaceableRouteAssets = existingRouteAssets
+    .filter((asset) => normalizeImportResult(asset.import).status !== "imported")
+    .sort((left, right) => right.capturedAt.localeCompare(left.capturedAt));
+  const previousDraft = replaceableRouteAssets[0];
+  const replacementAssets = captured.assets.map((asset) => ({
+    ...asset,
+    folderOverrideId: previousDraft?.folderOverrideId ?? asset.folderOverrideId,
+    import: createPendingImportResult(
+      previousDraft ? normalizeImportResult(previousDraft.import).selected : true,
+    ),
+  }));
+  const retainedAssets = manifestRaw.assets.filter((asset) => {
+    if (asset.kind !== "fullPage" || asset.sourceUrl !== route.url) {
+      return true;
+    }
+    return normalizeImportResult(asset.import).status === "imported";
+  });
+  const retainedImportedCount = existingRouteAssets.length - replaceableRouteAssets.length;
+  manifestRaw.assets = [...retainedAssets, ...replacementAssets];
 
   const routeSummary: RouteTargetSummary = {
     ...buildRouteSummary({
       route,
       status: "success",
       attemptCount: params.routeAttemptCount + captured.attemptCount,
-      assetCount: captured.assets.length,
+      assetCount: retainedImportedCount + replacementAssets.length,
       startedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
       lastExecutedAt: new Date().toISOString(),
