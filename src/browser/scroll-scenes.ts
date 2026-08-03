@@ -9,6 +9,8 @@ const SCENE_STICKY_ATTR = "data-autosnap-scroll-scene-sticky";
 const MIN_STICKY_HEIGHT = 360;
 const MIN_STICKY_WIDTH = 320;
 const MIN_HEIGHT_RATIO = 2.5;
+const STANDALONE_STICKY_MIN_VIEWPORT_HEIGHT_RATIO = 0.4;
+const STANDALONE_STICKY_MIN_OUTER_WIDTH_RATIO = 0.45;
 const MAX_SCENES = 3;
 const FRAME_COUNT = 4;
 const FRAME_SETTLE_MS = 220;
@@ -84,13 +86,19 @@ export function isValidScrollSceneCandidate(params: {
   stickyHeight: number;
   stickyWidth: number;
   viewportHeight: number;
+  splitLayout?: boolean;
 }): boolean {
+  const isSubstantialStandaloneScene =
+    params.stickyHeight >= params.viewportHeight * STANDALONE_STICKY_MIN_VIEWPORT_HEIGHT_RATIO &&
+    params.stickyWidth >= params.outerWidth * STANDALONE_STICKY_MIN_OUTER_WIDTH_RATIO;
+
   return (
     params.stickyHeight >= MIN_STICKY_HEIGHT &&
     params.stickyWidth >= MIN_STICKY_WIDTH &&
     params.outerWidth >= params.stickyWidth * 0.6 &&
     params.outerHeight >= params.stickyHeight * MIN_HEIGHT_RATIO &&
-    params.outerHeight >= params.viewportHeight * 1.5
+    params.outerHeight >= params.viewportHeight * 1.5 &&
+    (params.splitLayout === true || isSubstantialStandaloneScene)
   );
 }
 
@@ -849,6 +857,7 @@ export async function detectScrollSceneCandidates(page: Page): Promise<ScrollSce
       stickyHeight: candidate.stickyHeight,
       stickyWidth: candidate.stickyWidth,
       viewportHeight: page.viewportSize()?.height ?? 0,
+      splitLayout: candidate.splitLayout,
     }),
   );
 }

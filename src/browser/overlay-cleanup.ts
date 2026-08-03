@@ -662,7 +662,7 @@ async function handleOverlayCandidate(
       await page.waitForTimeout(POST_ACTION_SETTLE_MS);
       log?.(
         "info",
-        `overlay_action action=hide_dom_offscreen type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
+        `overlay_action phase=${phase} action=hide_dom_offscreen type=${classification.type} vendor=${classification.vendor} overlay_id=${snapshot.overlayId}`,
       );
     }
     return hidden;

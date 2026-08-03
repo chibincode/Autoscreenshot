@@ -955,6 +955,17 @@ summary:focus-visible {
     0 10px 20px rgba(15, 23, 42, 0.08);
 }
 
+.job-card-quick-action:disabled,
+.job-card.selected .job-card-quick-action:disabled {
+  opacity: 0.55;
+  cursor: wait;
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.05);
+}
+
+.job-card-quick-action:disabled:not([aria-busy="true"]) {
+  cursor: not-allowed;
+}
+
 .job-card.selected .job-card-quick-action {
   background: rgba(234, 242, 255, 0.98);
   color: var(--accent-blue-text);
@@ -1583,11 +1594,158 @@ summary:focus-visible {
 }
 
 .core-route-card-actions,
-.asset-card-actions,
-.asset-preview-actions {
+.asset-card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.asset-preview-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.asset-preview-import-control {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 10px;
+}
+
+.asset-preview-actions .asset-preview-primary-action {
+  width: 100%;
+  min-height: 40px;
+  border-radius: 10px;
+  background: #202329;
+  color: white;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.14);
+}
+
+.asset-preview-actions .asset-preview-primary-action:hover:not(:disabled) {
+  background: #101216;
+  box-shadow: 0 12px 22px rgba(15, 23, 42, 0.18);
+}
+
+.asset-preview-secondary-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.asset-preview-secondary-actions-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.asset-preview-actions .asset-preview-source-action,
+.asset-preview-actions .asset-preview-feedback-action,
+.asset-preview-actions .asset-preview-utility-action {
+  width: 100%;
+  min-height: 38px;
+  border-radius: 10px;
+  font-weight: 650;
+}
+
+.asset-preview-actions .asset-preview-source-action {
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--surface-soft);
+  color: var(--text);
+  text-decoration: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(17, 24, 39, 0.05),
+    0 1px 0 rgba(255, 255, 255, 0.75);
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    background-color 160ms ease;
+}
+
+.asset-preview-actions .asset-preview-source-action:hover {
+  transform: translateY(-1px);
+  background: var(--surface);
+  box-shadow:
+    inset 0 0 0 1px rgba(17, 24, 39, 0.06),
+    0 12px 22px rgba(15, 23, 42, 0.07);
+}
+
+.asset-preview-actions .asset-preview-source-action:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+.asset-preview-source-action-icon {
+  font-size: 0.95em;
+  line-height: 1;
+}
+
+.asset-preview-actions .asset-preview-feedback-action.is-success {
+  background: rgba(228, 245, 233, 0.98);
+  color: #426353;
+}
+
+.asset-preview-actions .asset-preview-feedback-action.is-error {
+  background: var(--warm-tint);
+  color: var(--warm-text);
+}
+
+.asset-preview-more-actions {
+  min-width: 0;
+}
+
+.asset-preview-more-actions summary {
+  min-height: 34px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.05);
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+.asset-preview-more-actions summary:hover,
+.asset-preview-more-actions[open] summary {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.asset-preview-more-menu {
+  margin-top: 8px;
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.05);
+}
+
+.asset-preview-actions .asset-preview-more-menu button {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  justify-content: flex-start;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  box-shadow: none;
+}
+
+.asset-preview-actions .asset-preview-more-menu button:hover:not(:disabled) {
+  transform: none;
+  background: white;
+  box-shadow: none;
 }
 
 .route-asset-grid {
@@ -2556,15 +2714,6 @@ summary:focus-visible {
   background: #202329;
   color: white;
   box-shadow: none;
-}
-
-.copy-feedback-state {
-  padding: 11px 12px;
-  border-radius: 16px;
-  background: var(--surface-soft);
-  color: var(--text);
-  font-size: 0.82rem;
-  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.05);
 }
 
 .asset-preview-meta {

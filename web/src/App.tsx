@@ -204,6 +204,28 @@ type AssetCropOperation =
 type CropToolMode = "bottom" | "band";
 type CropDragTarget = "bottom" | "band-start" | "band-end" | "band-body";
 
+const LAST_CROP_TOOL_MODE_STORAGE_KEY = "autoscreenshot.lastCropToolMode.v1";
+
+function readLastCropToolMode(): CropToolMode {
+  if (typeof window === "undefined") {
+    return "bottom";
+  }
+  try {
+    const storedMode = window.localStorage.getItem(LAST_CROP_TOOL_MODE_STORAGE_KEY);
+    return storedMode === "band" || storedMode === "bottom" ? storedMode : "bottom";
+  } catch {
+    return "bottom";
+  }
+}
+
+function rememberCropToolMode(mode: CropToolMode): void {
+  try {
+    window.localStorage.setItem(LAST_CROP_TOOL_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Keep the current session usable when browser storage is unavailable.
+  }
+}
+
 interface JobLog {
   id: number;
   level: "info" | "warn" | "error";
@@ -1187,6 +1209,7 @@ const JobsListPanel = memo(function JobsListPanel({
   selectedJobId,
   runningJobId,
   exitingJobIds,
+  archivingJobId,
   totalPages,
   page,
   onSelectJob,
@@ -1199,6 +1222,7 @@ const JobsListPanel = memo(function JobsListPanel({
   selectedJobId: string | null;
   runningJobId: string | null;
   exitingJobIds: ReadonlySet<string>;
+  archivingJobId: string | null;
   totalPages: number;
   page: number;
   onSelectJob: (jobId: string) => void;
@@ -1216,6 +1240,7 @@ const JobsListPanel = memo(function JobsListPanel({
         const showQuickActions = showQuickArchive || showCleanFiles;
         const nextArchivedState = !Boolean(job.archivedAt);
         const isExiting = exitingJobIds.has(job.id);
+        const isArchiving = archivingJobId === job.id;
         return (
           <div key={job.id} className={cx("job-card-shell", isExiting && "job-card-shell-exiting")}>
             <article
@@ -1289,19 +1314,28 @@ const JobsListPanel = memo(function JobsListPanel({
                     <button
                       type="button"
                       className="job-card-quick-action"
+                      disabled={archivingJobId !== null}
+                      aria-busy={isArchiving || undefined}
                       onClick={(event) => {
                         event.stopPropagation();
                         onArchiveJob(job.id, nextArchivedState);
                       }}
                       aria-label={nextArchivedState ? "Archive job" : "Unarchive job"}
                     >
-                      {nextArchivedState ? "Archive" : "Unarchive"}
+                      {isArchiving
+                        ? nextArchivedState
+                          ? "Archiving..."
+                          : "Unarchiving..."
+                        : nextArchivedState
+                          ? "Archive"
+                          : "Unarchive"}
                     </button>
                   ) : null}
                   {showCleanFiles ? (
                     <button
                       type="button"
                       className="job-card-quick-action job-card-clean-action"
+                      disabled={archivingJobId !== null}
                       onClick={(event) => {
                         event.stopPropagation();
                         onCleanJob(job.id);
@@ -1340,6 +1374,7 @@ const JobDetailSummary = memo(function JobDetailSummary({
   isRunning,
   canCancel,
   canArchive,
+  archiving,
   canClean,
   canRescan,
   rescanDisabled,
@@ -1363,6 +1398,7 @@ const JobDetailSummary = memo(function JobDetailSummary({
   isRunning: boolean;
   canCancel: boolean;
   canArchive: boolean;
+  archiving: boolean;
   canClean: boolean;
   canRescan: boolean;
   rescanDisabled: boolean;
@@ -1465,12 +1501,17 @@ const JobDetailSummary = memo(function JobDetailSummary({
           </Button>
         ) : null}
         {canArchive ? (
-          <Button size="sm" onClick={() => onArchive(detail.job.id, !Boolean(detail.job.archivedAt))}>
+          <Button
+            size="sm"
+            loading={archiving}
+            loadingLabel={detail.job.archivedAt ? "Unarchiving..." : "Archiving..."}
+            onClick={() => onArchive(detail.job.id, !Boolean(detail.job.archivedAt))}
+          >
             {detail.job.archivedAt ? "Unarchive" : "Archive"}
           </Button>
         ) : null}
         {canClean ? (
-          <Button variant="danger" size="sm" onClick={() => onClean(detail.job.id)}>
+          <Button variant="danger" size="sm" disabled={archiving} onClick={() => onClean(detail.job.id)}>
             Clean files
           </Button>
         ) : null}
@@ -1887,7 +1928,7 @@ const PreviewModal = memo(function PreviewModal({
   const imageWrapRef = useRef<HTMLDivElement | null>(null);
   const cropStageRef = useRef<HTMLDivElement | null>(null);
   const [cropMode, setCropMode] = useState(false);
-  const [cropToolMode, setCropToolMode] = useState<CropToolMode>("bottom");
+  const [cropToolMode, setCropToolMode] = useState<CropToolMode>(readLastCropToolMode);
   const [cropKeepHeight, setCropKeepHeight] = useState(previewAsset.imageHeight);
   const [cropBandStartY, setCropBandStartY] = useState(0);
   const [cropBandEndY, setCropBandEndY] = useState(0);
@@ -1901,6 +1942,10 @@ const PreviewModal = memo(function PreviewModal({
     !assetActionsDisabled &&
     previewAsset.importStatus !== "imported" &&
     previewAsset.imageHeight > 64;
+  const canRestoreOriginal = previewAsset.canRestoreOriginal;
+  const canFocusDebug = canFocusDebugAsset(previewAsset, hasSectionDebug);
+  const secondaryActionCount = Number(canRestoreOriginal) + Number(canFocusDebug);
+  const originalPageUrl = resolveLinkHref(previewAsset.sourceUrl ?? previewRoute?.url ?? "");
   const normalizedKeepHeight = Math.max(
     64,
     Math.min(previewAsset.imageHeight - 1, Math.round(cropKeepHeight)),
@@ -1923,7 +1968,6 @@ const PreviewModal = memo(function PreviewModal({
 
   useEffect(() => {
     setCropMode(false);
-    setCropToolMode("bottom");
     setCropKeepHeight(previewAsset.imageHeight);
     setCropBandStartY(0);
     setCropBandEndY(0);
@@ -1976,13 +2020,13 @@ const PreviewModal = memo(function PreviewModal({
   }, [previewAsset.imageHeight, scrollToNaturalY]);
 
   const beginCrop = useCallback((): void => {
-    setCropToolMode("bottom");
-    setDefaultCropForMode("bottom");
+    setDefaultCropForMode(cropToolMode);
     setCropMode(true);
-  }, [setDefaultCropForMode]);
+  }, [cropToolMode, setDefaultCropForMode]);
 
   const switchCropToolMode = useCallback((mode: CropToolMode): void => {
     setCropToolMode(mode);
+    rememberCropToolMode(mode);
     setDefaultCropForMode(mode);
     cropDragRef.current = null;
   }, [setDefaultCropForMode]);
@@ -2153,7 +2197,7 @@ const PreviewModal = memo(function PreviewModal({
           </div>
           <aside className="asset-preview-sidebar">
             <div className="asset-preview-actions">
-              <label className="asset-select-control asset-select-control-inline">
+              <label className="asset-select-control asset-select-control-inline asset-preview-import-control">
                 <input
                   type="checkbox"
                   checked={previewAsset.selectedForImport}
@@ -2162,36 +2206,97 @@ const PreviewModal = memo(function PreviewModal({
                 />
                 <span>导入到 Eagle</span>
               </label>
-              <button type="button" onClick={() => void onCopyFeedbackContext()}>
-                Copy Feedback Context
-              </button>
               {!cropMode ? (
-                <button
-                  type="button"
-                  disabled={!canEditImage}
-                  title={
-                    previewAsset.importStatus === "imported"
-                      ? "已导入 Eagle 的资产不能再裁切"
-                      : "裁掉截图中的不需要区域"
-                  }
-                  onClick={beginCrop}
-                >
-                  裁切
-                </button>
-              ) : null}
-              {!cropMode && previewAsset.canRestoreOriginal ? (
-                <button
-                  type="button"
-                  disabled={!canEditImage}
-                  onClick={() => onRestoreOriginal(previewAsset.id)}
-                >
-                  恢复原图
-                </button>
-              ) : null}
-              {canFocusDebugAsset(previewAsset, hasSectionDebug) ? (
-                <button type="button" onClick={() => onFocusAndClose(previewAsset)}>
-                  Debug 聚焦
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="asset-preview-primary-action"
+                    disabled={!canEditImage}
+                    title={
+                      previewAsset.importStatus === "imported"
+                        ? "已导入 Eagle 的资产不能再裁切"
+                        : "裁掉截图中的不需要区域"
+                    }
+                    onClick={beginCrop}
+                  >
+                    裁切图片
+                  </button>
+                  <div
+                    className={cx(
+                      "asset-preview-secondary-actions",
+                      !originalPageUrl && "asset-preview-secondary-actions-single",
+                    )}
+                  >
+                    {originalPageUrl ? (
+                      <a
+                        className="asset-preview-source-action"
+                        href={originalPageUrl}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        title="在外部浏览器打开原站"
+                      >
+                        <span>访问原站</span>
+                        <span className="asset-preview-source-action-icon" aria-hidden="true">
+                          ↗
+                        </span>
+                      </a>
+                    ) : null}
+                    <button
+                      type="button"
+                      className={`asset-preview-feedback-action${
+                        copyFeedbackState === "反馈上下文已复制"
+                          ? " is-success"
+                          : copyFeedbackState
+                            ? " is-error"
+                            : ""
+                      }`}
+                      aria-live="polite"
+                      onClick={() => void onCopyFeedbackContext()}
+                    >
+                      {copyFeedbackState ?? "复制反馈信息"}
+                    </button>
+                  </div>
+                  {secondaryActionCount === 1 && canRestoreOriginal ? (
+                    <button
+                      type="button"
+                      className="asset-preview-utility-action"
+                      disabled={!canEditImage}
+                      onClick={() => onRestoreOriginal(previewAsset.id)}
+                    >
+                      恢复原图
+                    </button>
+                  ) : null}
+                  {secondaryActionCount === 1 && canFocusDebug ? (
+                    <button
+                      type="button"
+                      className="asset-preview-utility-action"
+                      onClick={() => onFocusAndClose(previewAsset)}
+                    >
+                      Debug 聚焦
+                    </button>
+                  ) : null}
+                  {secondaryActionCount > 1 ? (
+                    <details className="asset-preview-more-actions">
+                      <summary>更多操作</summary>
+                      <div className="asset-preview-more-menu">
+                        {canRestoreOriginal ? (
+                          <button
+                            type="button"
+                            disabled={!canEditImage}
+                            onClick={() => onRestoreOriginal(previewAsset.id)}
+                          >
+                            恢复原图
+                          </button>
+                        ) : null}
+                        {canFocusDebug ? (
+                          <button type="button" onClick={() => onFocusAndClose(previewAsset)}>
+                            Debug 聚焦
+                          </button>
+                        ) : null}
+                      </div>
+                    </details>
+                  ) : null}
+                </>
               ) : null}
             </div>
             {cropMode ? (
@@ -2326,7 +2431,6 @@ const PreviewModal = memo(function PreviewModal({
                 </div>
               </div>
             ) : null}
-            {copyFeedbackState ? <div className="copy-feedback-state">{copyFeedbackState}</div> : null}
             <dl className="asset-preview-meta">
               <div>
                 <dt>Eagle Path</dt>
@@ -2482,6 +2586,7 @@ export function App() {
   const [retryingFailedImport, setRetryingFailedImport] = useState(false);
   const [rescanningJobId, setRescanningJobId] = useState<string | null>(null);
   const [rerunningRouteId, setRerunningRouteId] = useState<number | null>(null);
+  const [archivingJobId, setArchivingJobId] = useState<string | null>(null);
   const [exitingJobIds, setExitingJobIds] = useState<Set<string>>(() => new Set());
   const [pendingQueueAction, setPendingQueueAction] = useState<{
     jobId: string;
@@ -2504,6 +2609,7 @@ export function App() {
   const selectedJobDetailRef = useRef<JobDetail | null>(null);
   const pinnedJobIdRef = useRef<string | null>(initialSelectedJobId);
   const pendingAssetIdRef = useRef<number | null>(initialSelectedAssetId);
+  const archivingJobIdRef = useRef<string | null>(null);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(totalJobs / pageSize)), [pageSize, totalJobs]);
   const runningJobId = config?.queue.runningJobId ?? null;
@@ -2639,6 +2745,8 @@ export function App() {
   }, [selectedJobDetail]);
   const selectedJobIsRescanning =
     selectedJobDetail !== null && rescanningJobId === selectedJobDetail.job.id;
+  const selectedJobIsArchiving =
+    selectedJobDetail !== null && archivingJobId === selectedJobDetail.job.id;
   const sectionDebug = useMemo(
     () => readSectionDebug(selectedJobDetail?.manifest ?? null),
     [selectedJobDetail?.manifest],
@@ -2657,6 +2765,7 @@ export function App() {
     importingSelected ||
     retryingFailedImport ||
     assetCropPending ||
+    selectedJobIsArchiving ||
     selectedJobIsBusy;
   const canImportSelected =
     !assetActionsDisabled &&
@@ -3594,6 +3703,11 @@ export function App() {
   }, [executeCancelJob]);
 
   const executeArchiveJob = useCallback(async (jobId: string, archived: boolean): Promise<void> => {
+    if (archivingJobIdRef.current !== null) {
+      return;
+    }
+    archivingJobIdRef.current = jobId;
+    setArchivingJobId(jobId);
     let animatedRemoval = false;
     try {
       await apiFetch<{ archivedAt: string | null }>(`/api/jobs/${jobId}/archive`, {
@@ -3622,6 +3736,8 @@ export function App() {
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : archived ? "归档任务失败" : "取消归档失败");
     } finally {
+      archivingJobIdRef.current = null;
+      setArchivingJobId((current) => (current === jobId ? null : current));
       if (animatedRemoval) {
         setExitingJobIds((current) => {
           const next = new Set(current);
@@ -4099,6 +4215,7 @@ export function App() {
             selectedJobId={selectedJobId}
             runningJobId={runningJobId}
             exitingJobIds={exitingJobIds}
+            archivingJobId={archivingJobId}
             totalPages={totalPages}
             page={page}
             onSelectJob={selectJob}
@@ -4119,9 +4236,10 @@ export function App() {
                   isRunning={selectedJobIsRunning}
                   canCancel={canCancelSelectedJob}
                   canArchive={canArchiveSelectedJob}
+                  archiving={selectedJobIsArchiving}
                   canClean={canCleanSelectedJob}
                   canRescan={canRescanSelectedJob}
-                  rescanDisabled={browserActionsDisabled}
+                  rescanDisabled={browserActionsDisabled || selectedJobIsArchiving}
                   rescanning={selectedJobIsRescanning}
                   mode={selectedJobMode}
                   assetImportSummary={assetImportSummary}

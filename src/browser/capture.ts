@@ -14,8 +14,10 @@ import { waitForRenderStability } from "./render-readiness.js";
 import { stabilizeCaptureMotion } from "./motion-stabilizer.js";
 import { captureFooterRevealReplacements } from "./footer-reveals.js";
 import {
+  controlBottomFixedOverlaysForCapture,
   captureTopOverlayReplacement,
   hideTopOverlaysForCapture,
+  normalizeStickyElementsForCapture,
 } from "./top-overlays.js";
 import {
   captureScrollSceneReplacements,
@@ -181,6 +183,12 @@ async function captureFullPageByScrollStitch(params: {
   const maxScroll = Math.max(0, Math.round(params.pageHeight - viewportHeight));
   const slices: Array<{ buffer: Buffer; top: number }> = [];
   let restoreTopOverlays: (() => Promise<void>) | null = null;
+  const bottomFixedOverlays = await controlBottomFixedOverlaysForCapture({
+    page: params.page,
+    pageWidth: params.pageWidth,
+    viewportHeight,
+    log: params.log,
+  });
 
   // Smooth scrolling would desync scrollTo() from the screenshot that follows it.
   const styleHandle = await params.page
@@ -196,6 +204,8 @@ async function captureFullPageByScrollStitch(params: {
   try {
     let sliceCount = 0;
     for (let top = 0; top < params.pageHeight; top += viewportHeight) {
+      const isFinalSlice = top + viewportHeight >= params.pageHeight;
+      await bottomFixedOverlays.setVisible(isFinalSlice);
       const scrollTarget = Math.min(top, maxScroll);
       // Scroll and let the new position paint. Two frames is enough for the
       // compositor, and far cheaper than a fixed sleep once a page needs many slices.
@@ -251,6 +261,7 @@ async function captureFullPageByScrollStitch(params: {
     );
   } finally {
     await restoreTopOverlays?.();
+    await bottomFixedOverlays.restore();
     if (styleHandle) {
       await styleHandle
         .evaluate((node) => (node instanceof Element ? node.remove() : undefined))
@@ -286,10 +297,17 @@ async function captureFullPageByTiles(params: {
   const outputHeight = Math.max(1, Math.round(params.pageHeight * params.dpr));
   const tiles: Array<{ buffer: Buffer; top: number }> = [];
   let restoreTopOverlays: (() => Promise<void>) | null = null;
+  const bottomFixedOverlays = await controlBottomFixedOverlaysForCapture({
+    page: params.page,
+    pageWidth: params.pageWidth,
+    viewportHeight: params.page.viewportSize()?.height ?? Math.min(params.pageHeight, tileHeight),
+    log: params.log,
+  });
 
   try {
     let sliceCount = 0;
     for (let top = 0; top < params.pageHeight; top += tileHeight) {
+      await bottomFixedOverlays.setVisible(top === 0);
       await params.beforeSliceCapture?.();
       if (top > 0 && !restoreTopOverlays) {
         restoreTopOverlays = await hideTopOverlaysForCapture({
@@ -325,6 +343,7 @@ async function captureFullPageByTiles(params: {
     );
   } finally {
     await restoreTopOverlays?.();
+    await bottomFixedOverlays.restore();
     await client.detach().catch(() => undefined);
   }
 
@@ -357,11 +376,42 @@ async function captureFullPageImage(params: {
 }): Promise<Buffer> {
   const physicalHeight = Math.max(1, Math.round(params.pageHeight * params.dpr));
   const viewportHeight = params.page.viewportSize()?.height ?? 0;
-  // Anything taller than the viewport risks losing off-screen paint to
-  // captureBeyondViewport, so stitch real viewport slices instead.
-  if (viewportHeight > 0 && params.pageHeight > viewportHeight) {
+  const restoreStickyElements = await normalizeStickyElementsForCapture({
+    page: params.page,
+    log: params.log,
+  });
+  try {
+    // Anything taller than the viewport risks losing off-screen paint to
+    // captureBeyondViewport, so stitch real viewport slices instead.
+    if (viewportHeight > 0 && params.pageHeight > viewportHeight) {
+      try {
+        return await captureFullPageByScrollStitch({
+          ...params,
+          beforeSliceCapture: params.beforeTileCapture,
+        });
+      } catch (error) {
+        emitLog(
+          params.log,
+          "warn",
+          `fullpage_capture_scroll_stitch_failed pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} reason=${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    if (physicalHeight <= FULLPAGE_SINGLE_CAPTURE_MAX_HEIGHT_PX) {
+      emitLog(
+        params.log,
+        "info",
+        `fullpage_capture_mode=single pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} physicalHeight=${physicalHeight}`,
+      );
+      return params.page.screenshot({
+        type: "png",
+        fullPage: true,
+      });
+    }
+
     try {
-      return await captureFullPageByScrollStitch({
+      return await captureFullPageByTiles({
         ...params,
         beforeSliceCapture: params.beforeTileCapture,
       });
@@ -369,38 +419,15 @@ async function captureFullPageImage(params: {
       emitLog(
         params.log,
         "warn",
-        `fullpage_capture_scroll_stitch_failed pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} reason=${error instanceof Error ? error.message : String(error)}`,
+        `fullpage_capture_tiled_failed pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} reason=${error instanceof Error ? error.message : String(error)}`,
       );
+      return params.page.screenshot({
+        type: "png",
+        fullPage: true,
+      });
     }
-  }
-
-  if (physicalHeight <= FULLPAGE_SINGLE_CAPTURE_MAX_HEIGHT_PX) {
-    emitLog(
-      params.log,
-      "info",
-      `fullpage_capture_mode=single pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} physicalHeight=${physicalHeight}`,
-    );
-    return params.page.screenshot({
-      type: "png",
-      fullPage: true,
-    });
-  }
-
-  try {
-    return await captureFullPageByTiles({
-      ...params,
-      beforeSliceCapture: params.beforeTileCapture,
-    });
-  } catch (error) {
-    emitLog(
-      params.log,
-      "warn",
-      `fullpage_capture_tiled_failed pageHeight=${Math.round(params.pageHeight)} dpr=${params.dpr} reason=${error instanceof Error ? error.message : String(error)}`,
-    );
-    return params.page.screenshot({
-      type: "png",
-      fullPage: true,
-    });
+  } finally {
+    await restoreStickyElements();
   }
 }
 

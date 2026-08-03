@@ -374,6 +374,128 @@ function scrollScenePageTemplate(): string {
   `;
 }
 
+function compactStickySidebarPageTemplate(): string {
+  const blocks = Array.from({ length: 7 }, (_value, index) => `
+    <article class="content-block content-block-${index + 1}">
+      <span>Chapter ${index + 1}</span>
+      <h2>Long-form careers content ${index + 1}</h2>
+      <p>This content must remain in the full-page screenshot.</p>
+    </article>
+  `).join("");
+
+  return `
+    <html>
+      <head>
+        <title>Compact Sticky Sidebar Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            color: #171717;
+            background: #fffdfa;
+          }
+          .intro,
+          footer {
+            min-height: 680px;
+            padding: 56px;
+            box-sizing: border-box;
+          }
+          .intro {
+            background: #f4f0e8;
+          }
+          .long-content {
+            width: min(calc(100% - 96px), 1192px);
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 384px minmax(0, 1fr);
+            gap: 48px;
+            align-items: start;
+          }
+          .sidebar-shell {
+            height: 760px;
+            align-self: start;
+          }
+          .compact-sidebar {
+            position: sticky;
+            top: 80px;
+            width: 384px;
+            height: 380px;
+            padding: 32px;
+            box-sizing: border-box;
+            background: #1f2937;
+            color: white;
+          }
+          .compact-sidebar strong {
+            display: block;
+            margin-bottom: 18px;
+            font-size: 28px;
+          }
+          .content-column {
+            min-width: 0;
+          }
+          .content-block {
+            height: 760px;
+            padding: 56px;
+            box-sizing: border-box;
+          }
+          .content-block:nth-child(odd) {
+            background: #dbeafe;
+          }
+          .content-block:nth-child(even) {
+            background: #fee2e2;
+          }
+          .content-block h2 {
+            margin: 20px 0 12px;
+            font-size: 42px;
+          }
+          footer {
+            background: #111827;
+            color: white;
+          }
+        </style>
+      </head>
+      <body>
+        <section class="intro">
+          <h1>Careers overview</h1>
+          <p>A compact sticky table of contents sits beside a long article.</p>
+        </section>
+        <main class="long-content" id="long-content">
+          <div class="sidebar-shell">
+            <aside class="compact-sidebar" id="compact-sidebar">
+              <strong id="sidebar-title">Life at work</strong>
+              <p>A small navigation card should remain part of the page, not replace it.</p>
+            </aside>
+          </div>
+          <div class="content-column">${blocks}</div>
+        </main>
+        <footer id="complete-footer">
+          <h2>Complete footer</h2>
+          <p>The bottom of the page is still present.</p>
+        </footer>
+        <script>
+          const content = document.getElementById('long-content');
+          const sidebar = document.getElementById('compact-sidebar');
+          const title = document.getElementById('sidebar-title');
+          const states = [
+            ['Life at work', '#1f2937'],
+            ['How we operate', '#7c2d12'],
+            ['Culture', '#14532d'],
+            ['Benefits', '#1e3a8a'],
+          ];
+          function updateSidebar() {
+            const progress = Math.max(0, Math.min(0.999, (scrollY - content.offsetTop) / content.offsetHeight));
+            const state = states[Math.min(states.length - 1, Math.floor(progress * states.length))];
+            title.textContent = state[0];
+            sidebar.style.background = state[1];
+          }
+          addEventListener('scroll', updateSidebar, { passive: true });
+          updateSidebar();
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 function delayedHeroPageTemplate(): string {
   return `
     <html>
@@ -1317,6 +1439,224 @@ function veryTallPageTemplate(): string {
   `;
 }
 
+function stickyAnchorNavigationPageTemplate(): string {
+  const contentGroups = Array.from(
+    { length: 8 },
+    (_value, index) => `
+      <section class="content-group">
+        <h2>Integration group ${index + 1}</h2>
+        <p>Each group extends the page so the compact sticky anchor navigation crosses several viewport slices.</p>
+      </section>
+    `,
+  ).join("");
+
+  return `
+    <html>
+      <head>
+        <title>Sticky Anchor Navigation Fixture</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #ffffff;
+            color: #111827;
+          }
+          .hero {
+            min-height: 720px;
+            display: grid;
+            place-items: center;
+            background: #ffffff;
+          }
+          .catalog {
+            min-height: 3400px;
+            padding: 40px;
+            display: grid;
+            grid-template-columns: 240px minmax(0, 1fr);
+            align-items: start;
+            gap: 48px;
+            background: rgb(245, 247, 250);
+            box-sizing: border-box;
+          }
+          .anchor-navigation {
+            position: sticky;
+            top: 24px;
+            height: 280px;
+            padding: 24px;
+            background: rgb(210, 45, 75);
+            color: white;
+            box-sizing: border-box;
+          }
+          .content {
+            display: grid;
+            gap: 24px;
+          }
+          .content-group {
+            min-height: 380px;
+            padding: 32px;
+            background: white;
+            box-sizing: border-box;
+          }
+          footer {
+            min-height: 360px;
+            padding: 48px;
+            background: #111827;
+            color: white;
+            box-sizing: border-box;
+          }
+        </style>
+      </head>
+      <body>
+        <section class="hero"><h1>Integration catalog</h1></section>
+        <main class="catalog">
+          <nav class="anchor-navigation">Sticky anchor navigation should appear only once</nav>
+          <div class="content">${contentGroups}</div>
+        </main>
+        <footer>Footer</footer>
+      </body>
+    </html>
+  `;
+}
+
+function stickyBlogCategoriesPageTemplate(): string {
+  const posts = Array.from(
+    { length: 7 },
+    (_value, index) => `
+      <article class="post-card">
+        <span>Article ${index + 1}</span>
+        <h2>Blog post ${index + 1}</h2>
+      </article>
+    `,
+  ).join("");
+
+  return `
+    <html>
+      <head>
+        <title>Sticky Blog Categories Fixture</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: rgb(246, 248, 250);
+            color: #111827;
+          }
+          .site-header {
+            position: fixed;
+            inset: 0 0 auto;
+            z-index: 20;
+            height: 72px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 48px;
+            box-sizing: border-box;
+            background: white;
+          }
+          .demo-button {
+            visibility: visible;
+            padding: 12px 20px;
+            background: rgb(246, 82, 55);
+            color: white;
+          }
+          .hero {
+            min-height: 720px;
+            display: grid;
+            place-items: center;
+            background: white;
+          }
+          .category-navigation {
+            position: sticky;
+            top: 72px;
+            z-index: 10;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            padding: 0 48px;
+            box-sizing: border-box;
+            background: rgb(38, 91, 178);
+            color: white;
+          }
+          .posts {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+            padding: 40px 48px 600px;
+          }
+          .post-card {
+            min-height: 520px;
+            padding: 32px;
+            box-sizing: border-box;
+            background: rgb(246, 248, 250);
+          }
+        </style>
+      </head>
+      <body>
+        <header class="site-header">
+          <strong>incident fixture</strong>
+          <span class="demo-button">Get a demo</span>
+        </header>
+        <section class="hero"><h1>Blog</h1></section>
+        <nav class="category-navigation">AI · Article · Engineering · Data · Talent · All posts</nav>
+        <main class="posts">${posts}</main>
+      </body>
+    </html>
+  `;
+}
+
+function fixedBottomRegionPageTemplate(): string {
+  const sections = Array.from(
+    { length: 8 },
+    (_value, index) => `
+      <section class="region-section region-section-${index % 2}">
+        <h2>Region section ${index + 1}</h2>
+      </section>
+    `,
+  ).join("");
+
+  return `
+    <html>
+      <head>
+        <title>Fixed Bottom Region Fixture</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #f8fafc;
+          }
+          .region-section {
+            min-height: 520px;
+            padding: 48px;
+            box-sizing: border-box;
+          }
+          .region-section-0 {
+            background: rgb(238, 244, 250);
+          }
+          .region-section-1 {
+            background: rgb(246, 240, 232);
+          }
+          .region-selector {
+            position: fixed;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgb(38, 42, 48);
+            color: white;
+            z-index: 50;
+          }
+        </style>
+      </head>
+      <body>
+        <main>${sections}</main>
+        <div class="region-selector">Select your region</div>
+      </body>
+    </html>
+  `;
+}
+
 function scrollRevealFooterPageTemplate(): string {
   return `
     <html>
@@ -1804,6 +2144,11 @@ beforeAll(async () => {
       res.end(sectionStickyNavPageTemplate());
       return;
     }
+    if (pathname.startsWith("/compact-sticky-sidebar")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(compactStickySidebarPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/scroll-scene-overlay")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(scrollSceneOverlayPageTemplate());
@@ -1867,6 +2212,21 @@ beforeAll(async () => {
     if (pathname.startsWith("/very-tall")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(veryTallPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/sticky-anchor-navigation")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(stickyAnchorNavigationPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/sticky-blog-categories")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(stickyBlogCategoriesPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/fixed-bottom-region")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(fixedBottomRegionPageTemplate());
       return;
     }
     if (pathname.startsWith("/scroll-reveal-footer")) {
@@ -2015,6 +2375,142 @@ describe("fullPage tiled capture", () => {
     expect(secondViewportContent[1]).toBeGreaterThan(secondViewportContent[2]);
     expect(secondViewportVerticalRuler[2]).toBeGreaterThan(secondViewportVerticalRuler[0] + 100);
   }, 40_000);
+
+  it("keeps a compact sticky anchor navigation once in its natural document position", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-sticky-anchor-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/sticky-anchor-navigation`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs.some((message) => message.includes("sticky_elements_normalized_for_fullpage count=1"))).toBe(true);
+
+    const naturalAnchorSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 100, top: 820, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const repeatedAnchorSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 100, top: 1140, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(naturalAnchorSample[0]).toBeGreaterThan(naturalAnchorSample[1] + 100);
+    expect(naturalAnchorSample[0]).toBeGreaterThan(naturalAnchorSample[2] + 80);
+    expect(repeatedAnchorSample[0]).toBeGreaterThan(220);
+    expect(repeatedAnchorSample[1]).toBeGreaterThan(220);
+    expect(repeatedAnchorSample[2]).toBeGreaterThan(220);
+  }, 25_000);
+
+  it("keeps blog categories and fixed header actions from repeating at viewport seams", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-sticky-blog-categories-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/sticky-blog-categories`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs.some((message) => message.includes("sticky_elements_normalized_for_fullpage count=1"))).toBe(true);
+    expect(logs.some((message) => message.includes("top_overlay_hidden_for_tiles"))).toBe(true);
+
+    const naturalCategorySample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 740, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondViewportCategorySeam = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 1152, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondViewportHeaderAction = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 1780, top: 1116, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(naturalCategorySample[2]).toBeGreaterThan(naturalCategorySample[0] + 70);
+    expect(secondViewportCategorySeam[0]).toBeGreaterThan(220);
+    expect(secondViewportCategorySeam[1]).toBeGreaterThan(220);
+    expect(secondViewportCategorySeam[2]).toBeGreaterThan(220);
+    expect(secondViewportHeaderAction[0]).toBeGreaterThan(220);
+    expect(secondViewportHeaderAction[1]).toBeGreaterThan(220);
+    expect(secondViewportHeaderAction[2]).toBeGreaterThan(220);
+  }, 25_000);
+
+  it("keeps a full-width fixed bottom region selector only at the page bottom", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-fixed-bottom-region-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/fixed-bottom-region`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs.some((message) => message.includes("bottom_fixed_overlay_controlled count=1"))).toBe(true);
+
+    const metadata = await sharp(fullPageAsset!.filePath).metadata();
+    const firstViewportBottom = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 1060, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondViewportBottom = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 2140, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const pageBottom = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: metadata.height! - 20, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(firstViewportBottom[0]).toBeGreaterThan(200);
+    expect(firstViewportBottom[1]).toBeGreaterThan(200);
+    expect(firstViewportBottom[2]).toBeGreaterThan(200);
+    expect(secondViewportBottom[0]).toBeGreaterThan(200);
+    expect(secondViewportBottom[1]).toBeGreaterThan(200);
+    expect(secondViewportBottom[2]).toBeGreaterThan(200);
+    expect(pageBottom[0]).toBeLessThan(80);
+    expect(pageBottom[1]).toBeLessThan(80);
+    expect(pageBottom[2]).toBeLessThan(80);
+  }, 25_000);
 
   it("waits for delayed hero content before fullPage capture", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-delayed-hero-"));
@@ -2170,7 +2666,7 @@ describe("fullPage tiled capture", () => {
     const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
     expect(fullPageAsset).toBeTruthy();
     expect(result.fullPageSize.height).toBeGreaterThan(16_000);
-    expect(logs.some((message) => message.includes("fullpage_capture_mode=tiled"))).toBe(true);
+    expect(logs.some((message) => message.includes("fullpage_capture_mode=scroll_stitch"))).toBe(true);
 
     const metadata = await sharp(fullPageAsset!.filePath).metadata();
     expect(metadata.width).toBe(1920);
@@ -2200,7 +2696,7 @@ describe("fullPage tiled capture", () => {
     expect(sample[0]).toBeLessThan(30);
     expect(sample[1]).toBeLessThan(40);
     expect(sample[2]).toBeLessThan(60);
-  }, 20_000);
+  }, 60_000);
 
   it("removes consent overlays that appear after pre-capture cleanup while tiling", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-tiled-late-consent-"));
@@ -2456,6 +2952,46 @@ describe("split scroll scene unfolding", () => {
 });
 
 describe("scroll scene unfolding", () => {
+  it("keeps long page content intact beside a compact sticky sidebar", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-compact-sticky-sidebar-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/compact-sticky-sidebar`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(result.scrollSceneDebug ?? []).toHaveLength(0);
+    expect(logs.some((message) => message.includes("scroll_scene_replaced"))).toBe(false);
+
+    const metadata = await sharp(fullPageAsset!.filePath).metadata();
+    expect(metadata.height).toBe(result.fullPageSize.height);
+
+    const footerSample = await sharp(fullPageAsset!.filePath)
+      .extract({
+        left: 960,
+        top: result.fullPageSize.height - 120,
+        width: 1,
+        height: 1,
+      })
+      .raw()
+      .toBuffer();
+    expect(footerSample[0] + footerSample[1] + footerSample[2]).toBeLessThan(180);
+  }, 30_000);
+
   it("shrinks tall sticky scenes into a stitched multi-frame full-page section", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-scroll-scene-"));
     const task: ParsedTask = {

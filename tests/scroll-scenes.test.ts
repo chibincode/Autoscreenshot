@@ -45,6 +45,19 @@ describe("scroll scene helpers", () => {
     ).toBe(false);
   });
 
+  it("rejects a compact sticky sidebar inside long page content", () => {
+    const compactSidebar = {
+      outerHeight: 6684,
+      outerWidth: 1192,
+      stickyHeight: 380,
+      stickyWidth: 384,
+      viewportHeight: 1080,
+    };
+
+    expect(isValidScrollSceneCandidate(compactSidebar)).toBe(false);
+    expect(isValidScrollSceneCandidate({ ...compactSidebar, splitLayout: true })).toBe(true);
+  });
+
   it("samples deterministic scene scroll positions", () => {
     expect(
       sampleSceneScrollPositions({

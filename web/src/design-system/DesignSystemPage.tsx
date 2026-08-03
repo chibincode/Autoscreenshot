@@ -32,6 +32,16 @@ const CONTROL_TOKENS = [
   { name: "--control-radius", value: "999px", role: "Action silhouette" },
 ] as const;
 
+const ASYNC_FLOW_PHASES = ["idle", "submitting", "queued", "running", "success", "failed"] as const;
+type AsyncFlowPhase = (typeof ASYNC_FLOW_PHASES)[number];
+
+const ASYNC_FLOW_STEPS = [
+  { phase: "submitting", label: "Submitting", detail: "Button owns the request" },
+  { phase: "queued", label: "Queued", detail: "The job owns the wait" },
+  { phase: "running", label: "Running", detail: "Progress stays visible" },
+  { phase: "result", label: "Result", detail: "Success or failure persists" },
+] as const;
+
 function useLiveTokens(names: readonly string[]): Record<string, string> {
   const [tokens, setTokens] = useState<Record<string, string>>({});
 
@@ -52,30 +62,46 @@ export function DesignSystemPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dangerDialogOpen, setDangerDialogOpen] = useState(false);
   const [toastOpen, setToastOpen] = useState(false);
+  const [asyncFlowPhase, setAsyncFlowPhase] = useState<AsyncFlowPhase>("idle");
+  const [asyncFlowOutcome, setAsyncFlowOutcome] = useState<"success" | "failed">("success");
   const tokenNames = useMemo(() => COLOR_TOKENS.map((token) => token.name), []);
   const liveTokens = useLiveTokens(tokenNames);
 
   useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible[0]) {
-          setActiveId(visible[0].target.id as DesignSystemSectionId);
-        }
-      },
-      { rootMargin: "-72px 0px -64% 0px", threshold: 0 },
-    );
+    const scrollRoot = document.querySelector<HTMLElement>(".design-system-page");
+    if (!scrollRoot) {
+      return undefined;
+    }
 
-    DESIGN_SYSTEM_SECTIONS.forEach((section) => {
-      const element = document.getElementById(section.id);
-      if (element) {
-        observer.observe(element);
+    const updateActiveSection = (): void => {
+      const viewportTop = 64;
+      const viewportBottom = window.innerHeight;
+      const candidate = DESIGN_SYSTEM_SECTIONS
+        .map((section) => {
+          const element = document.getElementById(section.id);
+          if (!element) {
+            return null;
+          }
+          const rect = element.getBoundingClientRect();
+          const visibleHeight = Math.max(
+            0,
+            Math.min(rect.bottom, viewportBottom) - Math.max(rect.top, viewportTop),
+          );
+          return { id: section.id, top: rect.top, visibleHeight };
+        })
+        .filter((section): section is { id: DesignSystemSectionId; top: number; visibleHeight: number } =>
+          section !== null && section.visibleHeight > 0,
+        )
+        .sort((a, b) => b.visibleHeight - a.visibleHeight || a.top - b.top)[0];
+
+      if (candidate) {
+        setActiveId(candidate.id);
       }
-    });
+    };
 
-    return () => observer.disconnect();
+    scrollRoot.addEventListener("scroll", updateActiveSection, { passive: true });
+    updateActiveSection();
+    return () => scrollRoot.removeEventListener("scroll", updateActiveSection);
   }, []);
 
   useEffect(() => {
@@ -85,6 +111,31 @@ export function DesignSystemPage() {
     const timer = window.setTimeout(() => setToastOpen(false), 2400);
     return () => window.clearTimeout(timer);
   }, [toastOpen]);
+
+  useEffect(() => {
+    const nextPhase: Partial<Record<AsyncFlowPhase, AsyncFlowPhase>> = {
+      submitting: "queued",
+      queued: "running",
+      running: asyncFlowOutcome,
+    };
+    const next = nextPhase[asyncFlowPhase];
+    if (!next) {
+      return undefined;
+    }
+    const timer = window.setTimeout(
+      () => setAsyncFlowPhase(next),
+      asyncFlowPhase === "submitting" ? 1000 : 1400,
+    );
+    return () => window.clearTimeout(timer);
+  }, [asyncFlowOutcome, asyncFlowPhase]);
+
+  const runAsyncFlow = (outcome: "success" | "failed"): void => {
+    setAsyncFlowOutcome(outcome);
+    setAsyncFlowPhase("submitting");
+  };
+
+  const asyncFlowPhaseIndex = ASYNC_FLOW_PHASES.indexOf(asyncFlowPhase);
+  const asyncFlowIsActive = ["submitting", "queued", "running"].includes(asyncFlowPhase);
 
   const groupedSections = useMemo(() => {
     return DESIGN_SYSTEM_SECTIONS.reduce<Record<string, typeof DESIGN_SYSTEM_SECTIONS[number][]>>(
@@ -126,6 +177,7 @@ export function DesignSystemPage() {
                     href={`#${section.id}`}
                     className={activeId === section.id ? "active" : undefined}
                     aria-current={activeId === section.id ? "location" : undefined}
+                    onClick={() => setActiveId(section.id)}
                   >
                     {section.label}
                   </a>
@@ -252,6 +304,80 @@ export function DesignSystemPage() {
               <div className="ds-usage ds-usage--do"><span>Do</span><p>Use one primary action per decision area.</p></div>
               <div className="ds-usage ds-usage--avoid"><span>Avoid</span><p>Do not use danger styling for reversible navigation.</p></div>
             </div>
+          </SpecSection>
+
+          <SpecSection
+            id="async-flow"
+            title="Async action handoff"
+            description="Loading belongs to the control only while a request is being submitted. Once accepted, the job surface must take over with queued, running, and durable result states."
+          >
+            <div className="ds-async-contract">
+              <div><span>01</span><strong>Request truth</strong><p>The button prevents duplicate submission and says what is happening now.</p></div>
+              <div><span>02</span><strong>Workflow truth</strong><p>The job card owns background progress after the API accepts the request.</p></div>
+              <div><span>03</span><strong>Durable result</strong><p>Success or failure remains visible after transient feedback disappears.</p></div>
+            </div>
+
+            <PreviewFrame
+              label="Import selected flow"
+              note="Playback is slowed for review; production requests are never delayed."
+            >
+              <div className="ds-async-demo">
+                <div className="ds-async-demo__control">
+                  <span>Direct action</span>
+                  <Button
+                    variant="primary"
+                    loading={asyncFlowPhase === "submitting"}
+                    loadingLabel="Queueing..."
+                    disabled={asyncFlowIsActive}
+                    onClick={() => runAsyncFlow("success")}
+                  >
+                    Import selected
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={asyncFlowIsActive}
+                    onClick={() => runAsyncFlow("failed")}
+                  >
+                    Preview failure
+                  </Button>
+                </div>
+
+                <div className="ds-async-demo__workflow" role="status" aria-live="polite">
+                  <div className="ds-async-steps" aria-label="Asynchronous action phases">
+                    {ASYNC_FLOW_STEPS.map((step) => {
+                      const resolvedPhase = step.phase === "result" ? asyncFlowOutcome : step.phase;
+                      const resolvedIndex = ASYNC_FLOW_PHASES.indexOf(resolvedPhase);
+                      const isActive = asyncFlowPhase === resolvedPhase;
+                      const isComplete = asyncFlowPhaseIndex > resolvedIndex;
+                      return (
+                        <div
+                          className={`ds-async-step${isActive ? " is-active" : ""}${isComplete ? " is-complete" : ""}${resolvedPhase === "success" ? " is-success" : ""}${resolvedPhase === "failed" ? " is-failed" : ""}`}
+                          key={step.phase}
+                        >
+                          <span className="ds-async-step__indicator" aria-hidden="true" />
+                          <strong>{step.label}</strong>
+                          <p>{step.detail}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className={`ds-async-result ds-async-result--${asyncFlowPhase}`}>
+                    <span>{asyncFlowPhase === "idle" ? "Ready" : asyncFlowPhase}</span>
+                    <strong>
+                      {asyncFlowPhase === "idle" && "Choose a path to inspect the handoff."}
+                      {asyncFlowPhase === "submitting" && "Sending Eagle import request..."}
+                      {asyncFlowPhase === "queued" && "Queued · waiting to import to Eagle"}
+                      {asyncFlowPhase === "running" && "Importing to Eagle..."}
+                      {asyncFlowPhase === "success" && "Imported to Eagle"}
+                      {asyncFlowPhase === "failed" && "Import failed · Retry is available"}
+                    </strong>
+                    {asyncFlowPhase !== "idle" ? (
+                      <button type="button" onClick={() => setAsyncFlowPhase("idle")}>Reset</button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </PreviewFrame>
           </SpecSection>
 
           <SpecSection

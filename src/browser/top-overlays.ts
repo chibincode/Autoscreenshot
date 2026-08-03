@@ -23,6 +23,19 @@ const TOP_OVERLAY_MIN_WIDTH_RATIO = 0.35;
 const TOP_OVERLAY_MIN_CAPTURE_HEIGHT = 64;
 const TOP_OVERLAY_EXTRA_PADDING = 8;
 const TOP_OVERLAY_HIDDEN_ATTR = "data-autosnap-top-overlay-hidden";
+const STICKY_NORMALIZED_ATTR = "data-autosnap-sticky-normalized";
+const BOTTOM_FIXED_ATTR = "data-autosnap-bottom-fixed";
+const BOTTOM_FIXED_STATE_ATTR = "data-autosnap-bottom-fixed-state";
+const BOTTOM_FIXED_MAX_GAP = 24;
+const BOTTOM_FIXED_MIN_HEIGHT = 20;
+const BOTTOM_FIXED_MAX_HEIGHT = 240;
+const BOTTOM_FIXED_MIN_WIDTH_RATIO = 0.35;
+
+export interface BottomFixedOverlayController {
+  count: number;
+  setVisible: (visible: boolean) => Promise<void>;
+  restore: () => Promise<void>;
+}
 
 interface TopOverlayCandidate {
   selectorLabel: string;
@@ -276,5 +289,148 @@ export async function hideTopOverlaysForCapture(params: {
         document.querySelectorAll(`[${attrName}]`).forEach((element) => element.removeAttribute(attrName));
       }, TOP_OVERLAY_HIDDEN_ATTR)
       .catch(() => undefined);
+  };
+}
+
+export async function normalizeStickyElementsForCapture(params: {
+  page: Page;
+  log?: (level: "info" | "warn", message: string) => void;
+}): Promise<() => Promise<void>> {
+  const normalizedCount = await params.page.evaluate((attrName) => {
+    const stickyElements = Array.from(document.querySelectorAll<HTMLElement>("*")).filter((element) => {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return (
+        style.position === "sticky" &&
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity || "1") > 0.01 &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    });
+
+    stickyElements.forEach((element) => element.setAttribute(attrName, "true"));
+    return stickyElements.length;
+  }, STICKY_NORMALIZED_ATTR);
+
+  if (normalizedCount === 0) {
+    return async () => undefined;
+  }
+
+  const styleHandle = await params.page.addStyleTag({
+    content: `
+      [${STICKY_NORMALIZED_ATTR}="true"] {
+        position: relative !important;
+        inset: auto !important;
+      }
+    `,
+  });
+  params.log?.("info", `sticky_elements_normalized_for_fullpage count=${normalizedCount}`);
+
+  return async () => {
+    await styleHandle
+      .evaluate((node) => (node instanceof Element ? node.remove() : undefined))
+      .catch(() => undefined);
+    await params.page
+      .evaluate((attrName) => {
+        document.querySelectorAll(`[${attrName}]`).forEach((element) => element.removeAttribute(attrName));
+      }, STICKY_NORMALIZED_ATTR)
+      .catch(() => undefined);
+  };
+}
+
+export async function controlBottomFixedOverlaysForCapture(params: {
+  page: Page;
+  pageWidth: number;
+  viewportHeight: number;
+  log?: (level: "info" | "warn", message: string) => void;
+}): Promise<BottomFixedOverlayController> {
+  const controlledCount = await params.page.evaluate(
+    ({ attrName, maxGap, maxHeight, minHeight, minWidthRatio, pageWidth, viewportHeight }) => {
+      const controlled = Array.from(document.querySelectorAll<HTMLElement>("*")).filter((element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        const opacity = Number(style.opacity || "1");
+        const hasMeaningfulContent =
+          (element.textContent || "").trim().length > 0 ||
+          element.querySelector("a, button, input, select, img, svg") !== null;
+        return (
+          style.position === "fixed" &&
+          rect.bottom >= viewportHeight - maxGap &&
+          rect.top >= viewportHeight * 0.5 &&
+          rect.width >= pageWidth * minWidthRatio &&
+          rect.height >= minHeight &&
+          rect.height <= maxHeight &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          opacity > 0.01 &&
+          hasMeaningfulContent
+        );
+      });
+
+      controlled.forEach((element) => element.setAttribute(attrName, "true"));
+      return controlled.length;
+    },
+    {
+      attrName: BOTTOM_FIXED_ATTR,
+      maxGap: BOTTOM_FIXED_MAX_GAP,
+      maxHeight: BOTTOM_FIXED_MAX_HEIGHT,
+      minHeight: BOTTOM_FIXED_MIN_HEIGHT,
+      minWidthRatio: BOTTOM_FIXED_MIN_WIDTH_RATIO,
+      pageWidth: params.pageWidth,
+      viewportHeight: params.viewportHeight,
+    },
+  );
+
+  if (controlledCount === 0) {
+    return {
+      count: 0,
+      setVisible: async () => undefined,
+      restore: async () => undefined,
+    };
+  }
+
+  await params.page.evaluate((stateAttr) => {
+    document.documentElement?.setAttribute(stateAttr, "hidden");
+  }, BOTTOM_FIXED_STATE_ATTR);
+  const styleHandle = await params.page.addStyleTag({
+    content: `
+      html[${BOTTOM_FIXED_STATE_ATTR}="hidden"] [${BOTTOM_FIXED_ATTR}="true"],
+      html[${BOTTOM_FIXED_STATE_ATTR}="hidden"] [${BOTTOM_FIXED_ATTR}="true"] * {
+        visibility: hidden !important;
+      }
+    `,
+  });
+  params.log?.("info", `bottom_fixed_overlay_controlled count=${controlledCount}`);
+
+  return {
+    count: controlledCount,
+    setVisible: async (visible: boolean) => {
+      await params.page.evaluate(
+        ({ stateAttr, visibleState }) => {
+          if (visibleState) {
+            document.documentElement?.removeAttribute(stateAttr);
+          } else {
+            document.documentElement?.setAttribute(stateAttr, "hidden");
+          }
+        },
+        { stateAttr: BOTTOM_FIXED_STATE_ATTR, visibleState: visible },
+      );
+    },
+    restore: async () => {
+      await styleHandle
+        .evaluate((node) => (node instanceof Element ? node.remove() : undefined))
+        .catch(() => undefined);
+      await params.page
+        .evaluate(
+          ({ attrName, stateAttr }) => {
+            document.documentElement?.removeAttribute(stateAttr);
+            document.querySelectorAll(`[${attrName}]`).forEach((element) => element.removeAttribute(attrName));
+          },
+          { attrName: BOTTOM_FIXED_ATTR, stateAttr: BOTTOM_FIXED_STATE_ATTR },
+        )
+        .catch(() => undefined);
+    },
   };
 }
