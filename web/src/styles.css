@@ -1687,6 +1687,19 @@ summary:focus-visible {
   color: #426353;
 }
 
+.asset-preview-feedback-success-icon {
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #397b57;
+  color: white;
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
 .asset-preview-actions .asset-preview-feedback-action.is-error {
   background: var(--warm-tint);
   color: var(--warm-text);

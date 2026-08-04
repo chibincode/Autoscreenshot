@@ -97,6 +97,22 @@ describe("overlay cleanup classification", () => {
     expect(result).toEqual({ type: "consent", vendor: "transcend" });
   });
 
+  it("classifies compact CookieScript settings launchers as consent overlays", () => {
+    const result = classifyOverlaySnapshot(
+      makeSnapshot({
+        role: "dialog",
+        ariaLabel: "Cookie consent button",
+        id: "cookiescript_badge",
+        text: "Cookie settings",
+        width: 46,
+        height: 46,
+        hostSignalCount: 1,
+      }),
+    );
+
+    expect(result).toEqual({ type: "consent", vendor: "cookiescript" });
+  });
+
   it("classifies newsletter modals as promo overlays", () => {
     const result = classifyOverlaySnapshot(
       makeSnapshot({

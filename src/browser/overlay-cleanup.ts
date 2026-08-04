@@ -10,6 +10,7 @@ type OverlayVendor =
   | "didomi"
   | "trustarc"
   | "transcend"
+  | "cookiescript"
   | "generic";
 
 export interface OverlaySnapshot {
@@ -58,10 +59,12 @@ const KNOWN_VENDOR_MARKERS: Array<{ vendor: Exclude<OverlayVendor, "generic">; n
   { vendor: "didomi", needles: ["didomi"] },
   { vendor: "trustarc", needles: ["trustarc", "truste"] },
   { vendor: "transcend", needles: ["transcend"] },
+  { vendor: "cookiescript", needles: ["cookiescript"] },
 ];
 
 const CONSENT_HOST_KEYWORDS = [
   "transcend",
+  "cookiescript",
   "consent-manager",
   "cookie-manager",
   "privacy-manager",

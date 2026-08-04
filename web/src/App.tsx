@@ -79,6 +79,7 @@ type SectionType =
 type SectionDebugPhase = "raw" | "merged" | "selected";
 type AssetImportStatus = "pending_confirmation" | "imported" | "failed";
 type FolderSelectionSource = "auto" | "manual" | "missing";
+type CopyFeedbackState = "success" | "error" | null;
 
 interface SectionScoreBreakdown {
   hero: number;
@@ -1912,7 +1913,7 @@ const PreviewModal = memo(function PreviewModal({
   selectedJobMode: JobMode;
   assetActionsDisabled: boolean;
   hasSectionDebug: boolean;
-  copyFeedbackState: string | null;
+  copyFeedbackState: CopyFeedbackState;
   onClose: () => void;
   onToggleSelection: (assetId: number, checked: boolean) => void | Promise<void>;
   onCopyFeedbackContext: () => void | Promise<void>;
@@ -2110,7 +2111,7 @@ const PreviewModal = memo(function PreviewModal({
             <span>{previewRoute ? `${previewRoute.path} · ${previewRoute.status}` : previewAsset.label}</span>
           </div>
           <button type="button" className="asset-preview-close" onClick={onClose}>
-            关闭
+            Close
           </button>
         </div>
         <div className="asset-preview-modal-body">
@@ -2140,8 +2141,8 @@ const PreviewModal = memo(function PreviewModal({
                     }}
                     aria-label={
                       cropToolMode === "band"
-                        ? "拖动待删除区段"
-                        : `将裁掉底部 ${removedHeight.toLocaleString()} px`
+                        ? "Drag section to remove"
+                        : `Crop ${removedHeight.toLocaleString()} px from the bottom`
                     }
                     onPointerDown={
                       cropToolMode === "band"
@@ -2153,7 +2154,7 @@ const PreviewModal = memo(function PreviewModal({
                     onPointerCancel={cropToolMode === "band" ? endCropDrag : undefined}
                   >
                     <span>
-                      {cropToolMode === "bottom" ? "裁掉底部" : "删除此区段"}
+                      {cropToolMode === "bottom" ? "Crop bottom" : "Remove section"}
                       {" · "}
                       {removedHeight.toLocaleString()} px
                     </span>
@@ -2163,7 +2164,7 @@ const PreviewModal = memo(function PreviewModal({
                     className="asset-crop-handle asset-crop-handle-start"
                     style={{ top: `${removalStartPercent}%` }}
                     aria-label={
-                      cropToolMode === "bottom" ? "拖动底部裁切线" : "拖动区段上边界"
+                      cropToolMode === "bottom" ? "Drag bottom crop line" : "Drag section top edge"
                     }
                     onPointerDown={(event) =>
                       beginCropDrag(
@@ -2182,7 +2183,7 @@ const PreviewModal = memo(function PreviewModal({
                       type="button"
                       className="asset-crop-handle asset-crop-handle-end"
                       style={{ top: `${removalEndPercent}%` }}
-                      aria-label="拖动区段下边界"
+                      aria-label="Drag section bottom edge"
                       onPointerDown={(event) => beginCropDrag(event, "band-end")}
                       onPointerMove={moveCropDrag}
                       onPointerUp={endCropDrag}
@@ -2204,7 +2205,7 @@ const PreviewModal = memo(function PreviewModal({
                   disabled={assetActionsDisabled}
                   onChange={(event) => void onToggleSelection(previewAsset.id, event.target.checked)}
                 />
-                <span>导入到 Eagle</span>
+                <span>Import to Eagle</span>
               </label>
               {!cropMode ? (
                 <>
@@ -2214,12 +2215,12 @@ const PreviewModal = memo(function PreviewModal({
                     disabled={!canEditImage}
                     title={
                       previewAsset.importStatus === "imported"
-                        ? "已导入 Eagle 的资产不能再裁切"
-                        : "裁掉截图中的不需要区域"
+                        ? "Assets already imported to Eagle cannot be cropped"
+                        : "Remove unwanted regions from the screenshot"
                     }
                     onClick={beginCrop}
                   >
-                    裁切图片
+                    Crop image
                   </button>
                   <div
                     className={cx(
@@ -2233,9 +2234,9 @@ const PreviewModal = memo(function PreviewModal({
                         href={originalPageUrl}
                         target="_blank"
                         rel="noreferrer noopener"
-                        title="在外部浏览器打开原站"
+                        title="Open original site in an external browser"
                       >
-                        <span>访问原站</span>
+                        <span>Visit original</span>
                         <span className="asset-preview-source-action-icon" aria-hidden="true">
                           ↗
                         </span>
@@ -2244,16 +2245,31 @@ const PreviewModal = memo(function PreviewModal({
                     <button
                       type="button"
                       className={`asset-preview-feedback-action${
-                        copyFeedbackState === "反馈上下文已复制"
+                        copyFeedbackState === "success"
                           ? " is-success"
-                          : copyFeedbackState
+                          : copyFeedbackState === "error"
                             ? " is-error"
                             : ""
                       }`}
+                      aria-label={
+                        copyFeedbackState === "success"
+                          ? "Feedback copied"
+                          : copyFeedbackState === "error"
+                            ? "Copy failed"
+                            : "Copy feedback"
+                      }
                       aria-live="polite"
                       onClick={() => void onCopyFeedbackContext()}
                     >
-                      {copyFeedbackState ?? "复制反馈信息"}
+                      {copyFeedbackState === "success" ? (
+                        <span className="asset-preview-feedback-success-icon" aria-hidden="true">
+                          ✓
+                        </span>
+                      ) : copyFeedbackState === "error" ? (
+                        "Copy failed"
+                      ) : (
+                        "Copy feedback"
+                      )}
                     </button>
                   </div>
                   {secondaryActionCount === 1 && canRestoreOriginal ? (
@@ -2263,7 +2279,7 @@ const PreviewModal = memo(function PreviewModal({
                       disabled={!canEditImage}
                       onClick={() => onRestoreOriginal(previewAsset.id)}
                     >
-                      恢复原图
+                      Restore original
                     </button>
                   ) : null}
                   {secondaryActionCount === 1 && canFocusDebug ? (
@@ -2272,12 +2288,12 @@ const PreviewModal = memo(function PreviewModal({
                       className="asset-preview-utility-action"
                       onClick={() => onFocusAndClose(previewAsset)}
                     >
-                      Debug 聚焦
+                      Focus debug
                     </button>
                   ) : null}
                   {secondaryActionCount > 1 ? (
                     <details className="asset-preview-more-actions">
-                      <summary>更多操作</summary>
+                      <summary>More actions</summary>
                       <div className="asset-preview-more-menu">
                         {canRestoreOriginal ? (
                           <button
@@ -2285,12 +2301,12 @@ const PreviewModal = memo(function PreviewModal({
                             disabled={!canEditImage}
                             onClick={() => onRestoreOriginal(previewAsset.id)}
                           >
-                            恢复原图
+                            Restore original
                           </button>
                         ) : null}
                         {canFocusDebug ? (
                           <button type="button" onClick={() => onFocusAndClose(previewAsset)}>
-                            Debug 聚焦
+                            Focus debug
                           </button>
                         ) : null}
                       </div>
@@ -2301,7 +2317,7 @@ const PreviewModal = memo(function PreviewModal({
             </div>
             {cropMode ? (
               <div className="asset-crop-controls">
-                <div className="asset-crop-mode-switch" role="tablist" aria-label="裁切模式">
+                <div className="asset-crop-mode-switch" role="tablist" aria-label="Crop mode">
                   <button
                     type="button"
                     role="tab"
@@ -2309,7 +2325,7 @@ const PreviewModal = memo(function PreviewModal({
                     className={cropToolMode === "bottom" ? "active" : undefined}
                     onClick={() => switchCropToolMode("bottom")}
                   >
-                    裁掉底部
+                    Crop bottom
                   </button>
                   <button
                     type="button"
@@ -2318,17 +2334,17 @@ const PreviewModal = memo(function PreviewModal({
                     className={cropToolMode === "band" ? "active" : undefined}
                     onClick={() => switchCropToolMode("band")}
                   >
-                    删除区段
+                    Remove section
                   </button>
                 </div>
                 <div className="asset-crop-summary">
-                  <strong>{cropToolMode === "bottom" ? "底部裁切" : "横向区段"}</strong>
+                  <strong>{cropToolMode === "bottom" ? "Bottom crop" : "Horizontal section"}</strong>
                   <span>
                     {cropToolMode === "bottom"
-                      ? `保留 ${normalizedKeepHeight.toLocaleString()} px`
+                      ? `Keep ${normalizedKeepHeight.toLocaleString()} px`
                       : `${normalizedBandStartY.toLocaleString()}–${normalizedBandEndY.toLocaleString()} px`}
                     {" · "}
-                    删除 {removedHeight.toLocaleString()} px
+                    Remove {removedHeight.toLocaleString()} px
                   </span>
                 </div>
                 {cropToolMode === "bottom" ? (
@@ -2338,13 +2354,13 @@ const PreviewModal = memo(function PreviewModal({
                     max={Math.max(64, previewAsset.imageHeight - 1)}
                     step={1}
                     value={normalizedKeepHeight}
-                    aria-label="保留图片高度"
+                    aria-label="Keep image height"
                     onChange={(event) => setCropKeepHeight(Number(event.target.value))}
                   />
                 ) : (
                   <div className="asset-crop-coordinate-inputs">
                     <label>
-                      <span>开始位置</span>
+                      <span>Start</span>
                       <span className="asset-crop-number-field">
                         <input
                           type="number"
@@ -2365,7 +2381,7 @@ const PreviewModal = memo(function PreviewModal({
                       </span>
                     </label>
                     <label>
-                      <span>结束位置</span>
+                      <span>End</span>
                       <span className="asset-crop-number-field">
                         <input
                           type="number"
@@ -2396,7 +2412,7 @@ const PreviewModal = memo(function PreviewModal({
                       cropDragRef.current = null;
                     }}
                   >
-                    取消
+                    Cancel
                   </button>
                   <button
                     type="button"
@@ -2426,7 +2442,7 @@ const PreviewModal = memo(function PreviewModal({
                       });
                     }}
                   >
-                    应用裁切
+                    Apply crop
                   </button>
                 </div>
               </div>
@@ -2575,7 +2591,7 @@ export function App() {
   const [focusSelector, setFocusSelector] = useState<string | null>(null);
   const [focusMessage, setFocusMessage] = useState<string | null>(null);
   const [previewAssetId, setPreviewAssetId] = useState<number | null>(null);
-  const [copyFeedbackState, setCopyFeedbackState] = useState<string | null>(null);
+  const [copyFeedbackState, setCopyFeedbackState] = useState<CopyFeedbackState>(null);
   const [actionDialog, setActionDialog] = useState<ActionDialogState | null>(null);
   const [actionDialogBusy, setActionDialogBusy] = useState(false);
   const [actionToast, setActionToast] = useState<ActionToastState | null>(null);
@@ -3129,6 +3145,14 @@ export function App() {
     setPreviewAssetId(targetAsset.id);
     setCopyFeedbackState(null);
   }, [selectedJobDetail]);
+
+  useEffect(() => {
+    if (!copyFeedbackState) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopyFeedbackState(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copyFeedbackState]);
 
   useEffect(() => {
     setSelectedAssetId(null);
@@ -3960,9 +3984,9 @@ export function App() {
         route: previewRoute,
       });
       await copyText(payload);
-      setCopyFeedbackState("反馈上下文已复制");
-    } catch (error) {
-      setCopyFeedbackState(error instanceof Error ? error.message : "复制失败");
+      setCopyFeedbackState("success");
+    } catch {
+      setCopyFeedbackState("error");
     }
   }, [previewAsset, previewRoute, selectedJobDetail, selectedJobMode]);
 

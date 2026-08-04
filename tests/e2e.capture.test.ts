@@ -962,6 +962,73 @@ function consentBannerPageTemplate(): string {
   `;
 }
 
+function cookieScriptLauncherPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>CookieScript Launcher Demo</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #f4f7fb;
+          }
+          main {
+            min-height: 2800px;
+            padding: 48px;
+            background: #f4f7fb;
+          }
+          #cookiescript_injected {
+            position: fixed;
+            left: 24px;
+            bottom: 24px;
+            width: 360px;
+            padding: 18px;
+            border-radius: 14px;
+            background: #17131f;
+            color: white;
+            z-index: 99999;
+          }
+          #cookiescript_badge {
+            position: fixed;
+            left: 10px;
+            bottom: 10px;
+            width: 46px;
+            height: 46px;
+            display: grid;
+            place-items: center;
+            border-radius: 50%;
+            background: #27143e;
+            color: white;
+            z-index: 99999;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1>CookieScript launcher fixture</h1>
+          <p>The compact settings launcher must not repeat across stitched tiles.</p>
+        </main>
+        <div id="cookiescript_injected" role="dialog" aria-label="Cookie consent dialog">
+          <p>This website uses cookies.</p>
+          <button type="button" id="decline-cookies">Decline all</button>
+        </div>
+        <script>
+          document.getElementById('decline-cookies').addEventListener('click', () => {
+            document.getElementById('cookiescript_injected').remove();
+            const badge = document.createElement('div');
+            badge.id = 'cookiescript_badge';
+            badge.setAttribute('role', 'dialog');
+            badge.setAttribute('aria-label', 'Cookie consent button');
+            badge.textContent = 'Cookie settings';
+            document.body.appendChild(badge);
+          });
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 function promoModalPageTemplate(): string {
   return `
     <html>
@@ -2184,6 +2251,11 @@ beforeAll(async () => {
       res.end(consentBannerPageTemplate());
       return;
     }
+    if (pathname.startsWith("/cookiescript-launcher")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(cookieScriptLauncherPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/promo-modal")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(promoModalPageTemplate());
@@ -3124,6 +3196,50 @@ describe("overlay cleanup", () => {
     expect(sample[0]).toBeGreaterThan(220);
     expect(logs.some((message) => message.includes("overlay_detected phase=pre_capture type=consent vendor=osano"))).toBe(true);
     expect(logs.some((message) => message.includes("overlay_cleanup_summary phase=pre_capture handled="))).toBe(true);
+  }, 20_000);
+
+  it("removes compact CookieScript launchers before stitched full-page capture", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-cookiescript-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/cookiescript-launcher`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    const seamSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 24, top: 1040, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(seamSample[0]).toBeGreaterThan(220);
+    expect(seamSample[1]).toBeGreaterThan(220);
+    expect(seamSample[2]).toBeGreaterThan(220);
+    expect(
+      logs.some((message) =>
+        message.includes("overlay_detected phase=pre_capture type=consent vendor=cookiescript"),
+      ),
+    ).toBe(true);
+    expect(
+      logs.some((message) =>
+        message.includes(
+          "overlay_action phase=pre_capture action=hide_dom_fallback type=consent vendor=cookiescript",
+        ),
+      ),
+    ).toBe(true);
   }, 20_000);
 
   it("dismisses promo modals before full-page capture", async () => {
