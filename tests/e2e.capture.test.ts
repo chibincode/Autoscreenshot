@@ -1724,6 +1724,61 @@ function fixedBottomRegionPageTemplate(): string {
   `;
 }
 
+function fixedAwardBadgePageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Fixed Award Badge Fixture</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+          }
+          section {
+            padding: 48px;
+            box-sizing: border-box;
+          }
+          .panel-1 { height: 1080px; background: rgb(240, 253, 244); }
+          .panel-2 { height: 1080px; background: rgb(219, 234, 254); }
+          .panel-3 { height: 720px; background: rgb(254, 243, 199); }
+          footer {
+            height: 720px;
+            padding: 48px;
+            box-sizing: border-box;
+            background: rgb(20, 24, 28);
+            color: white;
+          }
+          .award-badge {
+            position: fixed;
+            top: 468px;
+            left: 0;
+            z-index: 90;
+            width: 48px;
+            height: 144px;
+            background: rgb(235, 48, 70);
+          }
+          .award-badge a {
+            display: block;
+            width: 100%;
+            height: 100%;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <section class="panel-1"><h1>First viewport</h1></section>
+          <section class="panel-2"><h2>Second viewport</h2></section>
+          <section class="panel-3"><h2>Third viewport</h2></section>
+        </main>
+        <footer><h2>Footer</h2></footer>
+        <div class="award-badge">
+          <a href="https://www.awwwards.com/sites/example" aria-label="View Awwwards profile"></a>
+        </div>
+      </body>
+    </html>
+  `;
+}
+
 function scrollRevealFooterPageTemplate(): string {
   return `
     <html>
@@ -2301,6 +2356,11 @@ beforeAll(async () => {
       res.end(fixedBottomRegionPageTemplate());
       return;
     }
+    if (pathname.startsWith("/fixed-award-badge")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(fixedAwardBadgePageTemplate());
+      return;
+    }
     if (pathname.startsWith("/scroll-reveal-footer")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(scrollRevealFooterPageTemplate());
@@ -2582,6 +2642,53 @@ describe("fullPage tiled capture", () => {
     expect(pageBottom[0]).toBeLessThan(80);
     expect(pageBottom[1]).toBeLessThan(80);
     expect(pageBottom[2]).toBeLessThan(80);
+  }, 25_000);
+
+  it("keeps a fixed Awwwards side badge only in the first viewport", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-fixed-award-badge-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/fixed-award-badge`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs).toContain("fixed_side_badge_hidden_for_tiles count=1");
+    expect(logs.some((message) => message.includes("footer_reveal_replaced"))).toBe(true);
+
+    const firstViewportBadge = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 24, top: 520, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondViewportSeam = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 24, top: 1600, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const footerBadgePosition = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 24, top: 3000, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(firstViewportBadge[0]).toBeGreaterThan(firstViewportBadge[1] + 100);
+    expect(firstViewportBadge[0]).toBeGreaterThan(firstViewportBadge[2] + 80);
+    expect(secondViewportSeam[2]).toBeGreaterThan(secondViewportSeam[0]);
+    expect(secondViewportSeam[2]).toBeGreaterThan(secondViewportSeam[1]);
+    expect(footerBadgePosition[0]).toBeLessThan(80);
+    expect(footerBadgePosition[1]).toBeLessThan(80);
+    expect(footerBadgePosition[2]).toBeLessThan(80);
   }, 25_000);
 
   it("waits for delayed hero content before fullPage capture", async () => {

@@ -1,7 +1,10 @@
 import sharp from "sharp";
 import type { Page } from "playwright";
 import type { ImageRegionReplacement } from "./scroll-scenes.js";
-import { hideTopOverlaysForCapture } from "./top-overlays.js";
+import {
+  hideRepeatedFixedSideBadgesForCapture,
+  hideTopOverlaysForCapture,
+} from "./top-overlays.js";
 
 const FOOTER_REVEAL_SELECTORS = [
   "footer",
@@ -273,6 +276,12 @@ export async function captureFooterRevealReplacements(params: {
     viewportHeight: params.viewportHeight,
     log: params.log,
   });
+  const restoreFixedSideBadges = await hideRepeatedFixedSideBadgesForCapture({
+    page: params.page,
+    pageWidth: params.pageWidth,
+    viewportHeight: params.viewportHeight,
+    log: params.log,
+  });
   let viewportScreenshot: Buffer;
   try {
     await params.page.waitForTimeout(50);
@@ -282,6 +291,7 @@ export async function captureFooterRevealReplacements(params: {
     });
   } finally {
     await restoreTopOverlays();
+    await restoreFixedSideBadges();
   }
   const replacement = await sharp(viewportScreenshot)
     .extract({

@@ -30,6 +30,12 @@ const BOTTOM_FIXED_MAX_GAP = 24;
 const BOTTOM_FIXED_MIN_HEIGHT = 20;
 const BOTTOM_FIXED_MAX_HEIGHT = 240;
 const BOTTOM_FIXED_MIN_WIDTH_RATIO = 0.35;
+const FIXED_SIDE_BADGE_ATTR = "data-autosnap-fixed-side-badge";
+const FIXED_SIDE_BADGE_HOSTS = ["awwwards.com"];
+const FIXED_SIDE_BADGE_MAX_EDGE_GAP = 24;
+const FIXED_SIDE_BADGE_MIN_SIZE = 8;
+const FIXED_SIDE_BADGE_MAX_WIDTH = 180;
+const FIXED_SIDE_BADGE_MAX_HEIGHT = 320;
 
 export interface BottomFixedOverlayController {
   count: number;
@@ -336,6 +342,101 @@ export async function normalizeStickyElementsForCapture(params: {
       .evaluate((attrName) => {
         document.querySelectorAll(`[${attrName}]`).forEach((element) => element.removeAttribute(attrName));
       }, STICKY_NORMALIZED_ATTR)
+      .catch(() => undefined);
+  };
+}
+
+export async function hideRepeatedFixedSideBadgesForCapture(params: {
+  page: Page;
+  pageWidth: number;
+  viewportHeight: number;
+  log?: (level: "info" | "warn", message: string) => void;
+}): Promise<() => Promise<void>> {
+  const hiddenCount = await params.page.evaluate(
+    ({ attrName, hosts, maxEdgeGap, maxHeight, maxWidth, minSize, pageWidth, viewportHeight }) => {
+      const hidden = new Set<HTMLElement>();
+      const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"));
+
+      for (const anchor of anchors) {
+        let hostname = "";
+        try {
+          hostname = new URL(anchor.href, document.baseURI).hostname.toLowerCase().replace(/^www\./, "");
+        } catch {
+          continue;
+        }
+        if (!hosts.some((host) => hostname === host || hostname.endsWith(`.${host}`))) {
+          continue;
+        }
+
+        let pinnedElement: HTMLElement | null = anchor;
+        let pinnedStyle = window.getComputedStyle(pinnedElement);
+        while (
+          pinnedElement &&
+          pinnedElement !== document.body &&
+          pinnedElement !== document.documentElement &&
+          pinnedStyle.position !== "fixed"
+        ) {
+          pinnedElement = pinnedElement.parentElement;
+          pinnedStyle = pinnedElement ? window.getComputedStyle(pinnedElement) : pinnedStyle;
+        }
+
+        if (!pinnedElement || pinnedStyle.position !== "fixed" || hidden.has(pinnedElement)) {
+          continue;
+        }
+
+        const rect = pinnedElement.getBoundingClientRect();
+        const opacity = Number(pinnedStyle.opacity || "1");
+        const touchesSide = rect.left <= maxEdgeGap || rect.right >= pageWidth - maxEdgeGap;
+        if (
+          !touchesSide ||
+          rect.width < minSize ||
+          rect.height < minSize ||
+          rect.width > maxWidth ||
+          rect.height > maxHeight ||
+          rect.top >= viewportHeight ||
+          rect.bottom <= 0 ||
+          pinnedStyle.display === "none" ||
+          pinnedStyle.visibility === "hidden" ||
+          opacity <= 0.01
+        ) {
+          continue;
+        }
+
+        pinnedElement.setAttribute(attrName, "true");
+        hidden.add(pinnedElement);
+      }
+
+      return hidden.size;
+    },
+    {
+      attrName: FIXED_SIDE_BADGE_ATTR,
+      hosts: FIXED_SIDE_BADGE_HOSTS,
+      maxEdgeGap: FIXED_SIDE_BADGE_MAX_EDGE_GAP,
+      maxHeight: FIXED_SIDE_BADGE_MAX_HEIGHT,
+      maxWidth: FIXED_SIDE_BADGE_MAX_WIDTH,
+      minSize: FIXED_SIDE_BADGE_MIN_SIZE,
+      pageWidth: params.pageWidth,
+      viewportHeight: params.viewportHeight,
+    },
+  );
+
+  if (hiddenCount === 0) {
+    return async () => undefined;
+  }
+
+  const styleHandle = await params.page.addStyleTag({
+    content: `[${FIXED_SIDE_BADGE_ATTR}="true"], [${FIXED_SIDE_BADGE_ATTR}="true"] * { visibility: hidden !important; }`,
+  });
+  params.log?.("info", `fixed_side_badge_hidden_for_tiles count=${hiddenCount}`);
+
+  return async () => {
+    await styleHandle
+      .evaluate((node) => (node instanceof Element ? node.remove() : undefined))
+      .catch(() => undefined);
+    await params.page
+      .evaluate((attrName) => {
+        document.querySelectorAll(`[${attrName}]`).forEach((element) => element.removeAttribute(attrName));
+      }, FIXED_SIDE_BADGE_ATTR)
       .catch(() => undefined);
   };
 }
