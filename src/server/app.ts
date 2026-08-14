@@ -93,14 +93,8 @@ export interface BuildServerOptions {
   retryCoreRouteFn?: (params: Parameters<typeof retryCoreRouteByManifest>[0]) => ReturnType<typeof retryCoreRouteByManifest>;
 }
 
-const AUTO_ARCHIVE_AGE_DAYS = 7;
-const AUTO_ARCHIVE_INTERVAL_MS = 60 * 60 * 1000;
-const AUTO_ARCHIVE_TERMINAL_STATUSES: JobStatus[] = [
-  "success",
-  "partial_success",
-  "failed",
-  "cancelled",
-];
+const AUTO_HISTORY_DELAY_MS = 24 * 60 * 60 * 1000;
+const AUTO_HISTORY_INTERVAL_MS = 60 * 60 * 1000;
 const EAGLE_IMPORT_ALREADY_QUEUED_MESSAGE = "Eagle import for this job is already queued or running";
 const ROUTE_RERUN_ALREADY_QUEUED_MESSAGE = "A page rerun for this job is already queued or running";
 
@@ -152,6 +146,12 @@ function resolveJobOutputCleanupTarget(job: JobRecord): string | null {
     !relativeTarget.startsWith("..") &&
     !path.isAbsolute(relativeTarget);
   if (!targetIsInsideRoot) {
+    // Older databases can retain output paths from a previous checkout. If that
+    // directory is already gone, clear only the database detail; never delete
+    // a real directory outside the job's configured output root.
+    if (!existsSync(outputTarget)) {
+      return null;
+    }
     throw new Error("Job output directory is outside its configured output root");
   }
 
@@ -296,8 +296,8 @@ function emitToQueue(queue: JobQueue, event: JobEvent): void {
   queue.emit(event);
 }
 
-function getAutoArchiveCutoffIso(now = new Date()): string {
-  return new Date(now.getTime() - AUTO_ARCHIVE_AGE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+function getAutoHistoryCutoffIso(now = new Date()): string {
+  return new Date(now.getTime() - AUTO_HISTORY_DELAY_MS).toISOString();
 }
 
 function cancelOrphanedRoutes(repo: JobsRepository, jobId: string): void {
@@ -632,27 +632,47 @@ async function refreshPersistedTerminalJobState(
   return repo.getJob(job.id);
 }
 
-function runAutoArchiveSweep(
+async function runAutoHistorySweep(
   repo: JobsRepository,
   log: FastifyInstance["log"],
   reason: "startup" | "interval",
-): { jobIds: string[]; archivedAt: string | null; cutoffIso: string } {
-  const cutoffIso = getAutoArchiveCutoffIso();
-  const result = repo.archiveFinishedJobsBefore({
-    cutoffIso,
-    statuses: AUTO_ARCHIVE_TERMINAL_STATUSES,
-  });
+): Promise<{ eligibleJobIds: string[]; movedJobIds: string[]; failedJobIds: string[]; cutoffIso: string }> {
+  const cutoffIso = getAutoHistoryCutoffIso();
+  const candidates = repo.listImportedJobsReadyForHistory(cutoffIso);
+  const movedJobIds: string[] = [];
+  const failedJobIds: string[] = [];
+
+  for (const job of candidates) {
+    try {
+      const result = await cleanJobLocalFiles({ repo, job, log });
+      repo.addLog(
+        job.id,
+        result.filesDeleted ? "info" : "warn",
+        result.filesDeleted
+          ? "Automatically moved to history 24 hours after Eagle import"
+          : "Moved to history, but some staged local files could not be deleted",
+      );
+      movedJobIds.push(job.id);
+    } catch (error) {
+      failedJobIds.push(job.id);
+      log.error({ err: error, jobId: job.id }, "Automatic history cleanup failed");
+    }
+  }
+
   log.info(
     {
       reason,
       cutoffIso,
-      archivedCount: result.jobIds.length,
-      archivedJobIds: result.jobIds,
+      eligibleJobIds: candidates.map((job) => job.id),
+      movedJobIds,
+      failedJobIds,
     },
-    "Auto-archive sweep completed",
+    "Automatic history sweep completed",
   );
   return {
-    ...result,
+    eligibleJobIds: candidates.map((job) => job.id),
+    movedJobIds,
+    failedJobIds,
     cutoffIso,
   };
 }
@@ -664,23 +684,29 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   const webDistDir = options.webDistDir ?? path.resolve(process.cwd(), "web/dist");
   const playwrightRuntimeService =
     options.playwrightRuntimeService ?? buildPlaywrightRuntimeService({ cwd: process.cwd() });
+  const ensurePlaywrightRuntime = () =>
+    playwrightRuntimeService.ensure?.() ?? playwrightRuntimeService.check();
   const executeInstructionFn = options.executeInstructionFn ?? executeInstruction;
   const executeCoreRoutesInstructionFn =
     options.executeCoreRoutesInstructionFn ?? executeCoreRoutesInstruction;
   const retryImportFn = options.retryImportFn ?? retryImportByManifestPath;
   const importSelectedFn = options.importSelectedFn ?? importSelectedByManifestPath;
   const retryCoreRouteFn = options.retryCoreRouteFn ?? retryCoreRouteByManifest;
-  const autoArchiveTimer = setInterval(() => {
-    try {
-      runAutoArchiveSweep(repo, app.log, "interval");
-    } catch (error) {
-      app.log.error({ err: error }, "Auto-archive interval sweep failed");
-    }
-  }, AUTO_ARCHIVE_INTERVAL_MS);
-  autoArchiveTimer.unref?.();
+  const autoHistoryTimer = setInterval(() => {
+    void runAutoHistorySweep(repo, app.log, "interval").catch((error) => {
+      app.log.error({ err: error }, "Automatic history interval sweep failed");
+    });
+  }, AUTO_HISTORY_INTERVAL_MS);
+  autoHistoryTimer.unref?.();
+
+  if (playwrightRuntimeService.ensure) {
+    void ensurePlaywrightRuntime().catch((error) => {
+      app.log.warn({ err: error }, "Automatic screenshot runtime repair failed");
+    });
+  }
 
   app.addHook("onClose", async () => {
-    clearInterval(autoArchiveTimer);
+    clearInterval(autoHistoryTimer);
     if (!options.repo) {
       repo.close();
     }
@@ -717,7 +743,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       };
     }
 
-    const playwrightState = await playwrightRuntimeService.check();
+    const playwrightState = await ensurePlaywrightRuntime();
     const runtimeMessages: string[] = [];
     if (!playwrightState.healthy && playwrightState.message) {
       runtimeMessages.push(playwrightState.message);
@@ -804,7 +830,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   });
 
   app.get("/api/runtime/playwright", async () => {
-    return playwrightRuntimeService.check();
+    return ensurePlaywrightRuntime();
   });
 
   app.post("/api/runtime/playwright/repair", async () => {
@@ -2191,9 +2217,9 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   }
 
   try {
-    runAutoArchiveSweep(repo, app.log, "startup");
+    await runAutoHistorySweep(repo, app.log, "startup");
   } catch (error) {
-    app.log.error({ err: error }, "Auto-archive startup sweep failed");
+    app.log.error({ err: error }, "Automatic history startup sweep failed");
   }
 
   return app;

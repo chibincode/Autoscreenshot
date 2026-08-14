@@ -77,13 +77,39 @@ describe("jobs repository route targets", () => {
     expect(updated?.attemptCount).toBe(1);
   });
 
-  it("archives only finished terminal jobs older than the cutoff", () => {
-    const rawDb = new Database(dbPath);
-    const cutoffIso = "2026-04-02T00:00:00.000Z";
-    const oldFinishedAt = "2026-04-02T00:00:00.000Z";
-    const recentFinishedAt = "2026-04-02T00:00:00.001Z";
-
-    const createFinishedJob = (jobId: string, status: "success" | "partial_success" | "failed" | "cancelled") => {
+  it("tracks completed imports and selects jobs after the history cutoff", () => {
+    const buildManifest = (jobId: string, imported: boolean) => ({
+      runId: jobId,
+      instruction: `job ${jobId}`,
+      createdAt: "2026-04-01T00:00:00.000Z",
+      task: {
+        url: `https://example.com/${jobId}`,
+        waitUntil: "networkidle" as const,
+        captures: [{ mode: "fullPage" as const }],
+        image: { format: "jpg" as const, quality: 92, dpr: 2 as const },
+        viewport: { width: 1920, height: 1080 },
+        tags: [],
+        eagle: {},
+      },
+      sectionScope: "classic" as const,
+      outputDir: `/tmp/${jobId}`,
+      assets: [
+        {
+          kind: "fullPage" as const,
+          label: "full_page",
+          filePath: `/tmp/${jobId}/capture.jpg`,
+          fileName: "capture.jpg",
+          sourceUrl: `https://example.com/${jobId}`,
+          quality: 92,
+          dpr: 2,
+          capturedAt: "2026-04-01T00:00:00.000Z",
+          import: imported
+            ? { ok: true, selected: true, status: "imported" as const, eagleId: `eagle-${jobId}` }
+            : { ok: false, selected: true, status: "pending_confirmation" as const },
+        },
+      ],
+    });
+    const createFinishedJob = (jobId: string, imported: boolean) => {
       repo.createJob({
         id: jobId,
         instruction: `job ${jobId}`,
@@ -91,49 +117,38 @@ describe("jobs repository route targets", () => {
       });
       repo.setJobResult({
         jobId,
-        status,
-        taskJson: JSON.stringify({ url: "https://example.com" }),
-        error: status === "failed" ? "failed once" : status === "cancelled" ? "Cancelled by user" : null,
+        status: imported ? "success" : "awaiting_confirmation",
+        taskJson: JSON.stringify({ url: `https://example.com/${jobId}` }),
+        outputDir: `/tmp/${jobId}`,
       });
+      repo.replaceAssets(jobId, buildManifest(jobId, imported));
     };
 
-    createFinishedJob("old-success", "success");
-    createFinishedJob("old-partial", "partial_success");
-    createFinishedJob("old-failed", "failed");
-    createFinishedJob("old-cancelled", "cancelled");
-    createFinishedJob("recent-success", "success");
-    createFinishedJob("already-archived", "success");
-    repo.createJob({
-      id: "running-job",
-      instruction: "running job",
-      options: DEFAULT_OPTIONS,
-    });
-    repo.setJobRunning("running-job");
+    createFinishedJob("history-old-import", true);
+    createFinishedJob("history-recent-import", true);
+    createFinishedJob("history-pending-import", false);
 
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, "old-success");
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, "old-partial");
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, "old-failed");
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, "old-cancelled");
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(recentFinishedAt, "recent-success");
+    expect(repo.getJob("history-old-import")?.importCompletedAt).toBeTruthy();
+    expect(repo.getJob("history-pending-import")?.importCompletedAt).toBeNull();
+
+    const rawDb = new Database(dbPath);
     rawDb
-      .prepare("UPDATE jobs SET finished_at = ?, archived_at = ? WHERE id = ?")
-      .run(oldFinishedAt, "2026-04-01T00:00:00.000Z", "already-archived");
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, "running-job");
+      .prepare("UPDATE jobs SET import_completed_at = ? WHERE id = ?")
+      .run("2026-04-01T00:00:00.000Z", "history-old-import");
+    rawDb
+      .prepare("UPDATE jobs SET import_completed_at = ? WHERE id = ?")
+      .run("2026-04-02T00:00:00.001Z", "history-recent-import");
     rawDb.close();
 
-    const result = repo.archiveFinishedJobsBefore({
-      cutoffIso,
-      statuses: ["success", "partial_success", "failed", "cancelled"],
-    });
+    expect(
+      repo.listImportedJobsReadyForHistory("2026-04-02T00:00:00.000Z").map((job) => job.id),
+    ).toEqual(["history-old-import"]);
 
-    expect(result.jobIds.sort()).toEqual(["old-cancelled", "old-failed", "old-partial", "old-success"]);
-    expect(repo.getJob("old-success")?.archivedAt).toBeTruthy();
-    expect(repo.getJob("old-partial")?.archivedAt).toBeTruthy();
-    expect(repo.getJob("old-failed")?.archivedAt).toBeTruthy();
-    expect(repo.getJob("old-cancelled")?.archivedAt).toBeTruthy();
-    expect(repo.getJob("recent-success")?.archivedAt).toBeNull();
-    expect(repo.getJob("already-archived")?.archivedAt).toBe("2026-04-01T00:00:00.000Z");
-    expect(repo.getJob("running-job")?.archivedAt).toBeNull();
+    repo.replaceAssets("history-old-import", buildManifest("history-old-import", false));
+    expect(repo.getJob("history-old-import")?.importCompletedAt).toBeNull();
+    expect(
+      repo.listImportedJobsReadyForHistory("2026-04-03T00:00:00.000Z").map((job) => job.id),
+    ).toEqual(["history-recent-import"]);
   });
 
   it("finds recent jobs by normalized source url", () => {

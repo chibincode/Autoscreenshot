@@ -13,6 +13,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { Crop } from "lucide-react";
 import {
   buildFeedbackContext,
   buildAssetLookupIndex,
@@ -154,6 +155,7 @@ interface JobSummary {
   importSuccessCount: number;
   importFailedCount: number;
   sourceUrl: string | null;
+  importCompletedAt: string | null;
   archivedAt: string | null;
   cleanedAt: string | null;
 }
@@ -243,6 +245,7 @@ interface JobDetail {
     createdAt: string;
     startedAt: string | null;
     finishedAt: string | null;
+    importCompletedAt: string | null;
     archivedAt: string | null;
     cleanedAt: string | null;
     error: string | null;
@@ -334,6 +337,7 @@ interface PlaywrightRuntimeState {
   healthy: boolean;
   needsRepair: boolean;
   repairing: boolean;
+  repairFailed?: boolean;
   target: "chromium";
   message: string;
   detail?: string;
@@ -546,15 +550,29 @@ function formatPartialSuccessJobBadge(params: {
 }
 
 function canQuickArchiveJob(job: JobSummary): boolean {
-  return !job.cleanedAt && !isActiveStatus(job.status) && job.status !== "queued";
+  return Boolean(job.archivedAt) && !job.cleanedAt && !isActiveStatus(job.status) && job.status !== "queued";
 }
 
-function canCleanJobFiles(job: Pick<JobSummary, "status" | "cleanedAt">): boolean {
+function canMoveJobToHistory(
+  job: Pick<JobSummary, "status" | "cleanedAt">,
+): boolean {
   return !job.cleanedAt && !isActiveStatus(job.status) && job.status !== "queued";
 }
 
 function canRescanJob(job: Pick<JobSummary, "status">): boolean {
   return !isActiveStatus(job.status) && job.status !== "queued";
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
+  );
 }
 
 function cx(...classes: Array<string | false | null | undefined>): string {
@@ -566,6 +584,10 @@ function formatDate(input: string | null): string {
     return "—";
   }
   return new Date(input).toLocaleString();
+}
+
+function formatAutoHistoryDate(importCompletedAt: string): string {
+  return formatDate(new Date(new Date(importCompletedAt).getTime() + 24 * 60 * 60 * 1000).toISOString());
 }
 
 function normalizeComparableUrl(value: string | null): string {
@@ -1214,6 +1236,7 @@ const JobsListPanel = memo(function JobsListPanel({
   totalPages,
   page,
   onSelectJob,
+  onHoverJob,
   onArchiveJob,
   onCleanJob,
   onPreviousPage,
@@ -1227,6 +1250,7 @@ const JobsListPanel = memo(function JobsListPanel({
   totalPages: number;
   page: number;
   onSelectJob: (jobId: string) => void;
+  onHoverJob: (jobId: string | null) => void;
   onArchiveJob: (jobId: string, archived: boolean) => void;
   onCleanJob: (jobId: string) => void;
   onPreviousPage: () => void;
@@ -1237,13 +1261,18 @@ const JobsListPanel = memo(function JobsListPanel({
       {jobs.map((job) => {
         const jobIsLive = runningJobId === job.id || isActiveStatus(job.status);
         const showQuickArchive = canQuickArchiveJob(job);
-        const showCleanFiles = canCleanJobFiles(job);
-        const showQuickActions = showQuickArchive || showCleanFiles;
+        const showMoveToHistory = canMoveJobToHistory(job);
+        const showQuickActions = showQuickArchive || showMoveToHistory;
         const nextArchivedState = !Boolean(job.archivedAt);
         const isExiting = exitingJobIds.has(job.id);
         const isArchiving = archivingJobId === job.id;
         return (
-          <div key={job.id} className={cx("job-card-shell", isExiting && "job-card-shell-exiting")}>
+          <div
+            key={job.id}
+            className={cx("job-card-shell", isExiting && "job-card-shell-exiting")}
+            onMouseEnter={() => onHoverJob(job.id)}
+            onMouseLeave={() => onHoverJob(null)}
+          >
             <article
               className={cx(
                 "job-card",
@@ -1282,7 +1311,7 @@ const JobsListPanel = memo(function JobsListPanel({
                   {job.cleanedAt ? (
                     <span className="job-cleaned-pill">files cleaned</span>
                   ) : job.archivedAt ? (
-                    <span className="job-archived-pill">archived</span>
+                    <span className="job-archived-pill">history</span>
                   ) : null}
                 </div>
               </div>
@@ -1305,7 +1334,11 @@ const JobsListPanel = memo(function JobsListPanel({
                 {job.cleanedAt ? (
                   <div className="job-cleaned-note">Files cleaned · {formatDate(job.cleanedAt)}</div>
                 ) : job.archivedAt ? (
-                  <div className="job-archived-note">Archived · {formatDate(job.archivedAt)}</div>
+                  <div className="job-archived-note">Moved to history · {formatDate(job.archivedAt)}</div>
+                ) : job.importCompletedAt ? (
+                  <div className="job-auto-history-note">
+                    Auto history · {formatAutoHistoryDate(job.importCompletedAt)}
+                  </div>
                 ) : null}
               </div>
               {runningJobId === job.id ? <div className="job-live-note">Running</div> : null}
@@ -1332,18 +1365,19 @@ const JobsListPanel = memo(function JobsListPanel({
                           : "Unarchive"}
                     </button>
                   ) : null}
-                  {showCleanFiles ? (
+                  {showMoveToHistory ? (
                     <button
                       type="button"
                       className="job-card-quick-action job-card-clean-action"
                       disabled={archivingJobId !== null}
+                      aria-keyshortcuts="D"
                       onClick={(event) => {
                         event.stopPropagation();
                         onCleanJob(job.id);
                       }}
-                      aria-label="Clean local job files"
+                      aria-label={job.archivedAt ? "Clean local files" : "Move job to history"}
                     >
-                      Clean files
+                      {job.archivedAt ? "Clean files" : "Move to history"}
                     </button>
                   ) : null}
                 </div>
@@ -1512,8 +1546,14 @@ const JobDetailSummary = memo(function JobDetailSummary({
           </Button>
         ) : null}
         {canClean ? (
-          <Button variant="danger" size="sm" disabled={archiving} onClick={() => onClean(detail.job.id)}>
-            Clean files
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={archiving}
+            aria-keyshortcuts="D"
+            onClick={() => onClean(detail.job.id)}
+          >
+            {detail.job.archivedAt ? "Clean files" : "Move to history"}
           </Button>
         ) : null}
         {detail.job.cleanedAt ? (
@@ -1533,6 +1573,9 @@ const JobDetailSummary = memo(function JobDetailSummary({
         )}
         <span>Started: {formatDate(detail.job.startedAt)}</span>
         <span>Finished: {formatDate(detail.job.finishedAt)}</span>
+        {detail.job.importCompletedAt && !detail.job.cleanedAt ? (
+          <span>Auto history: {formatAutoHistoryDate(detail.job.importCompletedAt)}</span>
+        ) : null}
         {detail.job.archivedAt ? <span>Archived: {formatDate(detail.job.archivedAt)}</span> : null}
         {detail.job.cleanedAt ? <span>Cleaned: {formatDate(detail.job.cleanedAt)}</span> : null}
       </div>
@@ -2220,7 +2263,8 @@ const PreviewModal = memo(function PreviewModal({
                     }
                     onClick={beginCrop}
                   >
-                    Crop image
+                    <Crop className="asset-preview-primary-action-icon" aria-hidden="true" />
+                    <span>Crop image</span>
                   </button>
                   <div
                     className={cx(
@@ -2620,6 +2664,7 @@ export function App() {
     }
   });
   const [logsExpanded, setLogsExpanded] = useState(false);
+  const hoveredJobIdRef = useRef<string | null>(null);
   const [manifestExpanded, setManifestExpanded] = useState(false);
   const sseRefreshTimerRef = useRef<number | null>(null);
   const selectedJobDetailRef = useRef<JobDetail | null>(null);
@@ -2630,9 +2675,15 @@ export function App() {
   const totalPages = useMemo(() => Math.max(1, Math.ceil(totalJobs / pageSize)), [pageSize, totalJobs]);
   const runningJobId = config?.queue.runningJobId ?? null;
   const playwrightNeedsRepair = Boolean(playwrightRuntime?.needsRepair);
-  const browserActionsDisabled = playwrightNeedsRepair || playwrightRuntime?.repairing || playwrightRepairPending;
+  const playwrightRuntimePreparing = Boolean(
+    playwrightRuntime === null ||
+      playwrightRuntime.repairing ||
+      playwrightRepairPending ||
+      (playwrightNeedsRepair && !playwrightRuntime.repairFailed),
+  );
+  const browserActionsDisabled = playwrightRuntimePreparing || Boolean(playwrightRuntime?.repairFailed);
   const showPlaywrightBanner = Boolean(
-    playwrightRuntime && (playwrightRuntime.needsRepair || playwrightRuntime.repairing),
+    playwrightRuntime?.repairFailed && !playwrightRuntime.repairing && !playwrightRepairPending,
   );
   const selectedJobMode = useMemo(
     () => parseJobMode(selectedJobDetail?.job.optionsJson ?? null),
@@ -2742,17 +2793,18 @@ export function App() {
       return false;
     }
     return (
+      Boolean(selectedJobDetail.job.archivedAt) &&
       !selectedJobDetail.job.cleanedAt &&
       !isActiveStatus(selectedJobDetail.job.status) &&
       selectedJobDetail.job.status !== "queued"
     );
   }, [selectedJobDetail]);
-  const canCleanSelectedJob = useMemo(() => {
+  const canMoveSelectedJobToHistory = useMemo(() => {
     if (!selectedJobDetail) {
       return false;
     }
-    return canCleanJobFiles(selectedJobDetail.job);
-  }, [selectedJobDetail]);
+    return !selectedJobDetail.job.cleanedAt && !selectedJobIsBusy;
+  }, [selectedJobDetail, selectedJobIsBusy]);
   const canRescanSelectedJob = useMemo(() => {
     if (!selectedJobDetail) {
       return false;
@@ -2980,12 +3032,12 @@ export function App() {
       setPlaywrightRuntime(result);
       if (result.healthy) {
         setErrorText((current) => (isRepairablePlaywrightMessage(current) ? null : current));
-        showToast("Chromium 已修复，可以继续提交任务。");
+        showToast("Screenshot engine is ready.");
         return;
       }
       setErrorText(null);
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "修复 Chromium 失败");
+      setErrorText(error instanceof Error ? error.message : "Automatic screenshot setup failed");
     } finally {
       setPlaywrightRepairPending(false);
       void loadPlaywrightRuntime().catch(() => {
@@ -3313,7 +3365,7 @@ export function App() {
       return;
     }
     if (browserActionsDisabled) {
-      setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
+      setErrorText("Screenshot engine is preparing. Try again shortly.");
       return;
     }
     setSubmitting(true);
@@ -3352,7 +3404,7 @@ export function App() {
 
   const rescanJob = useCallback(async (jobId: string): Promise<void> => {
     if (browserActionsDisabled) {
-      setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
+      setErrorText("Screenshot engine is preparing. Try again shortly.");
       return;
     }
 
@@ -3650,7 +3702,7 @@ export function App() {
     routeStatus: RouteTargetSummary["status"],
   ): Promise<void> => {
     if (browserActionsDisabled) {
-      setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
+      setErrorText("Screenshot engine is preparing. Try again shortly.");
       return;
     }
     setRerunningRouteId(routeId);
@@ -3677,7 +3729,7 @@ export function App() {
     } finally {
       setRerunningRouteId((current) => (current === routeId ? null : current));
     }
-  }, [browserActionsDisabled, loadJobDetail, loadJobs, playwrightRuntime?.message, showToast]);
+  }, [browserActionsDisabled, loadJobDetail, loadJobs, showToast]);
 
   const rerunRoute = useCallback((jobId: string, route: RouteTargetSummary): void => {
     if (route.status === "failed") {
@@ -3805,12 +3857,12 @@ export function App() {
       setErrorText(null);
       showToast(
         result.filesDeleted
-          ? "本地文件已清理，历史记录已保留"
-          : "历史记录已保留，但部分本地文件清理失败",
+          ? "Moved to history · local files deleted"
+          : "Moved to history · some local files could not be deleted",
         result.filesDeleted ? "success" : "info",
       );
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "清理本地文件失败");
+      setErrorText(error instanceof Error ? error.message : "Failed to move task to history");
     } finally {
       if (animatedRemoval) {
         setExitingJobIds((current) => {
@@ -3823,16 +3875,69 @@ export function App() {
   }, [archivedOnly, loadJobDetail, loadJobs, selectedJobId, showToast]);
 
   const cleanJobFiles = useCallback((jobId: string): void => {
+    const job = jobs.find((item) => item.id === jobId);
+    const detail = selectedJobDetail?.job.id === jobId ? selectedJobDetail : null;
+    const detailImportSummary = detail ? summarizeAssets(detail.assets) : null;
+    const pendingCount = detailImportSummary
+      ? detailImportSummary.selectedPending + detailImportSummary.selectedFailed
+      : (job?.pendingConfirmationCount ?? 0) + (job?.importFailedCount ?? 0);
+    const unimportedWarning =
+      pendingCount > 0
+        ? ` ${pendingCount} selected screenshot${pendingCount === 1 ? " has" : "s have"} not been imported to Eagle and will be permanently deleted.`
+        : "";
     setActionDialog({
-      title: "清理这个任务的本地文件？",
+      title: "Move this task to history?",
       description:
-        "截图、Manifest、运行日志、路由和裁切备份会被删除；URL、时间、模式、状态和统计会保留，浏览器插件仍可用于历史查重。已经导入 Eagle 的图片不会受影响。",
-      confirmLabel: "清理文件",
-      cancelLabel: "保留文件",
+        `Screenshots, manifests, and crop backups will be deleted to save space.${unimportedWarning} Matching records, route history, and run logs will remain available. Imported Eagle images are not affected.`,
+      confirmLabel: "Move to history",
+      cancelLabel: "Keep in queue",
       tone: "danger",
       onConfirm: () => executeCleanJobFiles(jobId),
     });
-  }, [executeCleanJobFiles]);
+  }, [executeCleanJobFiles, jobs, selectedJobDetail]);
+
+  const setHoveredJob = useCallback((jobId: string | null): void => {
+    hoveredJobIdRef.current = jobId;
+  }, []);
+
+  useEffect(() => {
+    if (
+      actionDialog ||
+      previewAssetId !== null ||
+      folderPickerState
+    ) {
+      return undefined;
+    }
+
+    const handleMoveToHistoryShortcut = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.key.toLowerCase() !== "d" ||
+        event.repeat ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        isEditableKeyboardTarget(event.target)
+      ) {
+        return;
+      }
+      const hoveredJobId = hoveredJobIdRef.current;
+      const hoveredJob = hoveredJobId ? jobs.find((job) => job.id === hoveredJobId) : null;
+      if (!hoveredJob || !canMoveJobToHistory(hoveredJob)) {
+        return;
+      }
+      event.preventDefault();
+      cleanJobFiles(hoveredJob.id);
+    };
+
+    window.addEventListener("keydown", handleMoveToHistoryShortcut);
+    return () => window.removeEventListener("keydown", handleMoveToHistoryShortcut);
+  }, [
+    actionDialog,
+    cleanJobFiles,
+    folderPickerState,
+    jobs,
+    previewAssetId,
+  ]);
 
   const executeCleanArchivedFiles = useCallback(async (): Promise<void> => {
     setArchivedCleanupBusy(true);
@@ -3850,12 +3955,12 @@ export function App() {
       setErrorText(null);
       showToast(
         result.failedCount === 0
-          ? `已清理 ${result.cleanedCount} 个归档任务的本地文件，历史记录已保留`
-          : `已处理 ${result.cleanedCount} 个归档任务，${result.failedCount} 个文件清理不完整`,
+          ? `Cleaned local files for ${result.cleanedCount} history tasks`
+          : `Processed ${result.cleanedCount} history tasks · ${result.failedCount} incomplete`,
         result.failedCount === 0 ? "success" : "info",
       );
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "批量清理归档文件失败");
+      setErrorText(error instanceof Error ? error.message : "Failed to clean history files");
     } finally {
       setArchivedCleanupBusy(false);
     }
@@ -3866,12 +3971,12 @@ export function App() {
       return;
     }
     setActionDialog({
-      title: "清理全部已归档任务的本地文件？",
+      title: "Clean all eligible history files?",
       description:
-        `将清理 ${archivedCleanupPreview.jobCount} 个归档任务中的 ${archivedCleanupPreview.assetCount} 张截图，以及对应的 Manifest、运行日志、路由和裁切备份。` +
-        "URL、时间、模式、状态和统计会保留，浏览器插件仍可用于历史查重；已经导入 Eagle 的图片不会受影响。",
-      confirmLabel: "清理全部文件",
-      cancelLabel: "保留文件",
+        `This deletes ${archivedCleanupPreview.assetCount} screenshots plus manifests and crop backups from ${archivedCleanupPreview.jobCount} imported tasks. ` +
+        "Matching records, route history, run logs, and Eagle images remain available.",
+      confirmLabel: "Clean all files",
+      cancelLabel: "Keep files",
       tone: "danger",
       onConfirm: executeCleanArchivedFiles,
     });
@@ -3993,21 +4098,12 @@ export function App() {
   return (
     <div className="layout">
       {showPlaywrightBanner ? (
-        <div className="runtime-banner" role="status" aria-live="polite">
+        <div className="runtime-banner" role="alert">
           <div className="runtime-banner-copy">
-            <strong className="runtime-banner-title">
-              {playwrightRuntime?.repairing || playwrightRepairPending
-                ? "正在修复本机 Chromium 截图运行环境"
-                : "当前 Chromium 截图浏览器缺失"}
-            </strong>
+            <strong className="runtime-banner-title">Screenshot setup needs attention</strong>
             <span className="runtime-banner-text">
-              {playwrightRuntime?.repairing || playwrightRepairPending
-                ? "请稍候，修复完成后这里会自动恢复。"
-                : "这不是网站失败，新的截图任务会直接失败。"}
+              Automatic setup could not finish. Check your connection and retry.
             </span>
-            {playwrightRuntime?.detail ? (
-              <span className="runtime-banner-detail">{playwrightRuntime.detail}</span>
-            ) : null}
           </div>
           <div className="runtime-banner-actions">
             <button
@@ -4016,9 +4112,8 @@ export function App() {
               onClick={() => void repairPlaywrightRuntime()}
               disabled={playwrightRuntime?.repairing || playwrightRepairPending}
             >
-              {playwrightRuntime?.repairing || playwrightRepairPending ? "修复中..." : "修复 Chromium"}
+              {playwrightRuntime?.repairing || playwrightRepairPending ? "Retrying..." : "Retry setup"}
             </button>
-            <span className="runtime-banner-meta">目标：{playwrightRuntime?.target ?? "chromium"}</span>
           </div>
         </div>
       ) : null}
@@ -4142,7 +4237,7 @@ export function App() {
           loading={submitting}
           loadingLabel="Submitting..."
         >
-          Run
+          {playwrightRuntimePreparing ? "Preparing..." : "Run"}
         </Button>
 
         {errorText ? <div className="error-text">{errorText}</div> : null}
@@ -4227,7 +4322,7 @@ export function App() {
                 <span className="filter-toggle-indicator" aria-hidden="true">
                   <span className="filter-toggle-knob" />
                 </span>
-                <span>Archived</span>
+                <span>History</span>
               </label>
             </div>
           </div>
@@ -4243,6 +4338,7 @@ export function App() {
             totalPages={totalPages}
             page={page}
             onSelectJob={selectJob}
+            onHoverJob={setHoveredJob}
             onArchiveJob={archiveJob}
             onCleanJob={cleanJobFiles}
             onPreviousPage={() => setPage((prev) => Math.max(1, prev - 1))}
@@ -4261,7 +4357,7 @@ export function App() {
                   canCancel={canCancelSelectedJob}
                   canArchive={canArchiveSelectedJob}
                   archiving={selectedJobIsArchiving}
-                  canClean={canCleanSelectedJob}
+                  canClean={canMoveSelectedJobToHistory}
                   canRescan={canRescanSelectedJob}
                   rescanDisabled={browserActionsDisabled || selectedJobIsArchiving}
                   rescanning={selectedJobIsRescanning}
@@ -4464,20 +4560,20 @@ export function App() {
                   </details>
                 ) : null}
 
-                {!selectedJobDetail.job.cleanedAt ? (
-                  <div className="detail-columns">
-                    <LogsPanel
-                      logs={selectedJobDetail.logs}
-                      expanded={logsExpanded}
-                      onToggle={() => setLogsExpanded((current) => !current)}
-                    />
+                <div className={cx("detail-columns", selectedJobDetail.job.cleanedAt && "detail-columns-history")}>
+                  <LogsPanel
+                    logs={selectedJobDetail.logs}
+                    expanded={logsExpanded}
+                    onToggle={() => setLogsExpanded((current) => !current)}
+                  />
+                  {!selectedJobDetail.job.cleanedAt ? (
                     <ManifestPanel
                       manifest={selectedJobDetail.manifest}
                       expanded={manifestExpanded}
                       onToggle={() => setManifestExpanded((current) => !current)}
                     />
-                  </div>
-                ) : null}
+                  ) : null}
+                </div>
               </>
             )}
           </section>

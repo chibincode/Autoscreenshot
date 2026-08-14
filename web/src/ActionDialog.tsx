@@ -72,6 +72,8 @@ export function ActionDialog({
             onClick={onConfirm}
             loading={pending}
             loadingLabel="处理中..."
+            autoFocus
+            aria-keyshortcuts="Enter"
           >
             {confirmLabel}
           </Button>

@@ -6,6 +6,7 @@ const TOP_OVERLAY_SELECTORS = [
   "header",
   "nav",
   '[role="navigation"]',
+  '[role="region"]',
   '[data-framer-name*="Navigation" i]',
   '[data-framer-name*="Nav" i]',
   '[data-framer-name*="Header" i]',
@@ -16,7 +17,8 @@ const TOP_OVERLAY_SELECTORS = [
   // full-screen WebGL canvases out of this cleanup path.
   "canvas",
 ].join(",");
-const TOP_OVERLAY_MAX_TOP = 24;
+// Leave room for navigation stacked below a fixed announcement or promo bar.
+const TOP_OVERLAY_MAX_TOP = 96;
 const TOP_OVERLAY_MAX_HEIGHT = 240;
 const TOP_OVERLAY_MIN_HEIGHT = 24;
 // Some desktop sites pin only the centered menu while leaving the logo and
@@ -29,14 +31,43 @@ const TOP_OVERLAY_HIDDEN_ATTR = "data-autosnap-top-overlay-hidden";
 const STICKY_NORMALIZED_ATTR = "data-autosnap-sticky-normalized";
 const BOTTOM_FIXED_ATTR = "data-autosnap-bottom-fixed";
 const BOTTOM_FIXED_STATE_ATTR = "data-autosnap-bottom-fixed-state";
-const BOTTOM_FIXED_MAX_GAP = 24;
+const BOTTOM_FIXED_MAX_GAP = 96;
 const BOTTOM_FIXED_MIN_HEIGHT = 20;
 const BOTTOM_FIXED_MAX_HEIGHT = 240;
-const BOTTOM_FIXED_MIN_WIDTH_RATIO = 0.35;
+const BOTTOM_FIXED_MIN_WIDTH = 32;
+const FIXED_SIDE_BADGE_ATTR = "data-autosnap-fixed-side-badge";
+const FIXED_SIDE_BADGE_HOSTS = ["awwwards.com"];
+const FIXED_SIDE_BADGE_MAX_EDGE_GAP = 24;
+const FIXED_SIDE_BADGE_MIN_SIZE = 8;
+const FIXED_SIDE_BADGE_MAX_WIDTH = 180;
+const FIXED_SIDE_BADGE_MAX_HEIGHT = 320;
+const READING_CHROME_ATTR = "data-autosnap-reading-chrome";
+const READING_CHROME_SELECTORS = [
+  '[class*="reading-progress" i]',
+  '[class*="scroll-progress" i]',
+  '[role="progressbar"]',
+  "progress",
+  'aside[aria-label*="table of contents" i]',
+].join(",");
+const READING_PROGRESS_SELECTORS = [
+  '[class*="reading-progress" i]',
+  '[class*="scroll-progress" i]',
+  '[role="progressbar"]',
+  "progress",
+].join(",");
+const READING_PROGRESS_MAX_TOP = 8;
+const READING_PROGRESS_MAX_HEIGHT = 16;
+const READING_CHROME_MAX_SIDE_GAP = 48;
+const READING_CHROME_MAX_SIDE_WIDTH = 360;
 
 export interface BottomFixedOverlayController {
   count: number;
   setVisible: (visible: boolean) => Promise<void>;
+  restore: () => Promise<void>;
+}
+
+export interface HiddenOverlayController {
+  count: number;
   restore: () => Promise<void>;
 }
 
@@ -343,6 +374,221 @@ export async function normalizeStickyElementsForCapture(params: {
   };
 }
 
+export async function hideRepeatedFixedSideBadgesForCapture(params: {
+  page: Page;
+  pageWidth: number;
+  viewportHeight: number;
+  log?: (level: "info" | "warn", message: string) => void;
+}): Promise<() => Promise<void>> {
+  const hiddenCount = await params.page.evaluate(
+    ({ attrName, hosts, maxEdgeGap, maxHeight, maxWidth, minSize, pageWidth, viewportHeight }) => {
+      const hidden = new Set<HTMLElement>();
+      const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"));
+
+      for (const anchor of anchors) {
+        let hostname = "";
+        try {
+          hostname = new URL(anchor.href, document.baseURI).hostname.toLowerCase().replace(/^www\./, "");
+        } catch {
+          continue;
+        }
+        if (!hosts.some((host) => hostname === host || hostname.endsWith(`.${host}`))) {
+          continue;
+        }
+
+        let pinnedElement: HTMLElement | null = anchor;
+        let pinnedStyle = window.getComputedStyle(pinnedElement);
+        while (
+          pinnedElement &&
+          pinnedElement !== document.body &&
+          pinnedElement !== document.documentElement &&
+          pinnedStyle.position !== "fixed"
+        ) {
+          pinnedElement = pinnedElement.parentElement;
+          pinnedStyle = pinnedElement ? window.getComputedStyle(pinnedElement) : pinnedStyle;
+        }
+
+        if (!pinnedElement || pinnedStyle.position !== "fixed" || hidden.has(pinnedElement)) {
+          continue;
+        }
+
+        const rect = pinnedElement.getBoundingClientRect();
+        const opacity = Number(pinnedStyle.opacity || "1");
+        const touchesSide = rect.left <= maxEdgeGap || rect.right >= pageWidth - maxEdgeGap;
+        if (
+          !touchesSide ||
+          rect.width < minSize ||
+          rect.height < minSize ||
+          rect.width > maxWidth ||
+          rect.height > maxHeight ||
+          rect.top >= viewportHeight ||
+          rect.bottom <= 0 ||
+          pinnedStyle.display === "none" ||
+          pinnedStyle.visibility === "hidden" ||
+          opacity <= 0.01
+        ) {
+          continue;
+        }
+
+        pinnedElement.setAttribute(attrName, "true");
+        hidden.add(pinnedElement);
+      }
+
+      return hidden.size;
+    },
+    {
+      attrName: FIXED_SIDE_BADGE_ATTR,
+      hosts: FIXED_SIDE_BADGE_HOSTS,
+      maxEdgeGap: FIXED_SIDE_BADGE_MAX_EDGE_GAP,
+      maxHeight: FIXED_SIDE_BADGE_MAX_HEIGHT,
+      maxWidth: FIXED_SIDE_BADGE_MAX_WIDTH,
+      minSize: FIXED_SIDE_BADGE_MIN_SIZE,
+      pageWidth: params.pageWidth,
+      viewportHeight: params.viewportHeight,
+    },
+  );
+
+  if (hiddenCount === 0) {
+    return async () => undefined;
+  }
+
+  const styleHandle = await params.page.addStyleTag({
+    content: `[${FIXED_SIDE_BADGE_ATTR}="true"], [${FIXED_SIDE_BADGE_ATTR}="true"] * { visibility: hidden !important; }`,
+  });
+  params.log?.("info", `fixed_side_badge_hidden_for_tiles count=${hiddenCount}`);
+
+  return async () => {
+    await styleHandle
+      .evaluate((node) => (node instanceof Element ? node.remove() : undefined))
+      .catch(() => undefined);
+    await params.page
+      .evaluate((attrName) => {
+        document.querySelectorAll(`[${attrName}]`).forEach((element) => element.removeAttribute(attrName));
+      }, FIXED_SIDE_BADGE_ATTR)
+      .catch(() => undefined);
+  };
+}
+
+export async function hideRepeatedReadingChromeForCapture(params: {
+  page: Page;
+  pageWidth: number;
+  viewportHeight: number;
+  log?: (level: "info" | "warn", message: string) => void;
+}): Promise<HiddenOverlayController> {
+  const hiddenCount = await params.page.evaluate(
+    ({
+      attrName,
+      maxProgressHeight,
+      maxProgressTop,
+      maxSideGap,
+      maxSideWidth,
+      minWidthRatio,
+      pageWidth,
+      progressSelectors,
+      selectors,
+      viewportHeight,
+    }) => {
+      const hidden = new Set<HTMLElement>();
+      const elements = Array.from(document.querySelectorAll<HTMLElement>(selectors));
+
+      for (const element of elements) {
+        let pinnedElement: HTMLElement | null = element;
+        let pinnedStyle = window.getComputedStyle(pinnedElement);
+        while (
+          pinnedElement &&
+          pinnedElement !== document.body &&
+          pinnedElement !== document.documentElement &&
+          pinnedStyle.position !== "fixed" &&
+          pinnedStyle.position !== "sticky"
+        ) {
+          pinnedElement = pinnedElement.parentElement;
+          pinnedStyle = pinnedElement ? window.getComputedStyle(pinnedElement) : pinnedStyle;
+        }
+
+        if (!pinnedElement || hidden.has(pinnedElement)) {
+          continue;
+        }
+
+        const rect = pinnedElement.getBoundingClientRect();
+        const opacity = Number(pinnedStyle.opacity || "1");
+        if (
+          pinnedStyle.display === "none" ||
+          pinnedStyle.visibility === "hidden" ||
+          opacity <= 0.01 ||
+          rect.width <= 0 ||
+          rect.height <= 0 ||
+          rect.top >= viewportHeight ||
+          rect.bottom <= 0
+        ) {
+          continue;
+        }
+
+        const isProgress = element.matches(progressSelectors) || pinnedElement.matches(progressSelectors);
+        const label = `${element.getAttribute("aria-label") || ""} ${pinnedElement.getAttribute("aria-label") || ""}`.toLowerCase();
+        const isTableOfContents = label.includes("table of contents");
+        const isThinTopProgress =
+          isProgress &&
+          rect.top <= maxProgressTop &&
+          rect.width >= pageWidth * minWidthRatio &&
+          rect.height <= maxProgressHeight;
+        const touchesSide = rect.left <= maxSideGap || rect.right >= pageWidth - maxSideGap;
+        const isSideTableOfContents =
+          isTableOfContents &&
+          touchesSide &&
+          rect.width <= maxSideWidth &&
+          rect.height <= viewportHeight * 0.9;
+
+        if (!isThinTopProgress && !isSideTableOfContents) {
+          continue;
+        }
+
+        pinnedElement.setAttribute(attrName, "true");
+        hidden.add(pinnedElement);
+      }
+
+      return hidden.size;
+    },
+    {
+      attrName: READING_CHROME_ATTR,
+      maxProgressHeight: READING_PROGRESS_MAX_HEIGHT,
+      maxProgressTop: READING_PROGRESS_MAX_TOP,
+      maxSideGap: READING_CHROME_MAX_SIDE_GAP,
+      maxSideWidth: READING_CHROME_MAX_SIDE_WIDTH,
+      minWidthRatio: TOP_OVERLAY_MIN_WIDTH_RATIO,
+      pageWidth: params.pageWidth,
+      progressSelectors: READING_PROGRESS_SELECTORS,
+      selectors: READING_CHROME_SELECTORS,
+      viewportHeight: params.viewportHeight,
+    },
+  );
+
+  if (hiddenCount === 0) {
+    return {
+      count: 0,
+      restore: async () => undefined,
+    };
+  }
+
+  const styleHandle = await params.page.addStyleTag({
+    content: `[${READING_CHROME_ATTR}="true"], [${READING_CHROME_ATTR}="true"] * { visibility: hidden !important; }`,
+  });
+  params.log?.("info", `reading_chrome_hidden_for_tiles count=${hiddenCount}`);
+
+  return {
+    count: hiddenCount,
+    restore: async () => {
+      await styleHandle
+        .evaluate((node) => (node instanceof Element ? node.remove() : undefined))
+        .catch(() => undefined);
+      await params.page
+        .evaluate((attrName) => {
+          document.querySelectorAll(`[${attrName}]`).forEach((element) => element.removeAttribute(attrName));
+        }, READING_CHROME_ATTR)
+        .catch(() => undefined);
+    },
+  };
+}
+
 export async function controlBottomFixedOverlaysForCapture(params: {
   page: Page;
   pageWidth: number;
@@ -350,7 +596,7 @@ export async function controlBottomFixedOverlaysForCapture(params: {
   log?: (level: "info" | "warn", message: string) => void;
 }): Promise<BottomFixedOverlayController> {
   const controlledCount = await params.page.evaluate(
-    ({ attrName, maxGap, maxHeight, minHeight, minWidthRatio, pageWidth, viewportHeight }) => {
+    ({ attrName, maxGap, maxHeight, minHeight, minWidth, viewportHeight }) => {
       const controlled = Array.from(document.querySelectorAll<HTMLElement>("*")).filter((element) => {
         const style = window.getComputedStyle(element);
         const rect = element.getBoundingClientRect();
@@ -362,7 +608,7 @@ export async function controlBottomFixedOverlaysForCapture(params: {
           style.position === "fixed" &&
           rect.bottom >= viewportHeight - maxGap &&
           rect.top >= viewportHeight * 0.5 &&
-          rect.width >= pageWidth * minWidthRatio &&
+          rect.width >= minWidth &&
           rect.height >= minHeight &&
           rect.height <= maxHeight &&
           style.display !== "none" &&
@@ -380,8 +626,7 @@ export async function controlBottomFixedOverlaysForCapture(params: {
       maxGap: BOTTOM_FIXED_MAX_GAP,
       maxHeight: BOTTOM_FIXED_MAX_HEIGHT,
       minHeight: BOTTOM_FIXED_MIN_HEIGHT,
-      minWidthRatio: BOTTOM_FIXED_MIN_WIDTH_RATIO,
-      pageWidth: params.pageWidth,
+      minWidth: BOTTOM_FIXED_MIN_WIDTH,
       viewportHeight: params.viewportHeight,
     },
   );

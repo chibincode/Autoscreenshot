@@ -35,11 +35,6 @@ interface ListJobsParams {
   pageSize?: number;
 }
 
-interface ArchiveFinishedJobsParams {
-  cutoffIso: string;
-  statuses: JobStatus[];
-}
-
 interface JobRow {
   id: string;
   instruction: string;
@@ -52,6 +47,7 @@ interface JobRow {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  import_completed_at: string | null;
   archived_at: string | null;
   cleaned_at: string | null;
   cleaned_asset_count: number;
@@ -147,6 +143,7 @@ function toJobRecord(row: JobRow): JobRecord {
     createdAt: row.created_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+    importCompletedAt: row.import_completed_at,
     archivedAt: row.archived_at,
     cleanedAt: row.cleaned_at,
     updatedAt: row.updated_at,
@@ -276,6 +273,7 @@ export class JobsRepository {
         created_at TEXT NOT NULL,
         started_at TEXT,
         finished_at TEXT,
+        import_completed_at TEXT,
         archived_at TEXT,
         cleaned_at TEXT,
         cleaned_asset_count INTEGER NOT NULL DEFAULT 0,
@@ -355,6 +353,9 @@ export class JobsRepository {
     if (!columns.some((column) => column.name === "archived_at")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN archived_at TEXT;");
     }
+    if (!columns.some((column) => column.name === "import_completed_at")) {
+      this.db.exec("ALTER TABLE jobs ADD COLUMN import_completed_at TEXT;");
+    }
     if (!columns.some((column) => column.name === "cleaned_at")) {
       this.db.exec("ALTER TABLE jobs ADD COLUMN cleaned_at TEXT;");
     }
@@ -371,6 +372,7 @@ export class JobsRepository {
       this.db.exec("ALTER TABLE jobs ADD COLUMN cleaned_failed_count INTEGER NOT NULL DEFAULT 0;");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_archived_created_at ON jobs(archived_at, created_at DESC);");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_jobs_import_completed_at ON jobs(import_completed_at);");
     this.db.exec(`
       INSERT INTO job_history_urls (job_id, source_url, captured_at)
       SELECT job_id, source_url, MAX(captured_at)
@@ -414,6 +416,21 @@ export class JobsRepository {
         THEN 'failed'
         ELSE 'pending_confirmation'
       END;
+
+      UPDATE jobs
+      SET import_completed_at = COALESCE(import_completed_at, updated_at)
+      WHERE cleaned_at IS NULL
+        AND EXISTS (
+          SELECT 1 FROM assets
+          WHERE assets.job_id = jobs.id
+            AND assets.selected_for_import = 1
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM assets
+          WHERE assets.job_id = jobs.id
+            AND assets.selected_for_import = 1
+            AND assets.import_status != 'imported'
+        );
     `);
   }
 
@@ -515,51 +532,21 @@ export class JobsRepository {
       });
   }
 
-  archiveFinishedJobsBefore(params: ArchiveFinishedJobsParams): { jobIds: string[]; archivedAt: string | null } {
-    if (params.statuses.length === 0) {
-      return { jobIds: [], archivedAt: null };
-    }
-
-    const placeholders = params.statuses.map(() => "?").join(", ");
+  listImportedJobsReadyForHistory(cutoffIso: string): JobRecord[] {
     const rows = this.db
       .prepare(
         `
-      SELECT id
-      FROM jobs
-      WHERE archived_at IS NULL
-        AND finished_at IS NOT NULL
-        AND finished_at <= ?
-        AND status IN (${placeholders})
-    `,
+        SELECT *
+        FROM jobs
+        WHERE cleaned_at IS NULL
+          AND import_completed_at IS NOT NULL
+          AND import_completed_at <= ?
+          AND status NOT IN ('queued', 'running')
+        ORDER BY import_completed_at ASC
+      `,
       )
-      .all(params.cutoffIso, ...params.statuses) as Array<{ id: string }>;
-
-    const jobIds = rows.map((row) => row.id);
-    if (jobIds.length === 0) {
-      return { jobIds: [], archivedAt: null };
-    }
-
-    const archivedAt = new Date().toISOString();
-    const update = this.db.prepare(
-      `
-      UPDATE jobs
-      SET archived_at = @archivedAt,
-          updated_at = @updatedAt
-      WHERE id = @jobId
-    `,
-    );
-    const tx = this.db.transaction((ids: string[], nextArchivedAt: string) => {
-      for (const jobId of ids) {
-        update.run({
-          jobId,
-          archivedAt: nextArchivedAt,
-          updatedAt: nextArchivedAt,
-        });
-      }
-    });
-    tx(jobIds, archivedAt);
-
-    return { jobIds, archivedAt };
+      .all(cutoffIso) as JobRow[];
+    return rows.map(toJobRecord);
   }
 
   addLog(jobId: string, level: "info" | "warn" | "error", message: string): JobLogRecord {
@@ -816,6 +803,36 @@ export class JobsRepository {
           this.db.prepare("DELETE FROM assets WHERE id = ?").run(row.id);
         }
       }
+
+      const importState = this.db
+        .prepare(
+          `
+          SELECT
+            SUM(CASE WHEN selected_for_import = 1 THEN 1 ELSE 0 END) AS selected_count,
+            SUM(CASE WHEN selected_for_import = 1 AND import_status != 'imported' THEN 1 ELSE 0 END) AS incomplete_count
+          FROM assets
+          WHERE job_id = ?
+        `,
+        )
+        .get(id) as { selected_count: number | null; incomplete_count: number | null };
+      const importIsComplete =
+        Number(importState.selected_count) > 0 && Number(importState.incomplete_count) === 0;
+      this.db
+        .prepare(
+          `
+          UPDATE jobs
+          SET import_completed_at = CASE
+            WHEN @importIsComplete = 1 THEN COALESCE(import_completed_at, @now)
+            ELSE NULL
+          END
+          WHERE id = @jobId
+        `,
+        )
+        .run({
+          jobId: id,
+          importIsComplete: importIsComplete ? 1 : 0,
+          now,
+        });
     });
     tx(jobId, manifest);
     this.touchJob(jobId, now);
@@ -870,8 +887,6 @@ export class JobsRepository {
       };
 
       this.db.prepare("DELETE FROM assets WHERE job_id = ?").run(id);
-      this.db.prepare("DELETE FROM job_logs WHERE job_id = ?").run(id);
-      this.db.prepare("DELETE FROM route_targets WHERE job_id = ?").run(id);
       this.db
         .prepare(
           `
@@ -911,6 +926,17 @@ export class JobsRepository {
         WHERE archived_at IS NOT NULL
           AND cleaned_at IS NULL
           AND status NOT IN ('queued', 'running')
+          AND EXISTS (
+            SELECT 1 FROM assets
+            WHERE assets.job_id = jobs.id
+              AND assets.selected_for_import = 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM assets
+            WHERE assets.job_id = jobs.id
+              AND assets.selected_for_import = 1
+              AND assets.import_status != 'imported'
+          )
         ORDER BY created_at DESC
       `,
       )
@@ -930,6 +956,17 @@ export class JobsRepository {
         WHERE j.archived_at IS NOT NULL
           AND j.cleaned_at IS NULL
           AND j.status NOT IN ('queued', 'running')
+          AND EXISTS (
+            SELECT 1 FROM assets eligible_assets
+            WHERE eligible_assets.job_id = j.id
+              AND eligible_assets.selected_for_import = 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM assets blocked_assets
+            WHERE blocked_assets.job_id = j.id
+              AND blocked_assets.selected_for_import = 1
+              AND blocked_assets.import_status != 'imported'
+          )
       `,
       )
       .get() as { job_count: number; asset_count: number };
@@ -1054,6 +1091,7 @@ export class JobsRepository {
       importSuccessCount: Number(row.import_success_count) || 0,
       importFailedCount: Number(row.import_failed_count) || 0,
       sourceUrl: resolveJobSourceUrl(row),
+      importCompletedAt: row.import_completed_at,
       archivedAt: row.archived_at,
       cleanedAt: row.cleaned_at,
     }));

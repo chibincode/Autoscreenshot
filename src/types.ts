@@ -367,6 +367,7 @@ export interface JobRecord {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  importCompletedAt: string | null;
   archivedAt: string | null;
   cleanedAt: string | null;
   updatedAt: string;
@@ -419,6 +420,7 @@ export interface JobSummary {
   importSuccessCount: number;
   importFailedCount: number;
   sourceUrl: string | null;
+  importCompletedAt: string | null;
   archivedAt: string | null;
   cleanedAt: string | null;
 }

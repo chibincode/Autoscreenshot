@@ -150,6 +150,77 @@ describe("playwright runtime service", () => {
     expect(second.healthy).toBe(true);
   });
 
+  it("automatically repairs a missing runtime once", async () => {
+    const cwd = await createFakeProject();
+    tempDirs.push(cwd);
+    const env = { PLAYWRIGHT_BROWSERS_PATH: path.join(cwd, "pw-cache") };
+    const browserRoot = resolvePlaywrightBrowsersPath(cwd, env);
+
+    let installRuns = 0;
+    let releaseInstall = () => {
+      // no-op
+    };
+    const installReady = new Promise<void>((resolve) => {
+      releaseInstall = resolve;
+    });
+    const service = buildPlaywrightRuntimeService({
+      cwd,
+      env,
+      runInstall: async () => {
+        installRuns += 1;
+        await installReady;
+        await writeExecutable(
+          path.join(
+            browserRoot,
+            "chromium-1208",
+            "chrome-mac-arm64",
+            "Google Chrome for Testing.app",
+            "Contents",
+            "MacOS",
+            "Google Chrome for Testing",
+          ),
+        );
+        await writeExecutable(
+          path.join(browserRoot, "chromium_headless_shell-1208", "chrome-headless-shell-mac-arm64", "chrome-headless-shell"),
+        );
+        return { code: 0, stdout: "installed", stderr: "" };
+      },
+    });
+
+    const first = await service.ensure?.();
+    const second = await service.ensure?.();
+    expect(first?.repairing).toBe(true);
+    expect(second?.repairing).toBe(true);
+
+    releaseInstall();
+    const repaired = await service.repair();
+    expect(repaired.healthy).toBe(true);
+    expect(installRuns).toBe(1);
+  });
+
+  it("does not loop automatic repair after an install failure", async () => {
+    const cwd = await createFakeProject();
+    tempDirs.push(cwd);
+    const env = { PLAYWRIGHT_BROWSERS_PATH: path.join(cwd, "pw-cache") };
+    let installRuns = 0;
+    const service = buildPlaywrightRuntimeService({
+      cwd,
+      env,
+      runInstall: async () => {
+        installRuns += 1;
+        return { code: 1, stdout: "", stderr: "network unavailable" };
+      },
+    });
+
+    await service.ensure?.();
+    const failed = await service.repair();
+    const checkedAgain = await service.ensure?.();
+
+    expect(failed.repairFailed).toBe(true);
+    expect(checkedAgain?.repairFailed).toBe(true);
+    expect(installRuns).toBe(1);
+  });
+
   it("detects repairable playwright missing executable errors", () => {
     expect(
       isRepairablePlaywrightErrorText(
