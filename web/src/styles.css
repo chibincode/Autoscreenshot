@@ -1098,7 +1098,8 @@ summary:focus-visible {
 }
 
 .job-archived-note,
-.job-cleaned-note {
+.job-cleaned-note,
+.job-auto-history-note {
   font-size: 0.76rem;
   color: var(--text-subtle);
   white-space: nowrap;
@@ -1106,6 +1107,10 @@ summary:focus-visible {
 
 .job-cleaned-note {
   color: #557064;
+}
+
+.job-auto-history-note {
+  color: #6f665b;
 }
 
 .status {
@@ -3152,6 +3157,10 @@ summary:focus-visible {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 14px;
+}
+
+.detail-columns-history {
+  grid-template-columns: 1fr;
 }
 
 .section-debug-panel {

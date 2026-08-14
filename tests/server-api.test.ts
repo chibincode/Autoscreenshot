@@ -2023,7 +2023,12 @@ describe("server api", () => {
           quality: 92,
           dpr: 2,
           capturedAt: new Date().toISOString(),
-          import: createPendingImportResult(),
+          import: {
+            ok: true,
+            selected: true,
+            status: "imported",
+            eagleId: "eagle-cleaned-history",
+          },
         },
       ],
     });
@@ -2061,18 +2066,28 @@ describe("server api", () => {
 
     const rawDb = new Database(dbPath);
     expect((rawDb.prepare("SELECT COUNT(*) AS count FROM assets WHERE job_id = ?").get(jobId) as { count: number }).count).toBe(0);
-    expect((rawDb.prepare("SELECT COUNT(*) AS count FROM job_logs WHERE job_id = ?").get(jobId) as { count: number }).count).toBe(0);
-    expect((rawDb.prepare("SELECT COUNT(*) AS count FROM route_targets WHERE job_id = ?").get(jobId) as { count: number }).count).toBe(0);
+    expect((rawDb.prepare("SELECT COUNT(*) AS count FROM job_logs WHERE job_id = ?").get(jobId) as { count: number }).count).toBe(1);
+    expect((rawDb.prepare("SELECT COUNT(*) AS count FROM route_targets WHERE job_id = ?").get(jobId) as { count: number }).count).toBe(1);
     expect((rawDb.prepare("SELECT COUNT(*) AS count FROM job_history_urls WHERE job_id = ?").get(jobId) as { count: number }).count).toBe(1);
     rawDb.close();
+
+    const historyDetailResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${jobId}`,
+    });
+    expect(historyDetailResponse.statusCode).toBe(200);
+    expect(historyDetailResponse.json()).toMatchObject({
+      logs: [{ message: "ready for cleanup" }],
+      routes: [{ path: "/" }],
+    });
 
     const archivedSummary = repo
       .listJobs({ archivedOnly: true })
       .items.find((job) => job.id === jobId);
     expect(archivedSummary).toMatchObject({
       assetCount: 1,
-      pendingConfirmationCount: 1,
-      importSuccessCount: 0,
+      pendingConfirmationCount: 0,
+      importSuccessCount: 1,
       importFailedCount: 0,
     });
 
@@ -2093,6 +2108,147 @@ describe("server api", () => {
     expect(unarchiveResponse.statusCode).toBe(409);
     expect(unarchiveResponse.json()).toEqual({
       error: "Jobs with cleaned local files must remain in history",
+    });
+  });
+
+  it("keeps local files until every selected asset has been imported", async () => {
+    const jobId = "clean-before-import-job";
+    const outputDir = path.join(tmpDir, jobId);
+    const capturePath = path.join(outputDir, "capture.jpg");
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(capturePath, "screenshot", "utf8");
+
+    repo.createJob({
+      id: jobId,
+      instruction: "wait for import before history",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir: tmpDir,
+      },
+    });
+    repo.setJobResult({
+      jobId,
+      status: "awaiting_confirmation",
+      outputDir,
+      taskJson: JSON.stringify({ url: "https://example.com/pending" }),
+    });
+    repo.replaceAssets(jobId, {
+      runId: jobId,
+      instruction: "wait for import before history",
+      createdAt: new Date().toISOString(),
+      task: {
+        url: "https://example.com/pending",
+        waitUntil: "networkidle",
+        captures: [{ mode: "fullPage" }],
+        image: { format: "jpg", quality: 92, dpr: 2 },
+        viewport: { width: 1920, height: 1080 },
+        tags: [],
+        eagle: {},
+      },
+      sectionScope: "classic",
+      outputDir,
+      assets: [
+        {
+          kind: "fullPage",
+          label: "full_page",
+          filePath: capturePath,
+          fileName: "capture.jpg",
+          sourceUrl: "https://example.com/pending",
+          quality: 92,
+          dpr: 2,
+          capturedAt: new Date().toISOString(),
+          import: createPendingImportResult(),
+        },
+      ],
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/cleanup`,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "Move to history is available after all selected assets are imported to Eagle",
+    });
+    expect(repo.getJob(jobId)?.cleanedAt).toBeNull();
+    await expect(fs.access(capturePath)).resolves.toBeUndefined();
+  });
+
+  it("moves legacy imported jobs to history when their old output directory is already gone", async () => {
+    const jobId = "clean-missing-legacy-output-job";
+    const legacyOutputDir = path.join(tmpDir, "missing-old-checkout", jobId);
+
+    repo.createJob({
+      id: jobId,
+      instruction: "clean missing legacy output",
+      options: {
+        quality: 92,
+        dpr: "auto",
+        sectionScope: "classic",
+        classicMaxSections: 10,
+        mode: "single",
+        maxRoutes: 12,
+        outputDir: path.join(tmpDir, "current-output"),
+      },
+    });
+    repo.setJobResult({
+      jobId,
+      status: "success",
+      outputDir: legacyOutputDir,
+      taskJson: JSON.stringify({ url: "https://example.com/legacy" }),
+    });
+    repo.replaceAssets(jobId, {
+      runId: jobId,
+      instruction: "clean missing legacy output",
+      createdAt: new Date().toISOString(),
+      task: {
+        url: "https://example.com/legacy",
+        waitUntil: "networkidle",
+        captures: [{ mode: "fullPage" }],
+        image: { format: "jpg", quality: 92, dpr: 2 },
+        viewport: { width: 1920, height: 1080 },
+        tags: [],
+        eagle: {},
+      },
+      sectionScope: "classic",
+      outputDir: legacyOutputDir,
+      assets: [
+        {
+          kind: "fullPage",
+          label: "full_page",
+          filePath: path.join(legacyOutputDir, "capture.jpg"),
+          fileName: "capture.jpg",
+          sourceUrl: "https://example.com/legacy",
+          quality: 92,
+          dpr: 2,
+          capturedAt: new Date().toISOString(),
+          import: {
+            ok: true,
+            selected: true,
+            status: "imported",
+            eagleId: "eagle-legacy-history",
+          },
+        },
+      ],
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${jobId}/cleanup`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ jobId, filesDeleted: true });
+    expect(repo.getJob(jobId)).toMatchObject({
+      cleanedAt: expect.any(String),
+      archivedAt: expect.any(String),
+      outputDir: null,
     });
   });
 
@@ -2168,7 +2324,12 @@ describe("server api", () => {
             quality: 92,
             dpr: 2,
             capturedAt: new Date().toISOString(),
-            import: createPendingImportResult(),
+            import: {
+              ok: true,
+              selected: true,
+              status: "imported",
+              eagleId: `eagle-${jobId}`,
+            },
           },
         ],
       };
@@ -2254,60 +2415,91 @@ describe("server api", () => {
     }
   });
 
-  it("auto-archives finished jobs older than a week on server startup", async () => {
-    const isolatedTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-api-auto-archive-"));
+  it("moves imported jobs to history 24 hours after import on server startup", async () => {
+    const isolatedTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-api-auto-history-"));
     const isolatedDbPath = path.join(isolatedTmpDir, "jobs.db");
     const isolatedRepo = new JobsRepository(isolatedDbPath);
     const isolatedQueue = new JobQueue();
 
-    const oldJobId = "old-finished-job";
-    const recentJobId = "recent-finished-job";
-
-    isolatedRepo.createJob({
-      id: oldJobId,
-      instruction: "old job",
-      options: {
-        quality: 92,
-        dpr: "auto",
+    const oldJobId = "old-imported-job";
+    const recentJobId = "recent-imported-job";
+    const outputRoot = path.join(isolatedTmpDir, "output");
+    const createImportedJob = async (jobId: string): Promise<string> => {
+      const outputDir = path.join(outputRoot, jobId);
+      const capturePath = path.join(outputDir, "capture.jpg");
+      const manifestPath = path.join(outputDir, "manifest.json");
+      await fs.mkdir(outputDir, { recursive: true });
+      await fs.writeFile(capturePath, "screenshot", "utf8");
+      const manifest: RunManifest = {
+        runId: jobId,
+        instruction: `job ${jobId}`,
+        createdAt: new Date().toISOString(),
+        task: {
+          url: `https://example.com/${jobId}`,
+          waitUntil: "networkidle",
+          captures: [{ mode: "fullPage" }],
+          image: { format: "jpg", quality: 92, dpr: 2 },
+          viewport: { width: 1920, height: 1080 },
+          tags: [],
+          eagle: {},
+        },
         sectionScope: "classic",
-        classicMaxSections: 10,
-        mode: "single",
-        maxRoutes: 12,
-        outputDir: path.join(isolatedTmpDir, oldJobId),
-      },
-    });
-    isolatedRepo.setJobResult({
-      jobId: oldJobId,
-      status: "success",
-      taskJson: JSON.stringify({ url: "https://example.com/old" }),
-    });
+        outputDir,
+        assets: [
+          {
+            kind: "fullPage",
+            label: "full_page",
+            filePath: capturePath,
+            fileName: "capture.jpg",
+            sourceUrl: `https://example.com/${jobId}`,
+            quality: 92,
+            dpr: 2,
+            capturedAt: new Date().toISOString(),
+            import: {
+              ok: true,
+              selected: true,
+              status: "imported",
+              eagleId: `eagle-${jobId}`,
+            },
+          },
+        ],
+      };
+      await fs.writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+      isolatedRepo.createJob({
+        id: jobId,
+        instruction: manifest.instruction,
+        options: {
+          quality: 92,
+          dpr: "auto",
+          sectionScope: "classic",
+          classicMaxSections: 10,
+          mode: "single",
+          maxRoutes: 12,
+          outputDir: outputRoot,
+        },
+      });
+      isolatedRepo.setJobResult({
+        jobId,
+        status: "success",
+        manifestPath,
+        outputDir,
+        taskJson: JSON.stringify(manifest.task),
+      });
+      isolatedRepo.replaceAssets(jobId, manifest);
+      isolatedRepo.addLog(jobId, "info", "import complete");
+      return outputDir;
+    };
 
-    isolatedRepo.createJob({
-      id: recentJobId,
-      instruction: "recent job",
-      options: {
-        quality: 92,
-        dpr: "auto",
-        sectionScope: "classic",
-        classicMaxSections: 10,
-        mode: "single",
-        maxRoutes: 12,
-        outputDir: path.join(isolatedTmpDir, recentJobId),
-      },
-    });
-    isolatedRepo.setJobResult({
-      jobId: recentJobId,
-      status: "success",
-      taskJson: JSON.stringify({ url: "https://example.com/recent" }),
-    });
+    const oldOutputDir = await createImportedJob(oldJobId);
+    const recentOutputDir = await createImportedJob(recentJobId);
 
     const now = Date.now();
-    const oldFinishedAt = new Date(now - 20 * 24 * 60 * 60 * 1000).toISOString();
-    const recentFinishedAt = new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const oldImportedAt = new Date(now - 25 * 60 * 60 * 1000).toISOString();
+    const recentImportedAt = new Date(now - 23 * 60 * 60 * 1000).toISOString();
 
     const rawDb = new Database(isolatedDbPath);
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(oldFinishedAt, oldJobId);
-    rawDb.prepare("UPDATE jobs SET finished_at = ? WHERE id = ?").run(recentFinishedAt, recentJobId);
+    rawDb.prepare("UPDATE jobs SET import_completed_at = ? WHERE id = ?").run(oldImportedAt, oldJobId);
+    rawDb.prepare("UPDATE jobs SET import_completed_at = ? WHERE id = ?").run(recentImportedAt, recentJobId);
     rawDb.close();
 
     const isolatedApp = await buildServer({
@@ -2337,22 +2529,13 @@ describe("server api", () => {
       };
       expect(archivedListData.items.find((job) => job.id === oldJobId)?.archivedAt).toBeTruthy();
       expect(archivedListData.items.some((job) => job.id === recentJobId)).toBe(false);
-
-      const unarchiveResponse = await isolatedApp.inject({
-        method: "POST",
-        url: `/api/jobs/${oldJobId}/archive`,
-        payload: {
-          archived: false,
-        },
-      });
-      expect(unarchiveResponse.statusCode).toBe(200);
-
-      const listAfterUnarchive = await isolatedApp.inject({
-        method: "GET",
-        url: "/api/jobs?page=1&pageSize=20",
-      });
-      const listAfterUnarchiveData = listAfterUnarchive.json() as { items: Array<{ id: string }> };
-      expect(listAfterUnarchiveData.items.some((job) => job.id === oldJobId)).toBe(true);
+      expect(isolatedRepo.getJob(oldJobId)?.cleanedAt).toBeTruthy();
+      expect(isolatedRepo.getJob(recentJobId)?.cleanedAt).toBeNull();
+      expect(isolatedRepo.getLogs(oldJobId).map((entry) => entry.message)).toContain(
+        "Automatically moved to history 24 hours after Eagle import",
+      );
+      await expect(fs.access(oldOutputDir)).rejects.toThrow();
+      await expect(fs.access(recentOutputDir)).resolves.toBeUndefined();
     } finally {
       await isolatedApp.close();
       isolatedRepo.close();
