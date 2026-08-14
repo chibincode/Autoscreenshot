@@ -3,6 +3,7 @@ import type { Page } from "playwright";
 import type { ImageRegionReplacement } from "./scroll-scenes.js";
 import {
   hideRepeatedFixedSideBadgesForCapture,
+  hideRepeatedReadingChromeForCapture,
   hideTopOverlaysForCapture,
 } from "./top-overlays.js";
 
@@ -282,6 +283,12 @@ export async function captureFooterRevealReplacements(params: {
     viewportHeight: params.viewportHeight,
     log: params.log,
   });
+  const readingChrome = await hideRepeatedReadingChromeForCapture({
+    page: params.page,
+    pageWidth: params.pageWidth,
+    viewportHeight: params.viewportHeight,
+    log: params.log,
+  });
   let viewportScreenshot: Buffer;
   try {
     await params.page.waitForTimeout(50);
@@ -292,6 +299,7 @@ export async function captureFooterRevealReplacements(params: {
   } finally {
     await restoreTopOverlays();
     await restoreFixedSideBadges();
+    await readingChrome.restore();
   }
   const replacement = await sharp(viewportScreenshot)
     .extract({

@@ -664,6 +664,8 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   const webDistDir = options.webDistDir ?? path.resolve(process.cwd(), "web/dist");
   const playwrightRuntimeService =
     options.playwrightRuntimeService ?? buildPlaywrightRuntimeService({ cwd: process.cwd() });
+  const ensurePlaywrightRuntime = () =>
+    playwrightRuntimeService.ensure?.() ?? playwrightRuntimeService.check();
   const executeInstructionFn = options.executeInstructionFn ?? executeInstruction;
   const executeCoreRoutesInstructionFn =
     options.executeCoreRoutesInstructionFn ?? executeCoreRoutesInstruction;
@@ -678,6 +680,12 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     }
   }, AUTO_ARCHIVE_INTERVAL_MS);
   autoArchiveTimer.unref?.();
+
+  if (playwrightRuntimeService.ensure) {
+    void ensurePlaywrightRuntime().catch((error) => {
+      app.log.warn({ err: error }, "Automatic screenshot runtime repair failed");
+    });
+  }
 
   app.addHook("onClose", async () => {
     clearInterval(autoArchiveTimer);
@@ -717,7 +725,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       };
     }
 
-    const playwrightState = await playwrightRuntimeService.check();
+    const playwrightState = await ensurePlaywrightRuntime();
     const runtimeMessages: string[] = [];
     if (!playwrightState.healthy && playwrightState.message) {
       runtimeMessages.push(playwrightState.message);
@@ -804,7 +812,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   });
 
   app.get("/api/runtime/playwright", async () => {
-    return playwrightRuntimeService.check();
+    return ensurePlaywrightRuntime();
   });
 
   app.post("/api/runtime/playwright/repair", async () => {

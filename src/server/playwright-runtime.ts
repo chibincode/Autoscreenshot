@@ -30,6 +30,7 @@ export interface PlaywrightRuntimeState {
   healthy: boolean;
   needsRepair: boolean;
   repairing: boolean;
+  repairFailed?: boolean;
   status: RuntimeStatus;
   target: RuntimeTarget;
   message: string;
@@ -39,6 +40,7 @@ export interface PlaywrightRuntimeState {
 
 export interface PlaywrightRuntimeService {
   check(): Promise<PlaywrightRuntimeState>;
+  ensure?(): Promise<PlaywrightRuntimeState>;
   repair(): Promise<PlaywrightRuntimeState>;
 }
 
@@ -229,13 +231,15 @@ async function defaultRunInstall(cwd: string, env: NodeJS.ProcessEnv): Promise<R
 
 function buildState(
   now: () => Date,
-  input: Omit<PlaywrightRuntimeState, "lastCheckedAt" | "status" | "needsRepair"> & {
+  input: Omit<PlaywrightRuntimeState, "lastCheckedAt" | "status" | "needsRepair" | "repairFailed"> & {
     healthy: boolean;
+    repairFailed?: boolean;
   },
 ): PlaywrightRuntimeState {
   return {
     ...input,
     needsRepair: !input.healthy,
+    repairFailed: input.repairFailed ?? false,
     status: input.healthy ? "healthy" : "needs_repair",
     lastCheckedAt: now().toISOString(),
   };
@@ -265,6 +269,7 @@ export function buildPlaywrightRuntimeService(
 
   let repairPromise: Promise<PlaywrightRuntimeState> | null = null;
   let lastRepairFailure: { message: string; detail?: string } | null = null;
+  let autoRepairAttempted = false;
 
   const probe = async (): Promise<PlaywrightRuntimeState> => {
     try {
@@ -291,6 +296,7 @@ export function buildPlaywrightRuntimeService(
 
       if (missingExecutables.length === 0) {
         lastRepairFailure = null;
+        autoRepairAttempted = false;
         return buildState(now, {
           healthy: true,
           repairing: false,
@@ -303,6 +309,7 @@ export function buildPlaywrightRuntimeService(
       return buildState(now, {
         healthy: false,
         repairing: false,
+        repairFailed: Boolean(lastRepairFailure),
         target: "chromium",
         message:
           lastRepairFailure?.message ??
@@ -313,6 +320,7 @@ export function buildPlaywrightRuntimeService(
       return buildState(now, {
         healthy: false,
         repairing: false,
+        repairFailed: Boolean(lastRepairFailure),
         target: "chromium",
         message: lastRepairFailure?.message ?? "无法确认 Chromium 截图运行环境，请尝试修复。",
         detail: lastRepairFailure?.detail ?? (error instanceof Error ? error.message : String(error)),
@@ -320,7 +328,7 @@ export function buildPlaywrightRuntimeService(
     }
   };
 
-  return {
+  const service: PlaywrightRuntimeService = {
     async check() {
       if (repairPromise) {
         return buildState(now, {
@@ -332,6 +340,23 @@ export function buildPlaywrightRuntimeService(
         });
       }
       return probe();
+    },
+    async ensure() {
+      if (repairPromise) {
+        return service.check();
+      }
+
+      const current = await probe();
+      if (current.healthy) {
+        return current;
+      }
+      if (autoRepairAttempted) {
+        return current;
+      }
+
+      autoRepairAttempted = true;
+      void service.repair();
+      return service.check();
     },
     async repair() {
       if (repairPromise) {
@@ -369,4 +394,6 @@ export function buildPlaywrightRuntimeService(
       return repairPromise;
     },
   };
+
+  return service;
 }

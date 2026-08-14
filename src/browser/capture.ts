@@ -16,6 +16,7 @@ import { captureFooterRevealReplacements } from "./footer-reveals.js";
 import {
   controlBottomFixedOverlaysForCapture,
   captureTopOverlayReplacement,
+  hideRepeatedReadingChromeForCapture,
   hideRepeatedFixedSideBadgesForCapture,
   hideTopOverlaysForCapture,
   normalizeStickyElementsForCapture,
@@ -185,6 +186,7 @@ async function captureFullPageByScrollStitch(params: {
   const slices: Array<{ buffer: Buffer; top: number }> = [];
   let restoreTopOverlays: (() => Promise<void>) | null = null;
   let restoreFixedSideBadges: (() => Promise<void>) | null = null;
+  let readingChrome: Awaited<ReturnType<typeof hideRepeatedReadingChromeForCapture>> | null = null;
   const bottomFixedOverlays = await controlBottomFixedOverlaysForCapture({
     page: params.page,
     pageWidth: params.pageWidth,
@@ -239,6 +241,17 @@ async function captureFullPageByScrollStitch(params: {
           log: params.log,
         });
       }
+      if (top > 0 && !readingChrome) {
+        const detectedReadingChrome = await hideRepeatedReadingChromeForCapture({
+          page: params.page,
+          pageWidth: params.pageWidth,
+          viewportHeight,
+          log: params.log,
+        });
+        if (detectedReadingChrome.count > 0) {
+          readingChrome = detectedReadingChrome;
+        }
+      }
 
       const screenshot = await params.page.screenshot({ type: "png", fullPage: false });
       // The final slice is clamped to maxScroll, so drop the rows it repeats.
@@ -272,6 +285,7 @@ async function captureFullPageByScrollStitch(params: {
   } finally {
     await restoreTopOverlays?.();
     await restoreFixedSideBadges?.();
+    await readingChrome?.restore();
     await bottomFixedOverlays.restore();
     if (styleHandle) {
       await styleHandle
@@ -309,6 +323,7 @@ async function captureFullPageByTiles(params: {
   const tiles: Array<{ buffer: Buffer; top: number }> = [];
   let restoreTopOverlays: (() => Promise<void>) | null = null;
   let restoreFixedSideBadges: (() => Promise<void>) | null = null;
+  let readingChrome: Awaited<ReturnType<typeof hideRepeatedReadingChromeForCapture>> | null = null;
   const bottomFixedOverlays = await controlBottomFixedOverlaysForCapture({
     page: params.page,
     pageWidth: params.pageWidth,
@@ -337,6 +352,17 @@ async function captureFullPageByTiles(params: {
           log: params.log,
         });
       }
+      if (top > 0 && !readingChrome) {
+        const detectedReadingChrome = await hideRepeatedReadingChromeForCapture({
+          page: params.page,
+          pageWidth: params.pageWidth,
+          viewportHeight: params.page.viewportSize()?.height ?? Math.min(params.pageHeight, tileHeight),
+          log: params.log,
+        });
+        if (detectedReadingChrome.count > 0) {
+          readingChrome = detectedReadingChrome;
+        }
+      }
       const height = Math.max(1, Math.min(tileHeight, Math.round(params.pageHeight - top)));
       const screenshot = await client.send("Page.captureScreenshot", {
         format: "png",
@@ -364,6 +390,7 @@ async function captureFullPageByTiles(params: {
   } finally {
     await restoreTopOverlays?.();
     await restoreFixedSideBadges?.();
+    await readingChrome?.restore();
     await bottomFixedOverlays.restore();
     await client.detach().catch(() => undefined);
   }

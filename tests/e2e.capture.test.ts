@@ -230,6 +230,129 @@ function fixedCanvasRulerPageTemplate(): string {
   `;
 }
 
+function stackedFixedNavigationPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Stacked Fixed Navigation</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+          }
+          section {
+            height: 1080px;
+            padding: 160px 64px 64px;
+            box-sizing: border-box;
+          }
+          .panel-one { background: rgb(240, 253, 244); }
+          .panel-two { background: rgb(219, 234, 254); }
+          .panel-three { background: rgb(254, 243, 199); }
+          .announcement {
+            position: fixed;
+            inset: 0 0 auto;
+            z-index: 60;
+            height: 32px;
+            display: grid;
+            place-items: center;
+            background: rgb(220, 38, 38);
+            color: white;
+          }
+          header {
+            position: fixed;
+            inset: 52px 0 auto;
+            z-index: 50;
+            height: 54px;
+            display: flex;
+            align-items: center;
+            padding: 0 64px;
+            box-sizing: border-box;
+            background: rgb(15, 118, 110);
+            color: white;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="announcement" role="region">Product announcement</div>
+        <header>Navigation below announcement</header>
+        <main>
+          <section class="panel-one"><h1>First viewport</h1></section>
+          <section class="panel-two"><h2>Second viewport</h2></section>
+          <section class="panel-three"><h2>Third viewport</h2></section>
+        </main>
+      </body>
+    </html>
+  `;
+}
+
+function readingChromePageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Reading Chrome Fixture</title>
+        <style>
+          body { margin: 0; font-family: sans-serif; }
+          section {
+            height: 1080px;
+            padding: 80px;
+            box-sizing: border-box;
+          }
+          .panel-one { background: rgb(240, 253, 244); }
+          .panel-two { background: rgb(219, 234, 254); }
+          .panel-three { background: rgb(254, 243, 199); }
+          .reading-progress-track {
+            position: fixed;
+            inset: 0 0 auto;
+            z-index: 100;
+            height: 3px;
+            background: rgb(216, 216, 216);
+            opacity: 0;
+          }
+          .reading-progress-fill {
+            width: 35%;
+            height: 100%;
+            background: rgb(0, 0, 0);
+          }
+          .article-toc {
+            position: fixed;
+            top: 375px;
+            left: 28px;
+            z-index: 99;
+            width: 40px;
+            height: 180px;
+            background: rgb(225, 29, 72);
+            opacity: 0;
+            visibility: hidden;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <section class="panel-one"><h1>Article hero</h1></section>
+          <section class="panel-two"><h2>Article body</h2></section>
+          <section class="panel-three"><h2>Article conclusion</h2></section>
+        </main>
+        <div class="reading-progress-track">
+          <div class="reading-progress-fill"></div>
+        </div>
+        <aside class="article-toc" aria-label="Table of contents"></aside>
+        <script>
+          const progress = document.querySelector('.reading-progress-track');
+          const toc = document.querySelector('.article-toc');
+          const updateReadingChrome = () => {
+            const visible = window.scrollY > 100;
+            progress.style.opacity = visible ? '1' : '0';
+            toc.style.opacity = visible ? '1' : '0';
+            toc.style.visibility = visible ? 'visible' : 'hidden';
+          };
+          window.addEventListener('scroll', updateReadingChrome, { passive: true });
+          updateReadingChrome();
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 function sectionStickyNavPageTemplate(): string {
   return `
     <html>
@@ -2261,6 +2384,16 @@ beforeAll(async () => {
       res.end(fixedCanvasRulerPageTemplate());
       return;
     }
+    if (pathname.startsWith("/stacked-fixed-navigation")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(stackedFixedNavigationPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/reading-chrome")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(readingChromePageTemplate());
+      return;
+    }
     if (pathname.startsWith("/section-sticky-nav")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(sectionStickyNavPageTemplate());
@@ -2507,6 +2640,102 @@ describe("fullPage tiled capture", () => {
     expect(secondViewportContent[1]).toBeGreaterThan(secondViewportContent[2]);
     expect(secondViewportVerticalRuler[2]).toBeGreaterThan(secondViewportVerticalRuler[0] + 100);
   }, 40_000);
+
+  it("keeps an offset navigation and its fixed announcement only in the first viewport", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-stacked-fixed-navigation-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/stacked-fixed-navigation`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs).toContain("top_overlay_hidden_for_tiles count=2");
+
+    const firstAnnouncement = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 16, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const firstNavigation = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 70, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondAnnouncementPosition = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 1096, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondNavigationPosition = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 1150, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(firstAnnouncement[0]).toBeGreaterThan(firstAnnouncement[1] + 100);
+    expect(firstNavigation[1]).toBeGreaterThan(firstNavigation[0] + 60);
+    expect(firstNavigation[1]).toBeGreaterThan(firstNavigation[2]);
+    expect(secondAnnouncementPosition[2]).toBeGreaterThan(secondAnnouncementPosition[0] + 20);
+    expect(secondAnnouncementPosition[2]).toBeGreaterThan(secondAnnouncementPosition[1] + 10);
+    expect(secondNavigationPosition[2]).toBeGreaterThan(secondNavigationPosition[0] + 20);
+    expect(secondNavigationPosition[2]).toBeGreaterThan(secondNavigationPosition[1] + 10);
+  }, 25_000);
+
+  it("removes reading progress and table-of-contents chrome from stitched slices", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-reading-chrome-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/reading-chrome`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs).toContain("reading_chrome_hidden_for_tiles count=2");
+
+    const secondProgressPosition = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 100, top: 1081, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondTocPosition = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 40, top: 1500, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const thirdProgressPosition = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 100, top: 2161, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(secondProgressPosition[2]).toBeGreaterThan(secondProgressPosition[0] + 20);
+    expect(secondProgressPosition[2]).toBeGreaterThan(secondProgressPosition[1] + 10);
+    expect(secondTocPosition[2]).toBeGreaterThan(secondTocPosition[0] + 20);
+    expect(secondTocPosition[2]).toBeGreaterThan(secondTocPosition[1] + 10);
+    expect(thirdProgressPosition[0]).toBeGreaterThan(220);
+    expect(thirdProgressPosition[1]).toBeGreaterThan(210);
+    expect(thirdProgressPosition[2]).toBeLessThan(220);
+  }, 25_000);
 
   it("keeps a compact sticky anchor navigation once in its natural document position", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-sticky-anchor-"));

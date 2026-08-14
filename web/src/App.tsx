@@ -13,6 +13,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { Crop } from "lucide-react";
 import {
   buildFeedbackContext,
   buildAssetLookupIndex,
@@ -334,6 +335,7 @@ interface PlaywrightRuntimeState {
   healthy: boolean;
   needsRepair: boolean;
   repairing: boolean;
+  repairFailed?: boolean;
   target: "chromium";
   message: string;
   detail?: string;
@@ -2220,7 +2222,8 @@ const PreviewModal = memo(function PreviewModal({
                     }
                     onClick={beginCrop}
                   >
-                    Crop image
+                    <Crop className="asset-preview-primary-action-icon" aria-hidden="true" />
+                    <span>Crop image</span>
                   </button>
                   <div
                     className={cx(
@@ -2630,9 +2633,15 @@ export function App() {
   const totalPages = useMemo(() => Math.max(1, Math.ceil(totalJobs / pageSize)), [pageSize, totalJobs]);
   const runningJobId = config?.queue.runningJobId ?? null;
   const playwrightNeedsRepair = Boolean(playwrightRuntime?.needsRepair);
-  const browserActionsDisabled = playwrightNeedsRepair || playwrightRuntime?.repairing || playwrightRepairPending;
+  const playwrightRuntimePreparing = Boolean(
+    playwrightRuntime === null ||
+      playwrightRuntime.repairing ||
+      playwrightRepairPending ||
+      (playwrightNeedsRepair && !playwrightRuntime.repairFailed),
+  );
+  const browserActionsDisabled = playwrightRuntimePreparing || Boolean(playwrightRuntime?.repairFailed);
   const showPlaywrightBanner = Boolean(
-    playwrightRuntime && (playwrightRuntime.needsRepair || playwrightRuntime.repairing),
+    playwrightRuntime?.repairFailed && !playwrightRuntime.repairing && !playwrightRepairPending,
   );
   const selectedJobMode = useMemo(
     () => parseJobMode(selectedJobDetail?.job.optionsJson ?? null),
@@ -2980,12 +2989,12 @@ export function App() {
       setPlaywrightRuntime(result);
       if (result.healthy) {
         setErrorText((current) => (isRepairablePlaywrightMessage(current) ? null : current));
-        showToast("Chromium 已修复，可以继续提交任务。");
+        showToast("Screenshot engine is ready.");
         return;
       }
       setErrorText(null);
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "修复 Chromium 失败");
+      setErrorText(error instanceof Error ? error.message : "Automatic screenshot setup failed");
     } finally {
       setPlaywrightRepairPending(false);
       void loadPlaywrightRuntime().catch(() => {
@@ -3313,7 +3322,7 @@ export function App() {
       return;
     }
     if (browserActionsDisabled) {
-      setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
+      setErrorText("Screenshot engine is preparing. Try again shortly.");
       return;
     }
     setSubmitting(true);
@@ -3352,7 +3361,7 @@ export function App() {
 
   const rescanJob = useCallback(async (jobId: string): Promise<void> => {
     if (browserActionsDisabled) {
-      setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
+      setErrorText("Screenshot engine is preparing. Try again shortly.");
       return;
     }
 
@@ -3650,7 +3659,7 @@ export function App() {
     routeStatus: RouteTargetSummary["status"],
   ): Promise<void> => {
     if (browserActionsDisabled) {
-      setErrorText(playwrightRuntime?.message ?? "Chromium 截图浏览器缺失，请先修复。");
+      setErrorText("Screenshot engine is preparing. Try again shortly.");
       return;
     }
     setRerunningRouteId(routeId);
@@ -3677,7 +3686,7 @@ export function App() {
     } finally {
       setRerunningRouteId((current) => (current === routeId ? null : current));
     }
-  }, [browserActionsDisabled, loadJobDetail, loadJobs, playwrightRuntime?.message, showToast]);
+  }, [browserActionsDisabled, loadJobDetail, loadJobs, showToast]);
 
   const rerunRoute = useCallback((jobId: string, route: RouteTargetSummary): void => {
     if (route.status === "failed") {
@@ -3993,21 +4002,12 @@ export function App() {
   return (
     <div className="layout">
       {showPlaywrightBanner ? (
-        <div className="runtime-banner" role="status" aria-live="polite">
+        <div className="runtime-banner" role="alert">
           <div className="runtime-banner-copy">
-            <strong className="runtime-banner-title">
-              {playwrightRuntime?.repairing || playwrightRepairPending
-                ? "正在修复本机 Chromium 截图运行环境"
-                : "当前 Chromium 截图浏览器缺失"}
-            </strong>
+            <strong className="runtime-banner-title">Screenshot setup needs attention</strong>
             <span className="runtime-banner-text">
-              {playwrightRuntime?.repairing || playwrightRepairPending
-                ? "请稍候，修复完成后这里会自动恢复。"
-                : "这不是网站失败，新的截图任务会直接失败。"}
+              Automatic setup could not finish. Check your connection and retry.
             </span>
-            {playwrightRuntime?.detail ? (
-              <span className="runtime-banner-detail">{playwrightRuntime.detail}</span>
-            ) : null}
           </div>
           <div className="runtime-banner-actions">
             <button
@@ -4016,9 +4016,8 @@ export function App() {
               onClick={() => void repairPlaywrightRuntime()}
               disabled={playwrightRuntime?.repairing || playwrightRepairPending}
             >
-              {playwrightRuntime?.repairing || playwrightRepairPending ? "修复中..." : "修复 Chromium"}
+              {playwrightRuntime?.repairing || playwrightRepairPending ? "Retrying..." : "Retry setup"}
             </button>
-            <span className="runtime-banner-meta">目标：{playwrightRuntime?.target ?? "chromium"}</span>
           </div>
         </div>
       ) : null}
@@ -4142,7 +4141,7 @@ export function App() {
           loading={submitting}
           loadingLabel="Submitting..."
         >
-          Run
+          {playwrightRuntimePreparing ? "Preparing..." : "Run"}
         </Button>
 
         {errorText ? <div className="error-text">{errorText}</div> : null}
