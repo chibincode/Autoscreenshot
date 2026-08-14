@@ -28,10 +28,10 @@ const TOP_OVERLAY_HIDDEN_ATTR = "data-autosnap-top-overlay-hidden";
 const STICKY_NORMALIZED_ATTR = "data-autosnap-sticky-normalized";
 const BOTTOM_FIXED_ATTR = "data-autosnap-bottom-fixed";
 const BOTTOM_FIXED_STATE_ATTR = "data-autosnap-bottom-fixed-state";
-const BOTTOM_FIXED_MAX_GAP = 24;
+const BOTTOM_FIXED_MAX_GAP = 96;
 const BOTTOM_FIXED_MIN_HEIGHT = 20;
 const BOTTOM_FIXED_MAX_HEIGHT = 240;
-const BOTTOM_FIXED_MIN_WIDTH_RATIO = 0.35;
+const BOTTOM_FIXED_MIN_WIDTH = 32;
 const FIXED_SIDE_BADGE_ATTR = "data-autosnap-fixed-side-badge";
 const FIXED_SIDE_BADGE_HOSTS = ["awwwards.com"];
 const FIXED_SIDE_BADGE_MAX_EDGE_GAP = 24;
@@ -593,7 +593,7 @@ export async function controlBottomFixedOverlaysForCapture(params: {
   log?: (level: "info" | "warn", message: string) => void;
 }): Promise<BottomFixedOverlayController> {
   const controlledCount = await params.page.evaluate(
-    ({ attrName, maxGap, maxHeight, minHeight, minWidthRatio, pageWidth, viewportHeight }) => {
+    ({ attrName, maxGap, maxHeight, minHeight, minWidth, viewportHeight }) => {
       const controlled = Array.from(document.querySelectorAll<HTMLElement>("*")).filter((element) => {
         const style = window.getComputedStyle(element);
         const rect = element.getBoundingClientRect();
@@ -605,7 +605,7 @@ export async function controlBottomFixedOverlaysForCapture(params: {
           style.position === "fixed" &&
           rect.bottom >= viewportHeight - maxGap &&
           rect.top >= viewportHeight * 0.5 &&
-          rect.width >= pageWidth * minWidthRatio &&
+          rect.width >= minWidth &&
           rect.height >= minHeight &&
           rect.height <= maxHeight &&
           style.display !== "none" &&
@@ -623,8 +623,7 @@ export async function controlBottomFixedOverlaysForCapture(params: {
       maxGap: BOTTOM_FIXED_MAX_GAP,
       maxHeight: BOTTOM_FIXED_MAX_HEIGHT,
       minHeight: BOTTOM_FIXED_MIN_HEIGHT,
-      minWidthRatio: BOTTOM_FIXED_MIN_WIDTH_RATIO,
-      pageWidth: params.pageWidth,
+      minWidth: BOTTOM_FIXED_MIN_WIDTH,
       viewportHeight: params.viewportHeight,
     },
   );

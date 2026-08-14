@@ -1847,6 +1847,62 @@ function fixedBottomRegionPageTemplate(): string {
   `;
 }
 
+function compactFixedBottomCtaPageTemplate(): string {
+  const sections = Array.from(
+    { length: 8 },
+    (_value, index) => `
+      <section class="compact-cta-section compact-cta-section-${index % 2}">
+        <h2>Portfolio section ${index + 1}</h2>
+      </section>
+    `,
+  ).join("");
+
+  return `
+    <html>
+      <head>
+        <title>Compact Fixed Bottom CTA Fixture</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: white;
+          }
+          .compact-cta-section {
+            min-height: 520px;
+            padding: 48px;
+            box-sizing: border-box;
+          }
+          .compact-cta-section-0 {
+            background: rgb(242, 246, 250);
+          }
+          .compact-cta-section-1 {
+            background: rgb(250, 246, 242);
+          }
+          .compact-chat-cta {
+            position: fixed;
+            left: 50%;
+            bottom: 48px;
+            width: 220px;
+            height: 56px;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 28px;
+            background: rgb(32, 36, 42);
+            color: white;
+            z-index: 50;
+          }
+        </style>
+      </head>
+      <body>
+        <main>${sections}</main>
+        <a class="compact-chat-cta" href="#contact">Chat with me</a>
+      </body>
+    </html>
+  `;
+}
+
 function fixedAwardBadgePageTemplate(): string {
   return `
     <html>
@@ -2489,6 +2545,11 @@ beforeAll(async () => {
       res.end(fixedBottomRegionPageTemplate());
       return;
     }
+    if (pathname.startsWith("/compact-fixed-bottom-cta")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(compactFixedBottomCtaPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/fixed-award-badge")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(fixedAwardBadgePageTemplate());
@@ -2871,6 +2932,55 @@ describe("fullPage tiled capture", () => {
     expect(pageBottom[0]).toBeLessThan(80);
     expect(pageBottom[1]).toBeLessThan(80);
     expect(pageBottom[2]).toBeLessThan(80);
+  }, 25_000);
+
+  it("keeps a compact fixed bottom CTA only at the page bottom", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-compact-fixed-bottom-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/compact-fixed-bottom-cta`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs.some((message) => message.includes("bottom_fixed_overlay_controlled count=1"))).toBe(true);
+
+    const metadata = await sharp(fullPageAsset!.filePath).metadata();
+    const firstViewportCta = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 1004, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondViewportCta = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 2084, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const pageBottomCta = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 880, top: metadata.height! - 76, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(firstViewportCta[0]).toBeGreaterThan(200);
+    expect(firstViewportCta[1]).toBeGreaterThan(200);
+    expect(firstViewportCta[2]).toBeGreaterThan(200);
+    expect(secondViewportCta[0]).toBeGreaterThan(200);
+    expect(secondViewportCta[1]).toBeGreaterThan(200);
+    expect(secondViewportCta[2]).toBeGreaterThan(200);
+    expect(pageBottomCta[0]).toBeLessThan(80);
+    expect(pageBottomCta[1]).toBeLessThan(80);
+    expect(pageBottomCta[2]).toBeLessThan(80);
   }, 25_000);
 
   it("keeps a fixed Awwwards side badge only in the first viewport", async () => {
