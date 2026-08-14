@@ -181,17 +181,6 @@ async function cleanJobLocalFiles(params: {
     throw new JobCleanupError("Local files for this job have already been cleaned", 409);
   }
 
-  const selectedAssets = repo.getAssets(job.id).filter((asset) => asset.selectedForImport);
-  if (
-    selectedAssets.length === 0 ||
-    selectedAssets.some((asset) => asset.importStatus !== "imported")
-  ) {
-    throw new JobCleanupError(
-      "Move to history is available after all selected assets are imported to Eagle",
-      409,
-    );
-  }
-
   let outputTarget: string | null;
   try {
     outputTarget = resolveJobOutputCleanupTarget(job);

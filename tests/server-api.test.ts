@@ -2111,7 +2111,7 @@ describe("server api", () => {
     });
   });
 
-  it("keeps local files until every selected asset has been imported", async () => {
+  it("moves a pending-import job to history when the user explicitly requests it", async () => {
     const jobId = "clean-before-import-job";
     const outputDir = path.join(tmpDir, jobId);
     const capturePath = path.join(outputDir, "capture.jpg");
@@ -2172,13 +2172,62 @@ describe("server api", () => {
       url: `/api/jobs/${jobId}/cleanup`,
     });
 
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({
-      error: "Move to history is available after all selected assets are imported to Eagle",
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ jobId, filesDeleted: true });
+    expect(repo.getJob(jobId)).toMatchObject({
+      cleanedAt: expect.any(String),
+      archivedAt: expect.any(String),
+      outputDir: null,
     });
-    expect(repo.getJob(jobId)?.cleanedAt).toBeNull();
-    await expect(fs.access(capturePath)).resolves.toBeUndefined();
+    await expect(fs.access(capturePath)).rejects.toThrow();
   });
+
+  it.each(["failed", "cancelled"] as const)(
+    "moves a %s job with no assets to history",
+    async (status) => {
+      const jobId = `clean-${status}-empty-job`;
+      const outputDir = path.join(tmpDir, jobId);
+      await fs.mkdir(outputDir, { recursive: true });
+      await fs.writeFile(path.join(outputDir, "failure.log"), status, "utf8");
+
+      repo.createJob({
+        id: jobId,
+        instruction: `${status} without output`,
+        options: {
+          quality: 92,
+          dpr: "auto",
+          sectionScope: "classic",
+          classicMaxSections: 10,
+          mode: "core-routes",
+          maxRoutes: 12,
+          outputDir: tmpDir,
+        },
+      });
+      repo.setJobResult({
+        jobId,
+        status,
+        outputDir,
+        error: status === "failed" ? "Capture failed" : "Job cancelled",
+      });
+      repo.addLog(jobId, "error", `${status} diagnostic`);
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/jobs/${jobId}/cleanup`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ jobId, filesDeleted: true });
+      expect(repo.getJob(jobId)).toMatchObject({
+        status,
+        cleanedAt: expect.any(String),
+        archivedAt: expect.any(String),
+        error: status === "failed" ? "Capture failed" : "Job cancelled",
+      });
+      expect(repo.getLogs(jobId).map((entry) => entry.message)).toContain(`${status} diagnostic`);
+      await expect(fs.access(outputDir)).rejects.toThrow();
+    },
+  );
 
   it("moves legacy imported jobs to history when their old output directory is already gone", async () => {
     const jobId = "clean-missing-legacy-output-job";

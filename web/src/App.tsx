@@ -554,23 +554,25 @@ function canQuickArchiveJob(job: JobSummary): boolean {
 }
 
 function canMoveJobToHistory(
-  job: Pick<
-    JobSummary,
-    "status" | "cleanedAt" | "pendingConfirmationCount" | "importSuccessCount" | "importFailedCount"
-  >,
+  job: Pick<JobSummary, "status" | "cleanedAt">,
 ): boolean {
-  return (
-    !job.cleanedAt &&
-    !isActiveStatus(job.status) &&
-    job.status !== "queued" &&
-    job.pendingConfirmationCount === 0 &&
-    job.importSuccessCount > 0 &&
-    job.importFailedCount === 0
-  );
+  return !job.cleanedAt && !isActiveStatus(job.status) && job.status !== "queued";
 }
 
 function canRescanJob(job: Pick<JobSummary, "status">): boolean {
   return !isActiveStatus(job.status) && job.status !== "queued";
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
+  );
 }
 
 function cx(...classes: Array<string | false | null | undefined>): string {
@@ -1234,6 +1236,7 @@ const JobsListPanel = memo(function JobsListPanel({
   totalPages,
   page,
   onSelectJob,
+  onHoverJob,
   onArchiveJob,
   onCleanJob,
   onPreviousPage,
@@ -1247,6 +1250,7 @@ const JobsListPanel = memo(function JobsListPanel({
   totalPages: number;
   page: number;
   onSelectJob: (jobId: string) => void;
+  onHoverJob: (jobId: string | null) => void;
   onArchiveJob: (jobId: string, archived: boolean) => void;
   onCleanJob: (jobId: string) => void;
   onPreviousPage: () => void;
@@ -1263,7 +1267,12 @@ const JobsListPanel = memo(function JobsListPanel({
         const isExiting = exitingJobIds.has(job.id);
         const isArchiving = archivingJobId === job.id;
         return (
-          <div key={job.id} className={cx("job-card-shell", isExiting && "job-card-shell-exiting")}>
+          <div
+            key={job.id}
+            className={cx("job-card-shell", isExiting && "job-card-shell-exiting")}
+            onMouseEnter={() => onHoverJob(job.id)}
+            onMouseLeave={() => onHoverJob(null)}
+          >
             <article
               className={cx(
                 "job-card",
@@ -1361,6 +1370,7 @@ const JobsListPanel = memo(function JobsListPanel({
                       type="button"
                       className="job-card-quick-action job-card-clean-action"
                       disabled={archivingJobId !== null}
+                      aria-keyshortcuts="D"
                       onClick={(event) => {
                         event.stopPropagation();
                         onCleanJob(job.id);
@@ -1536,7 +1546,13 @@ const JobDetailSummary = memo(function JobDetailSummary({
           </Button>
         ) : null}
         {canClean ? (
-          <Button variant="danger" size="sm" disabled={archiving} onClick={() => onClean(detail.job.id)}>
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={archiving}
+            aria-keyshortcuts="D"
+            onClick={() => onClean(detail.job.id)}
+          >
             {detail.job.archivedAt ? "Clean files" : "Move to history"}
           </Button>
         ) : null}
@@ -2648,6 +2664,7 @@ export function App() {
     }
   });
   const [logsExpanded, setLogsExpanded] = useState(false);
+  const hoveredJobIdRef = useRef<string | null>(null);
   const [manifestExpanded, setManifestExpanded] = useState(false);
   const sseRefreshTimerRef = useRef<number | null>(null);
   const selectedJobDetailRef = useRef<JobDetail | null>(null);
@@ -2786,14 +2803,8 @@ export function App() {
     if (!selectedJobDetail) {
       return false;
     }
-    return (
-      !selectedJobDetail.job.cleanedAt &&
-      !selectedJobIsBusy &&
-      assetImportSummary.selectedPending === 0 &&
-      assetImportSummary.selectedFailed === 0 &&
-      assetImportSummary.imported > 0
-    );
-  }, [assetImportSummary, selectedJobDetail, selectedJobIsBusy]);
+    return !selectedJobDetail.job.cleanedAt && !selectedJobIsBusy;
+  }, [selectedJobDetail, selectedJobIsBusy]);
   const canRescanSelectedJob = useMemo(() => {
     if (!selectedJobDetail) {
       return false;
@@ -3864,16 +3875,69 @@ export function App() {
   }, [archivedOnly, loadJobDetail, loadJobs, selectedJobId, showToast]);
 
   const cleanJobFiles = useCallback((jobId: string): void => {
+    const job = jobs.find((item) => item.id === jobId);
+    const detail = selectedJobDetail?.job.id === jobId ? selectedJobDetail : null;
+    const detailImportSummary = detail ? summarizeAssets(detail.assets) : null;
+    const pendingCount = detailImportSummary
+      ? detailImportSummary.selectedPending + detailImportSummary.selectedFailed
+      : (job?.pendingConfirmationCount ?? 0) + (job?.importFailedCount ?? 0);
+    const unimportedWarning =
+      pendingCount > 0
+        ? ` ${pendingCount} selected screenshot${pendingCount === 1 ? " has" : "s have"} not been imported to Eagle and will be permanently deleted.`
+        : "";
     setActionDialog({
       title: "Move this task to history?",
       description:
-        "Screenshots, manifests, and crop backups will be deleted to save space. Matching records, route history, and run logs will remain available. Imported Eagle images are not affected.",
+        `Screenshots, manifests, and crop backups will be deleted to save space.${unimportedWarning} Matching records, route history, and run logs will remain available. Imported Eagle images are not affected.`,
       confirmLabel: "Move to history",
       cancelLabel: "Keep in queue",
       tone: "danger",
       onConfirm: () => executeCleanJobFiles(jobId),
     });
-  }, [executeCleanJobFiles]);
+  }, [executeCleanJobFiles, jobs, selectedJobDetail]);
+
+  const setHoveredJob = useCallback((jobId: string | null): void => {
+    hoveredJobIdRef.current = jobId;
+  }, []);
+
+  useEffect(() => {
+    if (
+      actionDialog ||
+      previewAssetId !== null ||
+      folderPickerState
+    ) {
+      return undefined;
+    }
+
+    const handleMoveToHistoryShortcut = (event: globalThis.KeyboardEvent) => {
+      if (
+        event.key.toLowerCase() !== "d" ||
+        event.repeat ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        isEditableKeyboardTarget(event.target)
+      ) {
+        return;
+      }
+      const hoveredJobId = hoveredJobIdRef.current;
+      const hoveredJob = hoveredJobId ? jobs.find((job) => job.id === hoveredJobId) : null;
+      if (!hoveredJob || !canMoveJobToHistory(hoveredJob)) {
+        return;
+      }
+      event.preventDefault();
+      cleanJobFiles(hoveredJob.id);
+    };
+
+    window.addEventListener("keydown", handleMoveToHistoryShortcut);
+    return () => window.removeEventListener("keydown", handleMoveToHistoryShortcut);
+  }, [
+    actionDialog,
+    cleanJobFiles,
+    folderPickerState,
+    jobs,
+    previewAssetId,
+  ]);
 
   const executeCleanArchivedFiles = useCallback(async (): Promise<void> => {
     setArchivedCleanupBusy(true);
@@ -4274,6 +4338,7 @@ export function App() {
             totalPages={totalPages}
             page={page}
             onSelectJob={selectJob}
+            onHoverJob={setHoveredJob}
             onArchiveJob={archiveJob}
             onCleanJob={cleanJobFiles}
             onPreviousPage={() => setPage((prev) => Math.max(1, prev - 1))}
