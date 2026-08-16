@@ -1526,6 +1526,72 @@ summary:focus-visible {
   text-transform: uppercase;
 }
 
+.route-list-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.route-list-panel-header h4 {
+  margin-bottom: 4px;
+}
+
+.route-list-panel-header p,
+.route-add-form p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.route-add-button {
+  flex: 0 0 auto;
+}
+
+.route-add-form {
+  display: grid;
+  gap: 8px;
+  margin: -2px 0 14px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.06);
+}
+
+.route-add-form label {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.route-add-form-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.route-add-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  border-radius: 12px;
+  padding: 9px 11px;
+  color: var(--text);
+  background: var(--surface-strong);
+  box-shadow:
+    inset 0 0 0 1px rgba(17, 24, 39, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.route-add-form input::placeholder {
+  color: var(--text-subtle);
+}
+
+.route-add-form-controls .ui-button {
+  flex: 0 0 auto;
+}
+
 .route-list {
   display: grid;
   gap: 10px;
@@ -3531,6 +3597,16 @@ summary:focus-visible {
 
   .core-route-card-list {
     grid-template-columns: 1fr;
+  }
+
+  .route-list-panel-header,
+  .route-add-form-controls {
+    flex-direction: column;
+  }
+
+  .route-add-button,
+  .route-add-form-controls .ui-button {
+    width: 100%;
   }
 
   .pagination {

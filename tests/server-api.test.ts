@@ -505,7 +505,7 @@ describe("server api", () => {
       routeUrl: string;
       routePath: string;
       routeTitle?: string | null;
-      routeSource: "nav" | "link";
+      routeSource: "nav" | "link" | "manual";
       routeDepth: number;
       routePriorityScore: number;
       routeAttemptCount: number;
@@ -1613,6 +1613,70 @@ describe("server api", () => {
 
     const retriedStatus = await waitForNextTerminalStatus(app, createData.jobId, finalStatus);
     expect(retriedStatus).toBe("awaiting_confirmation");
+  });
+
+  it("adds a same-domain custom page to a finished core-routes job", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and map core routes",
+        mode: "core-routes",
+        maxRoutes: 8,
+      },
+    });
+
+    expect(createResponse.statusCode).toBe(202);
+    const createData = createResponse.json() as { jobId: string };
+    const initialStatus = await waitForTerminalStatus(app, createData.jobId);
+    expect(initialStatus).toBe("partial_success");
+
+    const crossDomainResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${createData.jobId}/add-route`,
+      payload: { url: "https://other-example.com/insights/article" },
+    });
+    expect(crossDomainResponse.statusCode).toBe(400);
+    expect(crossDomainResponse.json()).toEqual({
+      error: "Custom pages must use the same domain as this Core Pages job",
+    });
+
+    const customPageUrl = "https://example.com/insights/grid-scale-battery-project-logistics#details";
+    const addResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${createData.jobId}/add-route`,
+      payload: { url: customPageUrl },
+    });
+    expect(addResponse.statusCode).toBe(202);
+
+    const finalStatus = await waitForNextTerminalStatus(app, createData.jobId, initialStatus);
+    expect(finalStatus).toBe("partial_success");
+
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${createData.jobId}`,
+    });
+    const detail = detailResponse.json() as {
+      routes: Array<{ id: number; url: string; path: string; source: string; status: string }>;
+      assets: Array<{ sourceUrl: string }>;
+    };
+    const customRoute = detail.routes.find((route) => route.path === "/insights/grid-scale-battery-project-logistics");
+    expect(customRoute).toMatchObject({
+      url: "https://example.com/insights/grid-scale-battery-project-logistics",
+      source: "manual",
+      status: "success",
+    });
+    expect(detail.assets.some((asset) => asset.sourceUrl === customRoute?.url)).toBe(true);
+
+    const duplicateResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${createData.jobId}/add-route`,
+      payload: { url: "https://example.com/insights/grid-scale-battery-project-logistics?ref=repeat" },
+    });
+    expect(duplicateResponse.statusCode).toBe(409);
+    expect(duplicateResponse.json()).toEqual({
+      error: "This page is already included in the Core Pages job",
+    });
   });
 
   it("rescans one successful route without rerunning the other core pages", async () => {

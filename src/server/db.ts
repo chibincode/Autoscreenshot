@@ -22,6 +22,7 @@ import type {
   PluginContextHistoryJob,
   RouteDiscoveryTarget,
   RouteTargetRecord,
+  RouteTargetSource,
   RouteTargetStatus,
   RouteTargetSummary,
   RunManifest,
@@ -98,7 +99,7 @@ interface RouteTargetRow {
   url: string;
   path: string;
   title: string | null;
-  source: "nav" | "link";
+  source: RouteTargetSource;
   depth: number;
   priority_score: number;
   status: RouteTargetStatus;
@@ -596,6 +597,37 @@ export class JobsRepository {
     });
     tx(jobId, routes);
     this.touchJob(jobId, now);
+  }
+
+  createRouteTarget(jobId: string, route: RouteDiscoveryTarget): RouteTargetRecord {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `
+      INSERT INTO route_targets (
+        job_id, url, path, title, source, depth, priority_score, status, error, attempt_count, updated_at
+      ) VALUES (
+        @jobId, @url, @path, @title, @source, @depth, @priorityScore, 'queued', NULL, 0, @updatedAt
+      )
+    `,
+      )
+      .run({
+        jobId,
+        url: route.url,
+        path: route.path,
+        title: route.title ?? null,
+        source: route.source,
+        depth: route.depth,
+        priorityScore: route.priorityScore,
+        updatedAt: now,
+      });
+    const routeId = Number(result.lastInsertRowid);
+    const created = this.getRouteTargetById(routeId);
+    if (!created) {
+      throw new Error("Failed to create route target");
+    }
+    this.touchJob(jobId, now);
+    return created;
   }
 
   updateRouteTargetStatus(params: {

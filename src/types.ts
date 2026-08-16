@@ -302,7 +302,7 @@ export interface CreateJobRequest {
   outputDir?: string;
 }
 
-export type RouteTargetSource = "nav" | "link";
+export type RouteTargetSource = "nav" | "link" | "manual";
 
 export type RouteTargetStatus = "queued" | "running" | "success" | "failed" | "skipped";
 

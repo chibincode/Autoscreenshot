@@ -7,6 +7,7 @@ import type {
   JobExecutionOptions,
   ParsedTask,
   RouteDiscoveryTarget,
+  RouteTargetSource,
   RouteTargetStatus,
   RouteTargetSummary,
   RunManifest,
@@ -98,7 +99,7 @@ export interface RetryCoreRouteByManifestParams {
   routeUrl: string;
   routePath: string;
   routeTitle?: string | null;
-  routeSource: "nav" | "link";
+  routeSource: RouteTargetSource;
   routeDepth: number;
   routePriorityScore: number;
   routeAttemptCount: number;

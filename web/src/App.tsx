@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type FormEvent,
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -45,7 +46,7 @@ import {
 } from "./job-progress";
 import { getNextSelectedJobId } from "./job-selection";
 import { buildRestoreOriginalConfirmation } from "./restore-original-confirmation";
-import { canRerunRoute } from "./route-retry";
+import { canRerunRoute, isTerminalJobStatus } from "./route-retry";
 import {
   readSelectedAssetIdFromSearch,
   readSelectedJobIdFromSearch,
@@ -263,7 +264,7 @@ interface RouteTargetSummary {
   url: string;
   path: string;
   title: string | null;
-  source: "nav" | "link";
+  source: "nav" | "link" | "manual";
   depth: number;
   priorityScore: number;
   status: "queued" | "running" | "success" | "failed" | "skipped";
@@ -493,7 +494,15 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
     headers,
   });
   if (!response.ok) {
-    const message = await response.text();
+    let message = await response.text();
+    try {
+      const payload = JSON.parse(message) as { error?: unknown };
+      if (typeof payload.error === "string") {
+        message = payload.error;
+      }
+    } catch {
+      // Use the plain-text response when the API did not return a JSON error body.
+    }
     throw new Error(message || `HTTP ${response.status}`);
   }
   return (await response.json()) as T;
@@ -1596,6 +1605,8 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
   onFocusDebug,
   onRerunRoute,
   rerunningRouteId,
+  onAddCustomRoute,
+  addingCustomRoute,
   browserActionsDisabled,
 }: {
   detail: JobDetail;
@@ -1610,11 +1621,71 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
   onFocusDebug: (asset: JobAsset) => void;
   onRerunRoute: (jobId: string, route: RouteTargetSummary) => void | Promise<void>;
   rerunningRouteId: number | null;
+  onAddCustomRoute: (jobId: string, url: string) => Promise<boolean>;
+  addingCustomRoute: boolean;
   browserActionsDisabled: boolean;
 }) {
-  return detail.routes.length > 0 ? (
+  const [showCustomRouteForm, setShowCustomRouteForm] = useState(false);
+  const [customRouteUrl, setCustomRouteUrl] = useState("");
+  const canAddCustomRoute = isTerminalJobStatus(detail.job.status);
+
+  const submitCustomRoute = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    const added = await onAddCustomRoute(detail.job.id, customRouteUrl);
+    if (added) {
+      setCustomRouteUrl("");
+      setShowCustomRouteForm(false);
+    }
+  };
+
+  return detail.routes.length > 0 || canAddCustomRoute ? (
     <div className="route-list-panel">
-      <h4>Core Pages</h4>
+      <div className="route-list-panel-header">
+        <div>
+          <h4>Core Pages</h4>
+          <p>Each page is captured as one full-length screenshot.</p>
+        </div>
+        {canAddCustomRoute ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            className="route-add-button"
+            disabled={browserActionsDisabled || addingCustomRoute}
+            onClick={() => setShowCustomRouteForm((current) => !current)}
+            aria-expanded={showCustomRouteForm}
+          >
+            Add page
+          </Button>
+        ) : null}
+      </div>
+      {showCustomRouteForm ? (
+        <form className="route-add-form" onSubmit={(event) => void submitCustomRoute(event)}>
+          <label htmlFor={`custom-route-url-${detail.job.id}`}>Page URL</label>
+          <div className="route-add-form-controls">
+            <input
+              id={`custom-route-url-${detail.job.id}`}
+              type="url"
+              value={customRouteUrl}
+              onChange={(event) => setCustomRouteUrl(event.target.value)}
+              placeholder="https://example.com/insights/article"
+              autoComplete="url"
+              required
+              disabled={addingCustomRoute || browserActionsDisabled}
+            />
+            <Button
+              type="submit"
+              variant="primary"
+              size="sm"
+              loading={addingCustomRoute}
+              loadingLabel="Adding..."
+              disabled={browserActionsDisabled || !customRouteUrl.trim()}
+            >
+              Add & scan
+            </Button>
+          </div>
+          <p>Use a page from the same domain. It will be captured as a full page.</p>
+        </form>
+      ) : null}
       <div className="core-route-card-list">
         {detail.routes.map((route) => {
           const asset = findAssetForRouteFromIndex(route, assetLookup);
@@ -2646,6 +2717,7 @@ export function App() {
   const [retryingFailedImport, setRetryingFailedImport] = useState(false);
   const [rescanningJobId, setRescanningJobId] = useState<string | null>(null);
   const [rerunningRouteId, setRerunningRouteId] = useState<number | null>(null);
+  const [addingCustomRoute, setAddingCustomRoute] = useState(false);
   const [archivingJobId, setArchivingJobId] = useState<string | null>(null);
   const [exitingJobIds, setExitingJobIds] = useState<Set<string>>(() => new Set());
   const [pendingQueueAction, setPendingQueueAction] = useState<{
@@ -3748,6 +3820,35 @@ export function App() {
     });
   }, [executeRerunRoute]);
 
+  const addCustomRoute = useCallback(async (jobId: string, url: string): Promise<boolean> => {
+    if (browserActionsDisabled) {
+      setErrorText("Screenshot engine is preparing. Try again shortly.");
+      return false;
+    }
+    setAddingCustomRoute(true);
+    try {
+      await apiFetch(`/api/jobs/${jobId}/add-route`, {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      });
+      await Promise.all([loadJobs(), loadJobDetail(jobId)]);
+      setErrorText(null);
+      showToast("已加入指定页面，正在生成整页截图", "info");
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "添加指定页面失败";
+      setErrorText(message);
+      if (isRepairablePlaywrightMessage(message)) {
+        void loadPlaywrightRuntime().catch(() => {
+          // no-op
+        });
+      }
+      return false;
+    } finally {
+      setAddingCustomRoute(false);
+    }
+  }, [browserActionsDisabled, loadJobDetail, loadJobs, loadPlaywrightRuntime, showToast]);
+
   const executeCancelJob = useCallback(async (jobId: string): Promise<void> => {
     try {
       const result = await apiFetch<{ cancellationRequested?: boolean }>(`/api/jobs/${jobId}/cancel`, {
@@ -4436,6 +4537,8 @@ export function App() {
                     onFocusDebug={focusDebugFromAsset}
                     onRerunRoute={rerunRoute}
                     rerunningRouteId={rerunningRouteId}
+                    onAddCustomRoute={addCustomRoute}
+                    addingCustomRoute={addingCustomRoute}
                     browserActionsDisabled={browserActionsDisabled}
                   />
                 ) : (

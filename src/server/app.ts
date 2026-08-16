@@ -39,6 +39,7 @@ import {
 } from "../core/core-routes-service.js";
 import {
   buildEquivalentUrlQueries,
+  extractNormalizedHostname,
   isHttpUrl,
   normalizeUrlForComparison,
 } from "../core/url-normalization.js";
@@ -58,6 +59,7 @@ import type {
   JobRecord,
   PluginContextEagleItem,
   PluginContextResponse,
+  RouteTargetRecord,
   RouteTargetSummary,
   RunManifest,
 } from "../types.js";
@@ -97,6 +99,8 @@ const AUTO_HISTORY_DELAY_MS = 24 * 60 * 60 * 1000;
 const AUTO_HISTORY_INTERVAL_MS = 60 * 60 * 1000;
 const EAGLE_IMPORT_ALREADY_QUEUED_MESSAGE = "Eagle import for this job is already queued or running";
 const ROUTE_RERUN_ALREADY_QUEUED_MESSAGE = "A page rerun for this job is already queued or running";
+const ROUTE_CAPTURE_ALREADY_QUEUED_MESSAGE = "A page capture for this job is already queued or running";
+const MANUAL_ROUTE_PRIORITY_SCORE = 1_100;
 
 function statusFromManifest(manifest: RunManifest | null): JobStatus {
   if (!manifest) {
@@ -121,6 +125,18 @@ function statusFromCoreRouteState(manifest: RunManifest | null, routes: RouteTar
 
 function isTerminalJobStatus(status: JobStatus): boolean {
   return status !== "queued" && status !== "running";
+}
+
+function getJobBaseUrl(job: JobRecord, routes: RouteTargetSummary[]): string | null {
+  try {
+    const task = job.taskJson ? (JSON.parse(job.taskJson) as { url?: unknown }) : null;
+    if (typeof task?.url === "string" && isHttpUrl(task.url)) {
+      return task.url;
+    }
+  } catch {
+    // Fall through to the route list and original instruction for older jobs.
+  }
+  return routes[0]?.url ?? extractFirstHttpUrl(job.instruction);
 }
 
 function resolveJobOutputCleanupTarget(job: JobRecord): string | null {
@@ -1158,6 +1174,141 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     };
   });
 
+  const enqueueCoreRouteCapture = (params: {
+    job: JobRecord;
+    route: RouteTargetRecord;
+    queuedLogMessage: string;
+    startedLogMessage: string;
+  }): void => {
+    const { job, route, queuedLogMessage, startedLogMessage } = params;
+    if (!job.manifestPath) {
+      throw new Error("A route and manifest are required to capture a core page");
+    }
+
+    repo.setJobResult({
+      jobId: job.id,
+      status: "queued",
+      taskJson: job.taskJson,
+      manifestPath: job.manifestPath,
+      outputDir: job.outputDir,
+      error: null,
+    });
+    repo.addLog(job.id, "info", queuedLogMessage);
+    queue.enqueue(job.id, async () => {
+      repo.setJobRunning(job.id);
+      repo.addLog(job.id, "info", startedLogMessage);
+      emitToQueue(queue, {
+        type: "status",
+        jobId: job.id,
+        status: "running",
+        at: new Date().toISOString(),
+      });
+
+      const startedAt = new Date().toISOString();
+      repo.updateRouteTargetById({
+        id: route.id,
+        status: "running",
+        error: null,
+        startedAt,
+      });
+      emitToQueue(queue, {
+        type: "assets_updated",
+        jobId: job.id,
+        at: new Date().toISOString(),
+      });
+
+      try {
+        const captured = await retryCoreRouteFn({
+          manifestPath: job.manifestPath!,
+          routeUrl: route.url,
+          routePath: route.path,
+          routeTitle: route.title,
+          routeSource: route.source,
+          routeDepth: route.depth,
+          routePriorityScore: route.priorityScore,
+          routeAttemptCount: route.attemptCount,
+          log: (level, message) => {
+            repo.addLog(job.id, level, message);
+            emitToQueue(queue, {
+              type: "log",
+              jobId: job.id,
+              level,
+              message,
+              at: new Date().toISOString(),
+            });
+          },
+        });
+
+        repo.updateRouteTargetById({
+          id: route.id,
+          status: "success",
+          error: null,
+          attemptCount: captured.route.attemptCount,
+          startedAt: captured.route.startedAt ?? startedAt,
+          finishedAt: captured.route.finishedAt ?? new Date().toISOString(),
+        });
+        repo.replaceAssets(job.id, captured.manifest);
+        const finalStatus = statusFromCoreRouteState(captured.manifest, repo.listRouteTargets(job.id));
+        repo.setJobResult({
+          jobId: job.id,
+          status: finalStatus,
+          taskJson: JSON.stringify(captured.manifest.task),
+          manifestPath: job.manifestPath,
+          outputDir: captured.manifest.outputDir,
+          error:
+            finalStatus === "success" || finalStatus === "awaiting_confirmation" || finalStatus === "partial_success"
+              ? null
+              : "Some routes or assets are still failing",
+        });
+
+        emitToQueue(queue, {
+          type: "assets_updated",
+          jobId: job.id,
+          at: new Date().toISOString(),
+        });
+        emitToQueue(queue, {
+          type: "status",
+          jobId: job.id,
+          status: finalStatus,
+          at: new Date().toISOString(),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const attempts =
+          error && typeof error === "object" && "attempts" in error && typeof error.attempts === "number"
+            ? error.attempts
+            : 1;
+        repo.addLog(job.id, "error", message);
+        repo.updateRouteTargetById({
+          id: route.id,
+          status: "failed",
+          error: message,
+          attemptCount: route.attemptCount + attempts,
+          finishedAt: new Date().toISOString(),
+        });
+        const latestManifest = await readManifest(job.manifestPath!).catch(() => null);
+        const finalStatus = statusFromCoreRouteState(latestManifest, repo.listRouteTargets(job.id));
+        repo.setJobResult({
+          jobId: job.id,
+          status: finalStatus,
+          error: message,
+        });
+        emitToQueue(queue, {
+          type: "assets_updated",
+          jobId: job.id,
+          at: new Date().toISOString(),
+        });
+        emitToQueue(queue, {
+          type: "status",
+          jobId: job.id,
+          status: finalStatus,
+          at: new Date().toISOString(),
+          message,
+        });
+      }
+    });
+  };
+
   app.post<{
     Params: { jobId: string };
     Body: { archived?: boolean };
@@ -2033,127 +2184,97 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       return { error: "retry-route is only available for successful or failed routes" };
     }
 
-    repo.setJobResult({
-      jobId: job.id,
-      status: "queued",
-      taskJson: job.taskJson,
-      manifestPath: job.manifestPath,
-      outputDir: job.outputDir,
-      error: null,
+    enqueueCoreRouteCapture({
+      job,
+      route,
+      queuedLogMessage: `Page rerun queued: ${route.path}`,
+      startedLogMessage: `Page rerun started: ${route.path}`,
     });
-    repo.addLog(job.id, "info", `Page rerun queued: ${route.path}`);
-    queue.enqueue(job.id, async () => {
-      repo.setJobRunning(job.id);
-      repo.addLog(job.id, "info", `Page rerun started: ${route.path}`);
-      emitToQueue(queue, {
-        type: "status",
-        jobId: job.id,
-        status: "running",
-        at: new Date().toISOString(),
-      });
 
-      const startedAt = new Date().toISOString();
-      repo.updateRouteTargetById({
-        id: route.id,
-        status: "running",
-        error: null,
-        startedAt,
-      });
-      emitToQueue(queue, {
-        type: "assets_updated",
-        jobId: job.id,
-        at: new Date().toISOString(),
-      });
+    reply.code(202);
+    return { jobId: job.id, routeId: route.id, status: "queued" };
+  });
 
-      try {
-        const retried = await retryCoreRouteFn({
-          manifestPath: job.manifestPath!,
-          routeUrl: route.url,
-          routePath: route.path,
-          routeTitle: route.title,
-          routeSource: route.source,
-          routeDepth: route.depth,
-          routePriorityScore: route.priorityScore,
-          routeAttemptCount: route.attemptCount,
-          log: (level, message) => {
-            repo.addLog(job.id, level, message);
-            emitToQueue(queue, {
-              type: "log",
-              jobId: job.id,
-              level,
-              message,
-              at: new Date().toISOString(),
-            });
-          },
-        });
+  app.post<{
+    Params: { jobId: string };
+    Body: { url?: string };
+  }>("/api/jobs/:jobId/add-route", async (request, reply) => {
+    const job = repo.getJob(request.params.jobId);
+    if (!job) {
+      reply.code(404);
+      return { error: "Job not found" };
+    }
+    if (queue.hasJob(job.id)) {
+      reply.code(409);
+      return { error: ROUTE_CAPTURE_ALREADY_QUEUED_MESSAGE };
+    }
+    if (!job.manifestPath) {
+      reply.code(400);
+      return { error: "No manifest for this job" };
+    }
+    if (parseJobMode(job.optionsJson) !== "core-routes") {
+      reply.code(400);
+      return { error: "add-route is only available for core-routes mode jobs" };
+    }
+    if (!isTerminalJobStatus(job.status)) {
+      reply.code(400);
+      return { error: "add-route is only available after the core-routes job has finished" };
+    }
 
-        repo.updateRouteTargetById({
-          id: route.id,
-          status: "success",
-          error: null,
-          attemptCount: retried.route.attemptCount,
-          startedAt: retried.route.startedAt ?? startedAt,
-          finishedAt: retried.route.finishedAt ?? new Date().toISOString(),
-        });
-        repo.replaceAssets(job.id, retried.manifest);
-        const finalStatus = statusFromCoreRouteState(retried.manifest, repo.listRouteTargets(job.id));
-        repo.setJobResult({
-          jobId: job.id,
-          status: finalStatus,
-          taskJson: JSON.stringify(retried.manifest.task),
-          manifestPath: job.manifestPath,
-          outputDir: retried.manifest.outputDir,
-          error:
-            finalStatus === "success" || finalStatus === "awaiting_confirmation" || finalStatus === "partial_success"
-              ? null
-              : "Some routes or assets are still failing",
-        });
+    const requestedUrl = request.body?.url?.trim() ?? "";
+    if (!requestedUrl || !isHttpUrl(requestedUrl)) {
+      reply.code(400);
+      return { error: "Enter a valid http(s) page URL" };
+    }
 
-        emitToQueue(queue, {
-          type: "assets_updated",
-          jobId: job.id,
-          at: new Date().toISOString(),
-        });
-        emitToQueue(queue, {
-          type: "status",
-          jobId: job.id,
-          status: finalStatus,
-          at: new Date().toISOString(),
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const attempts =
-          error && typeof error === "object" && "attempts" in error && typeof error.attempts === "number"
-            ? error.attempts
-            : 1;
-        repo.addLog(job.id, "error", message);
-        repo.updateRouteTargetById({
-          id: route.id,
-          status: "failed",
-          error: message,
-          attemptCount: route.attemptCount + attempts,
-          finishedAt: new Date().toISOString(),
-        });
-        const latestManifest = job.manifestPath ? await readManifest(job.manifestPath).catch(() => null) : null;
-        const finalStatus = statusFromCoreRouteState(latestManifest, repo.listRouteTargets(job.id));
-        repo.setJobResult({
-          jobId: job.id,
-          status: finalStatus,
-          error: message,
-        });
-        emitToQueue(queue, {
-          type: "assets_updated",
-          jobId: job.id,
-          at: new Date().toISOString(),
-        });
-        emitToQueue(queue, {
-          type: "status",
-          jobId: job.id,
-          status: finalStatus,
-          at: new Date().toISOString(),
-          message,
-        });
-      }
+    const requestedRouteUrl = new URL(requestedUrl);
+    requestedRouteUrl.hash = "";
+    const routeUrl = requestedRouteUrl.toString();
+    const existingRoutes = repo.listRouteTargets(job.id);
+    const baseUrl = getJobBaseUrl(job, existingRoutes);
+    const baseHostname = baseUrl ? extractNormalizedHostname(baseUrl) : null;
+    const routeHostname = extractNormalizedHostname(routeUrl);
+    if (!baseHostname || !routeHostname) {
+      reply.code(400);
+      return { error: "Could not determine the core-pages job domain" };
+    }
+    if (baseHostname !== routeHostname) {
+      reply.code(400);
+      return { error: "Custom pages must use the same domain as this Core Pages job" };
+    }
+
+    const rulesState = await loadEagleFolderRules(process.cwd());
+    const normalizedRouteUrl = normalizeUrlForComparison(routeUrl, rulesState.rules.urlNormalization);
+    if (!normalizedRouteUrl) {
+      reply.code(400);
+      return { error: "Enter a valid http(s) page URL" };
+    }
+    const alreadyIncluded = existingRoutes.some(
+      (route) =>
+        normalizeUrlForComparison(route.url, rulesState.rules.urlNormalization) === normalizedRouteUrl,
+    );
+    if (alreadyIncluded) {
+      reply.code(409);
+      return { error: "This page is already included in the Core Pages job" };
+    }
+
+    const route = repo.createRouteTarget(job.id, {
+      url: routeUrl,
+      path: requestedRouteUrl.pathname || "/",
+      source: "manual",
+      depth: 0,
+      priorityScore: MANUAL_ROUTE_PRIORITY_SCORE,
+    });
+    enqueueCoreRouteCapture({
+      job,
+      route,
+      queuedLogMessage: `Custom page queued: ${route.path}`,
+      startedLogMessage: `Custom page capture started: ${route.path}`,
+    });
+    emitToQueue(queue, {
+      type: "assets_updated",
+      jobId: job.id,
+      at: new Date().toISOString(),
     });
 
     reply.code(202);
