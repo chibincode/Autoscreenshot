@@ -285,6 +285,59 @@ function stackedFixedNavigationPageTemplate(): string {
   `;
 }
 
+function genericFixedNavigationPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Generic Fixed Navigation</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+          }
+          section {
+            height: 1080px;
+            padding: 120px 64px 64px;
+            box-sizing: border-box;
+          }
+          .panel-one { background: rgb(240, 253, 244); }
+          .panel-two { background: rgb(219, 234, 254); }
+          .panel-three { background: rgb(254, 243, 199); }
+          .framer-z3ek7d-container {
+            position: fixed;
+            inset: 0 0 auto;
+            z-index: 60;
+            height: 52px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            box-sizing: border-box;
+            border-bottom: 1px solid rgb(204, 204, 204);
+            background: white;
+            color: rgb(17, 24, 39);
+          }
+          .framer-random-link {
+            color: inherit;
+            text-decoration: none;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="framer-z3ek7d-container">
+          <a class="framer-random-link" href="/">Back</a>
+          <a class="framer-random-link" href="#contact">Let's chat</a>
+        </div>
+        <main>
+          <section class="panel-one"><h1>Project overview</h1></section>
+          <section class="panel-two"><h2>Visual direction</h2></section>
+          <section class="panel-three"><h2>Final delivery</h2></section>
+        </main>
+      </body>
+    </html>
+  `;
+}
+
 function readingChromePageTemplate(): string {
   return `
     <html>
@@ -491,6 +544,73 @@ function scrollScenePageTemplate(): string {
           }
           window.addEventListener('scroll', renderScene, { passive: true });
           renderScene();
+        </script>
+      </body>
+    </html>
+  `;
+}
+
+function shallowViewportScrollScenePageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Shallow viewport scroll scene</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: #f8fafc;
+            color: #0f172a;
+          }
+          .hero-scene {
+            position: relative;
+            height: 200vh;
+            overflow: clip;
+          }
+          .hero-stage {
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            display: grid;
+            place-items: center;
+            background: #0f172a;
+            color: white;
+          }
+          .hero-stage strong {
+            font-size: 64px;
+          }
+          .content {
+            min-height: 2800px;
+            padding: 120px;
+            box-sizing: border-box;
+            background: #dbeafe;
+          }
+          footer {
+            min-height: 720px;
+            padding: 96px 120px;
+            box-sizing: border-box;
+            background: #14532d;
+            color: white;
+          }
+        </style>
+      </head>
+      <body>
+        <section class="hero-scene" id="hero-scene">
+          <div class="hero-stage" id="hero-stage"><strong id="hero-frame">FRAME 1</strong></div>
+        </section>
+        <main class="content"><h1>Long page content must remain after the hero scene.</h1></main>
+        <footer>Footer must remain after the hero scene.</footer>
+        <script>
+          const scene = document.getElementById('hero-scene');
+          const frame = document.getElementById('hero-frame');
+          const stage = document.getElementById('hero-stage');
+          function render() {
+            const secondFrame = window.scrollY > 540;
+            frame.textContent = secondFrame ? 'FRAME 2' : 'FRAME 1';
+            stage.style.background = secondFrame ? '#475569' : '#0f172a';
+          }
+          window.addEventListener('scroll', render, { passive: true });
+          render();
         </script>
       </body>
     </html>
@@ -2086,6 +2206,77 @@ function scrollRevealFooterPageTemplate(): string {
   `;
 }
 
+function stickyFooterRevealPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Sticky Footer Reveal Fixture</title>
+        <style>
+          html,
+          body {
+            margin: 0;
+            font-family: sans-serif;
+            background: rgb(244, 247, 243);
+          }
+          main {
+            min-height: 2254px;
+          }
+          .content {
+            position: relative;
+            z-index: 1;
+            min-height: 1797px;
+            box-sizing: border-box;
+            padding: 96px;
+            background: rgb(244, 247, 243);
+          }
+          .hero {
+            height: 520px;
+            display: grid;
+            place-items: center;
+            background: rgb(152, 222, 171);
+            font-size: 64px;
+          }
+          .pricing-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 32px;
+            margin: 64px auto 0;
+            max-width: 1120px;
+          }
+          .pricing-card {
+            min-height: 760px;
+            background: white;
+            border-radius: 24px;
+          }
+          footer {
+            position: sticky;
+            bottom: 0;
+            z-index: 0;
+            height: 457px;
+            display: grid;
+            place-items: center;
+            background: rgb(24, 31, 28);
+            color: white;
+            font-size: 56px;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <div class="content">
+            <section class="hero">Pricing</section>
+            <div class="pricing-grid">
+              <article class="pricing-card"></article>
+              <article class="pricing-card"></article>
+            </div>
+          </div>
+          <footer>Complete footer</footer>
+        </main>
+      </body>
+    </html>
+  `;
+}
+
 function splitScrollScenePageTemplate(): string {
   const blocks = [
     ["Overview", "#ef4444"],
@@ -2445,6 +2636,11 @@ beforeAll(async () => {
       res.end(stackedFixedNavigationPageTemplate());
       return;
     }
+    if (pathname.startsWith("/generic-fixed-navigation")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(genericFixedNavigationPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/reading-chrome")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(readingChromePageTemplate());
@@ -2463,6 +2659,11 @@ beforeAll(async () => {
     if (pathname.startsWith("/scroll-scene-overlay")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(scrollSceneOverlayPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/shallow-viewport-scroll-scene")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(shallowViewportScrollScenePageTemplate());
       return;
     }
     if (pathname.startsWith("/scroll-scene")) {
@@ -2558,6 +2759,11 @@ beforeAll(async () => {
     if (pathname.startsWith("/scroll-reveal-footer")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(scrollRevealFooterPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/sticky-footer-reveal")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(stickyFooterRevealPageTemplate());
       return;
     }
     if (pathname.startsWith("/split-scroll-scene-unfold")) {
@@ -2748,6 +2954,46 @@ describe("fullPage tiled capture", () => {
     expect(firstNavigation[1]).toBeGreaterThan(firstNavigation[2]);
     expect(secondAnnouncementPosition[2]).toBeGreaterThan(secondAnnouncementPosition[0] + 20);
     expect(secondAnnouncementPosition[2]).toBeGreaterThan(secondAnnouncementPosition[1] + 10);
+    expect(secondNavigationPosition[2]).toBeGreaterThan(secondNavigationPosition[0] + 20);
+    expect(secondNavigationPosition[2]).toBeGreaterThan(secondNavigationPosition[1] + 10);
+  }, 25_000);
+
+  it("keeps a generic fixed Framer navigation only in the first viewport", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-generic-fixed-navigation-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/generic-fixed-navigation`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs).toContain("top_overlay_hidden_for_tiles count=1");
+
+    const firstNavigation = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 26, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const secondNavigationPosition = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 1106, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(firstNavigation[0]).toBeGreaterThan(240);
+    expect(firstNavigation[1]).toBeGreaterThan(240);
+    expect(firstNavigation[2]).toBeGreaterThan(240);
     expect(secondNavigationPosition[2]).toBeGreaterThan(secondNavigationPosition[0] + 20);
     expect(secondNavigationPosition[2]).toBeGreaterThan(secondNavigationPosition[1] + 10);
   }, 25_000);
@@ -3316,6 +3562,52 @@ describe("footer scroll reveal preservation", () => {
     expect(lowerFooterSample[1]).toBeLessThan(45);
     expect(lowerFooterSample[2]).toBeLessThan(45);
   }, 20_000);
+
+  it("keeps page content intact when a full-width footer is sticky", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-sticky-footer-reveal-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/sticky-footer-reveal`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(result.scrollSceneDebug ?? []).toHaveLength(0);
+    expect(logs.some((message) => message.includes("scroll_scene_replaced"))).toBe(false);
+    expect(logs.some((message) => message.includes("footer_reveal_replaced"))).toBe(true);
+
+    const metadata = await sharp(fullPageAsset!.filePath).metadata();
+    expect(metadata.height).toBe(result.fullPageSize.height);
+    expect(metadata.height).toBe(2254);
+
+    const heroSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 280, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const footerSample = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: metadata.height! - 120, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(heroSample[1]).toBeGreaterThan(heroSample[0] + 40);
+    expect(heroSample[1]).toBeGreaterThan(heroSample[2] + 20);
+    expect(footerSample[0]).toBeLessThan(60);
+    expect(footerSample[1]).toBeLessThan(70);
+    expect(footerSample[2]).toBeLessThan(70);
+  }, 20_000);
 });
 
 describe("split scroll scene preservation", () => {
@@ -3554,6 +3846,47 @@ describe("scroll scene unfolding", () => {
 
     const uniqueColors = new Set(samples.map((sample) => `${sample[0]}-${sample[1]}-${sample[2]}`));
     expect(uniqueColors.size).toBeGreaterThanOrEqual(Math.min(3, firstScene.distinctFrameCount));
+  }, 20_000);
+
+  it("keeps later page content when a full-viewport sticky scene only owns two viewports", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-shallow-scroll-scene-"));
+    const task: ParsedTask = {
+      url: `${baseUrl}/shallow-viewport-scroll-scene`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    const firstScene = result.scrollSceneDebug?.[0];
+    expect(fullPageAsset).toBeTruthy();
+    expect(firstScene?.layoutMode).toBe("sticky_only_unfold");
+    expect(firstScene?.outerHeight).toBe(2160);
+
+    const metadata = await sharp(fullPageAsset!.filePath).metadata();
+    expect(metadata.height).toBeGreaterThanOrEqual(result.fullPageSize.height);
+
+    const footerSample = await sharp(fullPageAsset!.filePath)
+      .extract({
+        left: 960,
+        top: (metadata.height ?? 0) - 180,
+        width: 1,
+        height: 1,
+      })
+      .raw()
+      .toBuffer();
+    expect(footerSample[1]).toBeGreaterThan(55);
+    expect(footerSample[0]).toBeLessThan(50);
+    expect(footerSample[2]).toBeLessThan(75);
   }, 20_000);
 
   it("removes overlays that appear during scroll-scene frame sampling", async () => {

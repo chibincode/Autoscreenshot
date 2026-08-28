@@ -1,18 +1,13 @@
 import sharp from "sharp";
 import type { Page } from "playwright";
 import type { ImageRegionReplacement } from "./scroll-scenes.js";
+import { FOOTER_LIKE_SELECTOR } from "./footer-like.js";
 import {
   hideRepeatedFixedSideBadgesForCapture,
   hideRepeatedReadingChromeForCapture,
   hideTopOverlaysForCapture,
 } from "./top-overlays.js";
 
-const FOOTER_REVEAL_SELECTORS = [
-  "footer",
-  '[role="contentinfo"]',
-  '[data-framer-name*="Footer" i]',
-  '[class*="footer" i]',
-].join(",");
 const MIN_FOOTER_HEIGHT = 160;
 const MIN_FOOTER_WIDTH_RATIO = 0.5;
 const FOOTER_BOTTOM_TOLERANCE = 32;
@@ -146,7 +141,7 @@ async function findFooterRevealCandidate(params: {
       minFooterHeight: MIN_FOOTER_HEIGHT,
       minFooterWidthRatio: MIN_FOOTER_WIDTH_RATIO,
       pageWidth: params.pageWidth,
-      selectors: FOOTER_REVEAL_SELECTORS,
+      selectors: FOOTER_LIKE_SELECTOR,
       viewportHeight: params.viewportHeight,
     },
   );

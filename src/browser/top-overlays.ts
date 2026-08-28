@@ -89,6 +89,14 @@ async function findTopOverlayCandidate(params: {
   return params.page.evaluate(
     ({ maxHeight, maxTop, minHeight, minWidthRatio, pageWidth, selectors, viewportHeight }) => {
       const elements = Array.from(document.querySelectorAll<HTMLElement>(selectors));
+      const elementSet = new Set(elements);
+      for (const element of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
+        const position = window.getComputedStyle(element).position;
+        if ((position === "fixed" || position === "sticky") && !elementSet.has(element)) {
+          elements.push(element);
+          elementSet.add(element);
+        }
+      }
       const seenPinned = new Set<HTMLElement>();
       const scored: TopOverlayCandidate[] = [];
 
@@ -238,6 +246,14 @@ export async function hideTopOverlaysForCapture(params: {
   const hiddenCount = await params.page.evaluate(
     ({ attrName, maxHeight, maxTop, minHeight, minWidthRatio, pageWidth, selectors, viewportHeight }) => {
       const elements = Array.from(document.querySelectorAll<HTMLElement>(selectors));
+      const elementSet = new Set(elements);
+      for (const element of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
+        const position = window.getComputedStyle(element).position;
+        if ((position === "fixed" || position === "sticky") && !elementSet.has(element)) {
+          elements.push(element);
+          elementSet.add(element);
+        }
+      }
       const hidden = new Set<HTMLElement>();
 
       for (const element of elements) {

@@ -196,6 +196,47 @@ describe("classifyFullPageType", () => {
     );
   });
 
+  it("classifies flat portfolio case-study routes from strong page-title signals", () => {
+    expect(
+      classifyFullPageType("https://danielsun.space/dibsy", rules, {
+        pageTitle: "Dibsy - fintech brand identity and platform redesign",
+      }).type,
+    ).toBe("project_detail");
+    expect(
+      classifyFullPageType("https://danielsun.space/ruby", rules, {
+        pageTitle: "Ruby - fintech rebrand and Framer website for a YC company",
+      }).type,
+    ).toBe("project_detail");
+    expect(
+      classifyFullPageType("https://danielsun.space/clerk", rules, {
+        pageTitle: "Clerk - brand, web, and marketing design for a developer tools company",
+      }).type,
+    ).toBe("project_detail");
+    expect(
+      classifyFullPageType("https://danielsun.space/artem-astakhov", rules, {
+        pageTitle: "Artem Astakhov - personal brand and interactive Framer portfolio",
+      }).type,
+    ).toBe("project_detail");
+  });
+
+  it("does not treat weak flat-route titles as project details", () => {
+    expect(
+      classifyFullPageType("https://example.com/platform", rules, {
+        pageTitle: "AI platform for customer support",
+      }).type,
+    ).toBe("unmatched");
+    expect(
+      classifyFullPageType("https://example.com/branding", rules, {
+        pageTitle: "Branding services for startups",
+      }).type,
+    ).toBe("unmatched");
+    expect(
+      classifyFullPageType("https://example.com/services", rules, {
+        pageTitle: "Brand and web design services",
+      }).type,
+    ).toBe("unmatched");
+  });
+
   it("classifies contact and product/solutions pages", () => {
     expect(classifyFullPageType("https://example.com/contact-sales", rules).type).toBe("contact");
     expect(classifyFullPageType("https://example.com/solutions", rules).type).toBe("products_list");

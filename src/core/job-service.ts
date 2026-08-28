@@ -120,7 +120,9 @@ function resolveImportFolderId(
     asset.kind === "section"
       ? resolveSectionFolder(asset.sectionType, rulesState.rules, folderIndex)
       : (() => {
-          const classification = classifyFullPageType(asset.sourceUrl, rulesState.rules);
+          const classification = classifyFullPageType(asset.sourceUrl, rulesState.rules, {
+            pageTitle: asset.pageTitle,
+          });
           fullPageType = classification.type;
           return resolveFullPageFolder(classification.type, rulesState.rules, folderIndex);
         })();
