@@ -292,7 +292,7 @@ export async function captureFooterRevealReplacements(params: {
       fullPage: false,
     });
   } finally {
-    await restoreTopOverlays();
+    await restoreTopOverlays?.();
     await restoreFixedSideBadges();
     await readingChrome.restore();
   }

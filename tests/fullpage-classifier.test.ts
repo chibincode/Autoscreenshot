@@ -80,8 +80,18 @@ const rules = normalizeEagleFolderRules({
         "/privacy/*",
       ],
     },
-    blog_list: { folderId: "blog-list-id", pathRules: ["/blog", "/blog/page/*", "/blog/tag/*"] },
-    blog_detail: { folderId: "blog-detail-id", pathRules: ["/blog/:slug"] },
+    blog_list: {
+      folderId: "blog-list-id",
+      pathRules: [
+        "/blog",
+        "/blog/page/*",
+        "/blog/tag/*",
+        "/writing",
+        "/writing/page/*",
+        "/writing/tag/*",
+      ],
+    },
+    blog_detail: { folderId: "blog-detail-id", pathRules: ["/blog/:slug", "/writing/:slug"] },
     changelog_list: { folderId: "changelog-list-id", pathRules: ["/changelog"] },
     changelog_detail: { folderId: "changelog-detail-id", pathRules: ["/changelog/:slug"] },
     help: {
@@ -142,6 +152,20 @@ describe("classifyFullPageType", () => {
     expect(classifyFullPageType("https://blog.example.com/how-to-build", rules).type).toBe(
       "blog_detail",
     );
+  });
+
+  it("treats writing as a blog list and its direct entries as blog details", () => {
+    expect(classifyFullPageType("https://www.generalintelligencecompany.com/writing", rules).type).toBe(
+      "blog_list",
+    );
+    expect(
+      classifyFullPageType("https://www.generalintelligencecompany.com/writing/why-models-learn", rules)
+        .type,
+    ).toBe("blog_detail");
+    expect(
+      classifyFullPageType("https://www.generalintelligencecompany.com/writing/tag/research", rules)
+        .type,
+    ).toBe("blog_list");
   });
 
   it("strictly distinguishes changelog list and detail", () => {
@@ -332,6 +356,8 @@ describe("shipped eagle folder rules", () => {
       ["/projects", "projects_list"],
       ["/project/atlas", "project_detail"],
       ["/blog", "blog_list"],
+      ["/writing", "blog_list"],
+      ["/writing/the-future-of-learning", "blog_detail"],
       ["/security", "security"],
     ];
 

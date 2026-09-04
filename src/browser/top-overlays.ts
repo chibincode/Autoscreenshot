@@ -22,12 +22,18 @@ const TOP_OVERLAY_MAX_TOP = 96;
 const TOP_OVERLAY_MAX_HEIGHT = 240;
 const TOP_OVERLAY_MIN_HEIGHT = 24;
 const TOP_OVERLAY_MIN_WIDTH_RATIO = 0.35;
+const COMPACT_SEMANTIC_NAV_MIN_WIDTH = 180;
 const TOP_OVERLAY_MIN_CAPTURE_HEIGHT = 64;
 const TOP_OVERLAY_EXTRA_PADDING = 8;
 const TOP_OVERLAY_HIDDEN_ATTR = "data-autosnap-top-overlay-hidden";
 const STICKY_NORMALIZED_ATTR = "data-autosnap-sticky-normalized";
+const STICKY_ORIGINAL_TOP_ATTR = "data-autosnap-sticky-original-top";
+const STICKY_ORIGINAL_LEFT_ATTR = "data-autosnap-sticky-original-left";
+const STICKY_OFFSET_X_VAR = "--autosnap-sticky-offset-x";
+const STICKY_OFFSET_Y_VAR = "--autosnap-sticky-offset-y";
 const BOTTOM_FIXED_ATTR = "data-autosnap-bottom-fixed";
 const BOTTOM_FIXED_STATE_ATTR = "data-autosnap-bottom-fixed-state";
+const BOTTOM_STICKY_COMPOSER_ATTR = "data-autosnap-bottom-sticky-composer";
 const BOTTOM_FIXED_MAX_GAP = 96;
 const BOTTOM_FIXED_MIN_HEIGHT = 20;
 const BOTTOM_FIXED_MAX_HEIGHT = 240;
@@ -87,7 +93,7 @@ async function findTopOverlayCandidate(params: {
   viewportHeight: number;
 }): Promise<TopOverlayCandidate | null> {
   return params.page.evaluate(
-    ({ maxHeight, maxTop, minHeight, minWidthRatio, pageWidth, selectors, viewportHeight }) => {
+    ({ compactSemanticNavMinWidth, maxHeight, maxTop, minHeight, minWidthRatio, pageWidth, selectors, viewportHeight }) => {
       const elements = Array.from(document.querySelectorAll<HTMLElement>(selectors));
       const elementSet = new Set(elements);
       for (const element of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
@@ -122,6 +128,15 @@ async function findTopOverlayCandidate(params: {
         const rect = pinnedElement.getBoundingClientRect();
         const style = pinnedStyle;
         const opacity = Number(style.opacity || "1");
+        const tagName = element.tagName.toLowerCase();
+        const hasNavigationSemantics =
+          tagName === "nav" ||
+          pinnedElement.tagName.toLowerCase() === "nav" ||
+          element.getAttribute("role") === "navigation" ||
+          pinnedElement.getAttribute("role") === "navigation";
+        const hasEligibleWidth =
+          rect.width >= pageWidth * minWidthRatio ||
+          (hasNavigationSemantics && rect.width >= compactSemanticNavMinWidth);
         const isTopPinned =
           (style.position === "fixed" || style.position === "sticky") &&
           rect.top <= maxTop &&
@@ -132,7 +147,7 @@ async function findTopOverlayCandidate(params: {
           style.display === "none" ||
           style.visibility === "hidden" ||
           opacity <= 0.01 ||
-          rect.width < pageWidth * minWidthRatio ||
+          !hasEligibleWidth ||
           rect.height < minHeight ||
           rect.height > maxHeight ||
           rect.top >= viewportHeight
@@ -150,7 +165,6 @@ async function findTopOverlayCandidate(params: {
           continue;
         }
 
-        const tagName = element.tagName.toLowerCase();
         scored.push({
           selectorLabel: tagName,
           bottom: Math.max(0, rect.bottom),
@@ -176,6 +190,7 @@ async function findTopOverlayCandidate(params: {
     {
       maxHeight: TOP_OVERLAY_MAX_HEIGHT,
       maxTop: TOP_OVERLAY_MAX_TOP,
+      compactSemanticNavMinWidth: COMPACT_SEMANTIC_NAV_MIN_WIDTH,
       minHeight: TOP_OVERLAY_MIN_HEIGHT,
       minWidthRatio: TOP_OVERLAY_MIN_WIDTH_RATIO,
       pageWidth: params.pageWidth,
@@ -242,9 +257,9 @@ export async function hideTopOverlaysForCapture(params: {
   pageWidth: number;
   viewportHeight: number;
   log?: (level: "info" | "warn", message: string) => void;
-}): Promise<() => Promise<void>> {
+}): Promise<(() => Promise<void>) | null> {
   const hiddenCount = await params.page.evaluate(
-    ({ attrName, maxHeight, maxTop, minHeight, minWidthRatio, pageWidth, selectors, viewportHeight }) => {
+    ({ attrName, compactSemanticNavMinWidth, maxHeight, maxTop, minHeight, minWidthRatio, pageWidth, selectors, viewportHeight }) => {
       const elements = Array.from(document.querySelectorAll<HTMLElement>(selectors));
       const elementSet = new Set(elements);
       for (const element of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
@@ -276,6 +291,15 @@ export async function hideTopOverlaysForCapture(params: {
 
         const rect = pinnedElement.getBoundingClientRect();
         const opacity = Number(pinnedStyle.opacity || "1");
+        const tagName = element.tagName.toLowerCase();
+        const hasNavigationSemantics =
+          tagName === "nav" ||
+          pinnedElement.tagName.toLowerCase() === "nav" ||
+          element.getAttribute("role") === "navigation" ||
+          pinnedElement.getAttribute("role") === "navigation";
+        const hasEligibleWidth =
+          rect.width >= pageWidth * minWidthRatio ||
+          (hasNavigationSemantics && rect.width >= compactSemanticNavMinWidth);
         const hasMeaningfulContent =
           (element.textContent || pinnedElement.textContent || "").trim().length > 0 ||
           element.querySelector("a, button, img, svg") !== null ||
@@ -288,7 +312,7 @@ export async function hideTopOverlaysForCapture(params: {
           rect.top <= maxTop &&
           rect.bottom >= minHeight &&
           rect.top < viewportHeight &&
-          rect.width >= pageWidth * minWidthRatio &&
+          hasEligibleWidth &&
           rect.height >= minHeight &&
           rect.height <= maxHeight &&
           pinnedStyle.display !== "none" &&
@@ -305,6 +329,7 @@ export async function hideTopOverlaysForCapture(params: {
     },
     {
       attrName: TOP_OVERLAY_HIDDEN_ATTR,
+      compactSemanticNavMinWidth: COMPACT_SEMANTIC_NAV_MIN_WIDTH,
       maxHeight: TOP_OVERLAY_MAX_HEIGHT,
       maxTop: TOP_OVERLAY_MAX_TOP,
       minHeight: TOP_OVERLAY_MIN_HEIGHT,
@@ -316,7 +341,7 @@ export async function hideTopOverlaysForCapture(params: {
   );
 
   if (hiddenCount === 0) {
-    return async () => undefined;
+    return null;
   }
 
   // Descendants must be hidden explicitly too: an inherited `visibility: hidden`
@@ -343,7 +368,7 @@ export async function normalizeStickyElementsForCapture(params: {
   page: Page;
   log?: (level: "info" | "warn", message: string) => void;
 }): Promise<() => Promise<void>> {
-  const normalizedCount = await params.page.evaluate((attrName) => {
+  const normalizedCount = await params.page.evaluate(({ attrName, originalLeftAttr, originalTopAttr }) => {
     const stickyElements = Array.from(document.querySelectorAll<HTMLElement>("*")).filter((element) => {
       const style = window.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
@@ -357,9 +382,18 @@ export async function normalizeStickyElementsForCapture(params: {
       );
     });
 
-    stickyElements.forEach((element) => element.setAttribute(attrName, "true"));
+    stickyElements.forEach((element) => {
+      const rect = element.getBoundingClientRect();
+      element.setAttribute(attrName, "true");
+      element.setAttribute(originalTopAttr, String(rect.top));
+      element.setAttribute(originalLeftAttr, String(rect.left));
+    });
     return stickyElements.length;
-  }, STICKY_NORMALIZED_ATTR);
+  }, {
+    attrName: STICKY_NORMALIZED_ATTR,
+    originalLeftAttr: STICKY_ORIGINAL_LEFT_ATTR,
+    originalTopAttr: STICKY_ORIGINAL_TOP_ATTR,
+  });
 
   if (normalizedCount === 0) {
     return async () => undefined;
@@ -370,19 +404,84 @@ export async function normalizeStickyElementsForCapture(params: {
       [${STICKY_NORMALIZED_ATTR}="true"] {
         position: relative !important;
         inset: auto !important;
+        left: var(${STICKY_OFFSET_X_VAR}, 0px) !important;
+        top: var(${STICKY_OFFSET_Y_VAR}, 0px) !important;
       }
     `,
   });
-  params.log?.("info", `sticky_elements_normalized_for_fullpage count=${normalizedCount}`);
+  const positionPreservedCount = await params.page.evaluate(
+    ({ attrName, offsetXVar, offsetYVar, originalLeftAttr, originalTopAttr }) => {
+      const elements = Array.from(
+        document.querySelectorAll<HTMLElement>(`[${attrName}="true"]`),
+      )
+        .map((element) => {
+          let depth = 0;
+          let current: HTMLElement | null = element.parentElement;
+          while (current) {
+            depth += 1;
+            current = current.parentElement;
+          }
+          return { depth, element };
+        })
+        .sort((left, right) => left.depth - right.depth)
+        .map((item) => item.element);
+      let preserved = 0;
+
+      for (const element of elements) {
+        const originalTop = Number(element.getAttribute(originalTopAttr));
+        const originalLeft = Number(element.getAttribute(originalLeftAttr));
+        if (!Number.isFinite(originalTop) || !Number.isFinite(originalLeft)) {
+          continue;
+        }
+
+        const rect = element.getBoundingClientRect();
+        const offsetX = originalLeft - rect.left;
+        const offsetY = originalTop - rect.top;
+        element.style.setProperty(offsetXVar, `${offsetX}px`);
+        element.style.setProperty(offsetYVar, `${offsetY}px`);
+        if (Math.abs(offsetX) > 0.5 || Math.abs(offsetY) > 0.5) {
+          preserved += 1;
+        }
+      }
+
+      return preserved;
+    },
+    {
+      attrName: STICKY_NORMALIZED_ATTR,
+      offsetXVar: STICKY_OFFSET_X_VAR,
+      offsetYVar: STICKY_OFFSET_Y_VAR,
+      originalLeftAttr: STICKY_ORIGINAL_LEFT_ATTR,
+      originalTopAttr: STICKY_ORIGINAL_TOP_ATTR,
+    },
+  );
+  params.log?.(
+    "info",
+    `sticky_elements_normalized_for_fullpage count=${normalizedCount} positionPreserved=${positionPreservedCount}`,
+  );
 
   return async () => {
     await styleHandle
       .evaluate((node) => (node instanceof Element ? node.remove() : undefined))
       .catch(() => undefined);
     await params.page
-      .evaluate((attrName) => {
-        document.querySelectorAll(`[${attrName}]`).forEach((element) => element.removeAttribute(attrName));
-      }, STICKY_NORMALIZED_ATTR)
+      .evaluate(
+        ({ attrName, offsetXVar, offsetYVar, originalLeftAttr, originalTopAttr }) => {
+          document.querySelectorAll<HTMLElement>(`[${attrName}]`).forEach((element) => {
+            element.removeAttribute(attrName);
+            element.removeAttribute(originalLeftAttr);
+            element.removeAttribute(originalTopAttr);
+            element.style.removeProperty(offsetXVar);
+            element.style.removeProperty(offsetYVar);
+          });
+        },
+        {
+          attrName: STICKY_NORMALIZED_ATTR,
+          offsetXVar: STICKY_OFFSET_X_VAR,
+          offsetYVar: STICKY_OFFSET_Y_VAR,
+          originalLeftAttr: STICKY_ORIGINAL_LEFT_ATTR,
+          originalTopAttr: STICKY_ORIGINAL_TOP_ATTR,
+        },
+      )
       .catch(() => undefined);
   };
 }
@@ -608,66 +707,123 @@ export async function controlBottomFixedOverlaysForCapture(params: {
   viewportHeight: number;
   log?: (level: "info" | "warn", message: string) => void;
 }): Promise<BottomFixedOverlayController> {
-  const controlledCount = await params.page.evaluate(
-    ({ attrName, maxGap, maxHeight, minHeight, minWidth, viewportHeight }) => {
-      const controlled = Array.from(document.querySelectorAll<HTMLElement>("*")).filter((element) => {
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        const opacity = Number(style.opacity || "1");
-        const hasMeaningfulContent =
-          (element.textContent || "").trim().length > 0 ||
-          element.querySelector("a, button, input, select, img, svg") !== null;
-        return (
-          style.position === "fixed" &&
-          rect.bottom >= viewportHeight - maxGap &&
-          rect.top >= viewportHeight * 0.5 &&
-          rect.width >= minWidth &&
-          rect.height >= minHeight &&
-          rect.height <= maxHeight &&
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          opacity > 0.01 &&
-          hasMeaningfulContent
-        );
-      });
+  const markBottomOverlays = async () =>
+    params.page.evaluate(
+      ({ composerAttrName, fixedAttrName, maxGap, maxHeight, minHeight, minWidth, viewportHeight }) => {
+        const fixedOverlays: HTMLElement[] = [];
+        const stickyComposers: HTMLElement[] = [];
 
-      controlled.forEach((element) => element.setAttribute(attrName, "true"));
-      return controlled.length;
-    },
-    {
-      attrName: BOTTOM_FIXED_ATTR,
-      maxGap: BOTTOM_FIXED_MAX_GAP,
-      maxHeight: BOTTOM_FIXED_MAX_HEIGHT,
-      minHeight: BOTTOM_FIXED_MIN_HEIGHT,
-      minWidth: BOTTOM_FIXED_MIN_WIDTH,
-      viewportHeight: params.viewportHeight,
-    },
-  );
+        for (const element of Array.from(document.querySelectorAll<HTMLElement>("*"))) {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          const opacity = Number(style.opacity || "1");
+          const hasMeaningfulContent =
+            (element.textContent || "").trim().length > 0 ||
+            element.querySelector("a, button, input, select, img, svg") !== null;
+          const isFixedBottomOverlay =
+            style.position === "fixed" &&
+            rect.bottom >= viewportHeight - maxGap &&
+            rect.top >= viewportHeight * 0.5 &&
+            rect.width >= minWidth &&
+            rect.height >= minHeight &&
+            rect.height <= maxHeight &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            opacity > 0.01 &&
+            hasMeaningfulContent;
+          if (isFixedBottomOverlay) {
+            fixedOverlays.push(element);
+            continue;
+          }
 
-  if (controlledCount === 0) {
-    return {
-      count: 0,
-      setVisible: async () => undefined,
-      restore: async () => undefined,
-    };
-  }
+          // Some sites keep an AI/chat composer in a zero-height sticky anchor and
+          // absolutely position the visible input above it. The anchor has no visual
+          // area, so the fixed-overlay rule intentionally cannot see it. Hide this
+          // narrow widget class for every slice; unlike a CTA, it is not page content
+          // that should be preserved once at the stitched page bottom.
+          const isBottomStickyAnchor =
+            style.position === "sticky" &&
+            rect.top >= viewportHeight * 0.5 &&
+            rect.bottom >= viewportHeight - maxGap &&
+            Number.parseFloat(style.bottom || "") >= 0 &&
+            Number.parseFloat(style.bottom || "") <= maxGap &&
+            rect.height <= 1;
+          if (!isBottomStickyAnchor) {
+            continue;
+          }
 
-  await params.page.evaluate((stateAttr) => {
-    document.documentElement?.setAttribute(stateAttr, "hidden");
-  }, BOTTOM_FIXED_STATE_ATTR);
+          const hasVisibleComposer = Array.from(
+            element.querySelectorAll<HTMLElement>(
+              'textarea, input:not([type="hidden"]), [contenteditable="true"], [contenteditable="plaintext-only"]',
+            ),
+          ).some((control) => {
+            const controlStyle = window.getComputedStyle(control);
+            const controlRect = control.getBoundingClientRect();
+            return (
+              controlStyle.display !== "none" &&
+              controlStyle.visibility !== "hidden" &&
+              Number(controlStyle.opacity || "1") > 0.01 &&
+              controlRect.width > 0 &&
+              controlRect.height > 0 &&
+              controlRect.width >= minWidth &&
+              controlRect.height >= Math.min(minHeight, 16)
+            );
+          });
+          if (hasVisibleComposer) {
+            stickyComposers.push(element);
+          }
+        }
+
+        fixedOverlays.forEach((element) => element.setAttribute(fixedAttrName, "true"));
+        stickyComposers.forEach((element) => element.setAttribute(composerAttrName, "true"));
+        return { fixedCount: fixedOverlays.length, stickyComposerCount: stickyComposers.length };
+      },
+      {
+        composerAttrName: BOTTOM_STICKY_COMPOSER_ATTR,
+        fixedAttrName: BOTTOM_FIXED_ATTR,
+        maxGap: BOTTOM_FIXED_MAX_GAP,
+        maxHeight: BOTTOM_FIXED_MAX_HEIGHT,
+        minHeight: BOTTOM_FIXED_MIN_HEIGHT,
+        minWidth: BOTTOM_FIXED_MIN_WIDTH,
+        viewportHeight: params.viewportHeight,
+      },
+    );
+
+  // A few pages only mount or pin their chat composer after the first scroll.
+  // The style is installed before the scan so a newly-marked compositor is hidden
+  // immediately, including on the final slice where normal fixed CTAs remain visible.
   const styleHandle = await params.page.addStyleTag({
     content: `
       html[${BOTTOM_FIXED_STATE_ATTR}="hidden"] [${BOTTOM_FIXED_ATTR}="true"],
       html[${BOTTOM_FIXED_STATE_ATTR}="hidden"] [${BOTTOM_FIXED_ATTR}="true"] * {
         visibility: hidden !important;
       }
+      [${BOTTOM_STICKY_COMPOSER_ATTR}="true"],
+      [${BOTTOM_STICKY_COMPOSER_ATTR}="true"] * {
+        visibility: hidden !important;
+      }
     `,
   });
-  params.log?.("info", `bottom_fixed_overlay_controlled count=${controlledCount}`);
+
+  let controlledCount = 0;
+  let reportedFixedCount = 0;
+  let reportedStickyComposerCount = 0;
 
   return {
-    count: controlledCount,
+    get count() {
+      return controlledCount;
+    },
     setVisible: async (visible: boolean) => {
+      const { fixedCount, stickyComposerCount } = await markBottomOverlays();
+      controlledCount = Math.max(controlledCount, fixedCount + stickyComposerCount);
+      if (fixedCount > reportedFixedCount) {
+        reportedFixedCount = fixedCount;
+        params.log?.("info", `bottom_fixed_overlay_controlled count=${fixedCount}`);
+      }
+      if (stickyComposerCount > reportedStickyComposerCount) {
+        reportedStickyComposerCount = stickyComposerCount;
+        params.log?.("info", `bottom_sticky_composer_hidden count=${stickyComposerCount}`);
+      }
       await params.page.evaluate(
         ({ stateAttr, visibleState }) => {
           if (visibleState) {
@@ -685,11 +841,20 @@ export async function controlBottomFixedOverlaysForCapture(params: {
         .catch(() => undefined);
       await params.page
         .evaluate(
-          ({ attrName, stateAttr }) => {
+          ({ composerAttrName, fixedAttrName, stateAttr }) => {
             document.documentElement?.removeAttribute(stateAttr);
-            document.querySelectorAll(`[${attrName}]`).forEach((element) => element.removeAttribute(attrName));
+            document
+              .querySelectorAll(`[${fixedAttrName}]`)
+              .forEach((element) => element.removeAttribute(fixedAttrName));
+            document
+              .querySelectorAll(`[${composerAttrName}]`)
+              .forEach((element) => element.removeAttribute(composerAttrName));
           },
-          { attrName: BOTTOM_FIXED_ATTR, stateAttr: BOTTOM_FIXED_STATE_ATTR },
+          {
+            composerAttrName: BOTTOM_STICKY_COMPOSER_ATTR,
+            fixedAttrName: BOTTOM_FIXED_ATTR,
+            stateAttr: BOTTOM_FIXED_STATE_ATTR,
+          },
         )
         .catch(() => undefined);
     },

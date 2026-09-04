@@ -742,6 +742,101 @@ describe("core-routes-service", () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
+  it("plans writing as one blog list and one blog detail family", async () => {
+    resolveJobOptionsMock.mockReturnValue({
+      quality: 92,
+      dpr: "auto",
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      mode: "core-routes",
+      maxRoutes: 4,
+      outputDir: "./output",
+    });
+
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-core-routes-writing-"));
+    const outputDir = path.join(tmpDir, "run");
+    const manifestPath = path.join(outputDir, "manifest.json");
+    const logs: string[] = [];
+
+    discoverCoreRoutesMock.mockResolvedValue({
+      entryUrl: "https://www.generalintelligencecompany.com",
+      routes: [
+        {
+          url: "https://www.generalintelligencecompany.com/",
+          path: "/",
+          source: "nav",
+          depth: 0,
+          priorityScore: 1000,
+        },
+        {
+          url: "https://www.generalintelligencecompany.com/writing",
+          path: "/writing",
+          source: "nav",
+          depth: 0,
+          priorityScore: 980,
+        },
+        {
+          url: "https://www.generalintelligencecompany.com/writing/first",
+          path: "/writing/first",
+          source: "link",
+          depth: 1,
+          priorityScore: 970,
+        },
+        {
+          url: "https://www.generalintelligencecompany.com/writing/second",
+          path: "/writing/second",
+          source: "link",
+          depth: 1,
+          priorityScore: 960,
+        },
+        {
+          url: "https://www.generalintelligencecompany.com/about",
+          path: "/about",
+          source: "nav",
+          depth: 0,
+          priorityScore: 950,
+        },
+      ],
+    });
+
+    captureTaskMock.mockImplementation(async (task: any) => ({
+      assets: [
+        {
+          kind: "fullPage",
+          label: "full_page",
+          filePath: path.join(outputDir, `${encodeURIComponent(task.url)}.jpg`),
+          fileName: `${encodeURIComponent(task.url)}.jpg`,
+          sourceUrl: task.url,
+          quality: 92,
+          dpr: 2,
+          capturedAt: new Date().toISOString(),
+        },
+      ],
+    }));
+
+    const result = await executeCoreRoutesInstruction({
+      instruction: "open https://www.generalintelligencecompany.com",
+      options: { mode: "core-routes" },
+      runId: "job-core-writing",
+      outputDir,
+      manifestPath,
+      log: (_level, message) => {
+        logs.push(message);
+      },
+    });
+
+    expect(result.routes.map((route) => route.path)).toEqual([
+      "/",
+      "/writing",
+      "/writing/first",
+      "/about",
+    ]);
+    expect(result.routes.filter((route) => route.path === "/writing/second")).toHaveLength(0);
+    expect(logs).toContain("core_routes_pruned family=blog_detail kept=/writing/first pruned=1");
+
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
   it("retries a route once after browser crash and keeps the route successful", async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-core-routes-crash-"));
     const outputDir = path.join(tmpDir, "run");

@@ -209,7 +209,6 @@ async function captureFullPageByScrollStitch(params: {
     let sliceCount = 0;
     for (let top = 0; top < params.pageHeight; top += viewportHeight) {
       const isFinalSlice = top + viewportHeight >= params.pageHeight;
-      await bottomFixedOverlays.setVisible(isFinalSlice);
       const scrollTarget = Math.min(top, maxScroll);
       // Scroll and let the new position paint. Two frames is enough for the
       // compositor, and far cheaper than a fixed sleep once a page needs many slices.
@@ -222,6 +221,7 @@ async function captureFullPageByScrollStitch(params: {
         scrollTarget,
       );
       await params.page.waitForTimeout(FULLPAGE_SLICE_SETTLE_MS);
+      await bottomFixedOverlays.setVisible(isFinalSlice);
       await params.beforeSliceCapture?.();
 
       // Pinned headers would otherwise repeat in every slice below the first.

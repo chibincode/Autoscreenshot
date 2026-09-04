@@ -82,6 +82,17 @@ const CONSENT_KEYWORDS = [
   "sale of personal information",
 ];
 
+// Used only to discover an otherwise anonymous fixed/sticky container. Keep this
+// narrower than CONSENT_KEYWORDS so normal privacy links and legal copy cannot
+// promote their ancestors into removable capture overlays.
+const GENERIC_CONSENT_DISCOVERY_KEYWORDS = [
+  "cookie",
+  "consent",
+  "gdpr",
+  "tracking",
+  "do not sell",
+];
+
 const PROMO_KEYWORDS = [
   "newsletter",
   "subscribe",
@@ -251,10 +262,48 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
       acceptWords,
       confirmLabels,
       consentKeywords,
+      genericConsentDiscoveryKeywords,
       consentHostKeywords,
       vendorNeedles,
     }) => {
-      const nodes = Array.from(document.querySelectorAll<HTMLElement>(selector));
+      const candidateNodes = new Set(Array.from(document.querySelectorAll<HTMLElement>(selector)));
+      const consentTextOwners = new Set<HTMLElement>();
+      const consentTextWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+
+      // Some consent banners intentionally avoid library classes, ARIA roles, and
+      // semantic button/link controls. Promote only their pinned owner when a
+      // descendant contains a strong consent signal; ordinary page and footer copy
+      // stays outside this path because it has no pinned owner.
+      while (consentTextWalker.nextNode()) {
+        const nodeText = (consentTextWalker.currentNode.textContent ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (!genericConsentDiscoveryKeywords.some((keyword) => nodeText.includes(keyword))) {
+          continue;
+        }
+
+        const textOwner = consentTextWalker.currentNode.parentElement;
+        if (textOwner) {
+          consentTextOwners.add(textOwner);
+        }
+      }
+
+      for (const node of consentTextOwners) {
+        let pinnedOwner: HTMLElement | null = node;
+        while (pinnedOwner && pinnedOwner !== document.body && pinnedOwner !== document.documentElement) {
+          const ownerStyle = window.getComputedStyle(pinnedOwner);
+          if (
+            ownerStyle.position === "fixed" ||
+            ownerStyle.position === "sticky" ||
+            pinnedOwner.getAttribute("role") === "dialog" ||
+            pinnedOwner.getAttribute("aria-modal") === "true"
+          ) {
+            candidateNodes.add(pinnedOwner);
+            break;
+          }
+          pinnedOwner = pinnedOwner.parentElement;
+        }
+      }
+
+      const nodes = Array.from(candidateNodes);
       const seen = new Set<string>();
       const snapshots: OverlaySnapshot[] = [];
       const checkboxSelector =
@@ -267,6 +316,37 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
 
         const style = window.getComputedStyle(node);
         const rect = node.getBoundingClientRect();
+        let visualWidth = rect.width;
+        let visualHeight = rect.height;
+
+        // A fixed shell can intentionally reserve no layout height while an
+        // absolutely positioned child renders the actual consent card. Measure
+        // that visible subtree for classification, but keep the shell as the
+        // removable owner so the whole overlay disappears.
+        if (
+          (style.position === "fixed" || style.position === "sticky") &&
+          (rect.width === 0 || rect.height === 0)
+        ) {
+          const childRects = Array.from(node.querySelectorAll<HTMLElement>("*")).flatMap((child) => {
+            const childStyle = window.getComputedStyle(child);
+            const childRect = child.getBoundingClientRect();
+            const childVisible =
+              childStyle.display !== "none" &&
+              childStyle.visibility !== "hidden" &&
+              Number.parseFloat(childStyle.opacity || "1") > 0.02 &&
+              childRect.width > 0 &&
+              childRect.height > 0;
+            return childVisible ? [childRect] : [];
+          });
+          if (childRects.length > 0) {
+            const left = Math.min(...childRects.map((childRect) => childRect.left));
+            const right = Math.max(...childRects.map((childRect) => childRect.right));
+            const top = Math.min(...childRects.map((childRect) => childRect.top));
+            const bottom = Math.max(...childRects.map((childRect) => childRect.bottom));
+            visualWidth = Math.max(0, right - left);
+            visualHeight = Math.max(0, bottom - top);
+          }
+        }
         const hostHaystack = [
           node.id,
           node.className,
@@ -287,8 +367,8 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           style.display !== "none" &&
           style.visibility !== "hidden" &&
           Number.parseFloat(style.opacity || "1") > 0.02 &&
-          rect.width > 0 &&
-          rect.height > 0;
+          visualWidth > 0 &&
+          visualHeight > 0;
         if (!visible && !hostCandidate) {
           continue;
         }
@@ -346,8 +426,8 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           className: node.className,
           text: (node.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 400),
           position: style.position,
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
+          width: Math.round(visualWidth),
+          height: Math.round(visualHeight),
           viewportWidth: window.innerWidth,
           viewportHeight: window.innerHeight,
           acceptActionCount,
@@ -504,6 +584,7 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
       acceptWords: ACCEPT_WORDS,
       confirmLabels: CONFIRM_LABELS,
       consentKeywords: CONSENT_KEYWORDS,
+      genericConsentDiscoveryKeywords: GENERIC_CONSENT_DISCOVERY_KEYWORDS,
       consentHostKeywords: CONSENT_HOST_KEYWORDS,
       vendorNeedles: KNOWN_VENDOR_MARKERS.flatMap((marker) => marker.needles),
     },
