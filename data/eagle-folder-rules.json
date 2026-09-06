@@ -102,11 +102,18 @@
     },
     "blog_list": {
       "folderId": "K09RV5HAHZ1E5",
-      "pathRules": ["/blog", "/blog/page/*", "/blog/tag/*"]
+      "pathRules": [
+        "/blog",
+        "/blog/page/*",
+        "/blog/tag/*",
+        "/writing",
+        "/writing/page/*",
+        "/writing/tag/*"
+      ]
     },
     "blog_detail": {
       "folderId": "K09RVEOJXWLA9",
-      "pathRules": ["/blog/:slug"]
+      "pathRules": ["/blog/:slug", "/writing/:slug"]
     },
     "changelog_list": {
       "folderId": "KEK5UISMJ0V1J",

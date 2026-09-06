@@ -364,6 +364,7 @@ function buildAssetRecordLookup(assets: AssetRecord[]): Map<string, AssetRecord[
 
 function resolveAssetFolderState(
   asset: Pick<AssetRecord, "kind" | "sectionType" | "sourceUrl" | "folderOverrideId">,
+  pageTitle: string | null | undefined,
   rulesState: Awaited<ReturnType<typeof loadEagleFolderRules>>,
   folderIndex: ReturnType<typeof buildFolderIndex>,
 ): AssetFolderState {
@@ -371,7 +372,9 @@ function resolveAssetFolderState(
     asset.kind === "section"
       ? resolveSectionFolder(asset.sectionType ?? undefined, rulesState.rules, folderIndex)
       : resolveFullPageFolder(
-          classifyFullPageType(asset.sourceUrl, rulesState.rules).type,
+          classifyFullPageType(asset.sourceUrl, rulesState.rules, {
+            pageTitle,
+          }).type,
           rulesState.rules,
           folderIndex,
         );
@@ -515,6 +518,7 @@ async function decorateAssetsForResponse(
         ...asset,
         folderOverrideId: manifestAsset?.folderOverrideId ?? asset.folderOverrideId,
       },
+      manifestAsset?.pageTitle,
       rulesState,
       folderIndex,
     );
@@ -588,6 +592,7 @@ async function collectAssetsMissingFolderTarget(
         ...asset,
         folderOverrideId: manifestAsset?.folderOverrideId ?? asset.folderOverrideId,
       },
+      manifestAsset?.pageTitle,
       rulesState,
       folderIndex,
     );

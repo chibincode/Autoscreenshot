@@ -2,6 +2,7 @@ import sharp from "sharp";
 import type { Page } from "playwright";
 import { cleanupCaptureOverlays } from "./overlay-cleanup.js";
 import { waitForRenderStability } from "./render-readiness.js";
+import { FOOTER_LIKE_SELECTOR } from "./footer-like.js";
 import type { ScrollSceneLayoutMode, ScrollSceneReplacementDebug } from "../types.js";
 
 const SCENE_ATTR = "data-autosnap-scroll-scene";
@@ -9,6 +10,9 @@ const SCENE_STICKY_ATTR = "data-autosnap-scroll-scene-sticky";
 const MIN_STICKY_HEIGHT = 360;
 const MIN_STICKY_WIDTH = 320;
 const MIN_HEIGHT_RATIO = 2.5;
+const DIRECT_VIEWPORT_SCENE_MIN_HEIGHT_RATIO = 2;
+const DIRECT_VIEWPORT_SCENE_MIN_STICKY_VIEWPORT_RATIO = 0.85;
+const DIRECT_VIEWPORT_SCENE_MIN_STICKY_WIDTH_RATIO = 0.9;
 const STANDALONE_STICKY_MIN_VIEWPORT_HEIGHT_RATIO = 0.4;
 const STANDALONE_STICKY_MIN_OUTER_WIDTH_RATIO = 0.45;
 const MAX_SCENES = 3;
@@ -91,12 +95,16 @@ export function isValidScrollSceneCandidate(params: {
   const isSubstantialStandaloneScene =
     params.stickyHeight >= params.viewportHeight * STANDALONE_STICKY_MIN_VIEWPORT_HEIGHT_RATIO &&
     params.stickyWidth >= params.outerWidth * STANDALONE_STICKY_MIN_OUTER_WIDTH_RATIO;
+  const isDirectViewportScene =
+    params.stickyHeight >= params.viewportHeight * DIRECT_VIEWPORT_SCENE_MIN_STICKY_VIEWPORT_RATIO &&
+    params.stickyWidth >= params.outerWidth * DIRECT_VIEWPORT_SCENE_MIN_STICKY_WIDTH_RATIO &&
+    params.outerHeight >= params.stickyHeight * DIRECT_VIEWPORT_SCENE_MIN_HEIGHT_RATIO;
 
   return (
     params.stickyHeight >= MIN_STICKY_HEIGHT &&
     params.stickyWidth >= MIN_STICKY_WIDTH &&
     params.outerWidth >= params.stickyWidth * 0.6 &&
-    params.outerHeight >= params.stickyHeight * MIN_HEIGHT_RATIO &&
+    (params.outerHeight >= params.stickyHeight * MIN_HEIGHT_RATIO || isDirectViewportScene) &&
     params.outerHeight >= params.viewportHeight * 1.5 &&
     (params.splitLayout === true || isSubstantialStandaloneScene)
   );
@@ -673,6 +681,10 @@ export async function detectScrollSceneCandidates(page: Page): Promise<ScrollSce
       dividerMaxWidthPx,
       dividerMaxWidthRatio,
       dividerMinHeightRatio,
+      directViewportSceneMinHeightRatio,
+      directViewportSceneMinStickyViewportRatio,
+      directViewportSceneMinStickyWidthRatio,
+      footerLikeSelector,
       maxScenes,
       minStickyHeight,
       minStickyWidth,
@@ -715,6 +727,14 @@ export async function detectScrollSceneCandidates(page: Page): Promise<ScrollSce
       }> = [];
 
       for (const sticky of stickyElements) {
+        const footerOwner =
+          sticky.matches(footerLikeSelector) ||
+          sticky.closest(footerLikeSelector) ||
+          sticky.querySelector(footerLikeSelector);
+        if (footerOwner) {
+          continue;
+        }
+
         const stickyRect = sticky.getBoundingClientRect();
         if (stickyRect.height < minStickyHeight || stickyRect.width < minStickyWidth) {
           continue;
@@ -723,8 +743,13 @@ export async function detectScrollSceneCandidates(page: Page): Promise<ScrollSce
         let outer: HTMLElement | null = sticky.parentElement;
         while (outer && outer !== document.body && outer !== document.documentElement) {
           const outerRect = outer.getBoundingClientRect();
+          const isDirectViewportScene =
+            outer === sticky.parentElement &&
+            stickyRect.height >= viewportHeight * directViewportSceneMinStickyViewportRatio &&
+            stickyRect.width >= outerRect.width * directViewportSceneMinStickyWidthRatio &&
+            outerRect.height >= stickyRect.height * directViewportSceneMinHeightRatio;
           if (
-            outerRect.height >= stickyRect.height * minHeightRatio &&
+            (outerRect.height >= stickyRect.height * minHeightRatio || isDirectViewportScene) &&
             outerRect.height >= viewportHeight * 1.5 &&
             outerRect.width >= stickyRect.width * 0.6
           ) {
@@ -837,6 +862,10 @@ export async function detectScrollSceneCandidates(page: Page): Promise<ScrollSce
       dividerMaxWidthPx: DIVIDER_MAX_WIDTH_PX,
       dividerMaxWidthRatio: DIVIDER_MAX_WIDTH_RATIO,
       dividerMinHeightRatio: DIVIDER_MIN_HEIGHT_RATIO,
+      directViewportSceneMinHeightRatio: DIRECT_VIEWPORT_SCENE_MIN_HEIGHT_RATIO,
+      directViewportSceneMinStickyViewportRatio: DIRECT_VIEWPORT_SCENE_MIN_STICKY_VIEWPORT_RATIO,
+      directViewportSceneMinStickyWidthRatio: DIRECT_VIEWPORT_SCENE_MIN_STICKY_WIDTH_RATIO,
+      footerLikeSelector: FOOTER_LIKE_SELECTOR,
       maxScenes: MAX_SCENES,
       minStickyHeight: MIN_STICKY_HEIGHT,
       minStickyWidth: MIN_STICKY_WIDTH,

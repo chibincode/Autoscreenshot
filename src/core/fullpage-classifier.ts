@@ -32,8 +32,56 @@ const FULL_PAGE_MATCH_ORDER: Array<Exclude<FullPageType, "unmatched">> = [
   "security",
 ];
 
+const PROJECT_DETAIL_STRONG_TITLE_PATTERN =
+  /\b(case study|brand identity|website redesign|web redesign|platform redesign|product redesign|app redesign|web design|website design|product design|ux\/ui design)\b/i;
+const PROJECT_DETAIL_TRANSFORMATION_PATTERN = /\b(rebrand(?:ing)?|branding|redesign(?:ed|ing)?)\b/i;
+const PROJECT_DETAIL_DELIVERABLE_PATTERN =
+  /\b(website|web|platform|product|app|application|identity|development)\b/i;
+const PROJECT_DETAIL_DISCIPLINE_PATTERNS = [
+  /\bbrand(?:ing)?\b/i,
+  /\bweb(?:site)?\b/i,
+  /\bmarketing design\b/i,
+  /\bproduct design\b/i,
+  /\bplatform\b/i,
+  /\bportfolio\b/i,
+  /\bframer\b/i,
+  /\bwebflow\b/i,
+  /\binteractive\b/i,
+];
+const FLAT_PROJECT_DETAIL_EXCLUDED_SLUGS = new Set([
+  "service",
+  "services",
+  "capabilities",
+  "expertise",
+  "offerings",
+  "solutions",
+]);
+
 function isBrandBlogHost(hostname: string): boolean {
   return /^blog\./i.test(normalizeHostname(hostname));
+}
+
+function isLikelyFlatProjectDetail(pathname: string, pageTitle?: string | null): boolean {
+  const segments = normalizePathname(pathname).split("/").filter(Boolean);
+  const title = pageTitle?.trim() ?? "";
+  if (
+    segments.length !== 1 ||
+    !title ||
+    FLAT_PROJECT_DETAIL_EXCLUDED_SLUGS.has(segments[0].toLowerCase())
+  ) {
+    return false;
+  }
+
+  const disciplineSignalCount = PROJECT_DETAIL_DISCIPLINE_PATTERNS.filter((pattern) =>
+    pattern.test(title),
+  ).length;
+
+  return (
+    PROJECT_DETAIL_STRONG_TITLE_PATTERN.test(title) ||
+    (PROJECT_DETAIL_TRANSFORMATION_PATTERN.test(title) &&
+      PROJECT_DETAIL_DELIVERABLE_PATTERN.test(title)) ||
+    disciplineSignalCount >= 3
+  );
 }
 
 export function normalizePathnameForClassification(
@@ -86,6 +134,7 @@ export function matchPathRule(pathname: string, rule: string): boolean {
 export function classifyFullPageType(
   sourceUrl: string,
   rules: EagleFolderRules,
+  context: { pageTitle?: string | null } = {},
 ): { type: FullPageType; normalizedPathname: string } {
   try {
     const parsedUrl = new URL(sourceUrl);
@@ -115,6 +164,13 @@ export function classifyFullPageType(
         normalizedPathname,
       };
     }
+  }
+
+  if (isLikelyFlatProjectDetail(normalizedPathname, context.pageTitle)) {
+    return {
+      type: "project_detail",
+      normalizedPathname,
+    };
   }
 
   return {

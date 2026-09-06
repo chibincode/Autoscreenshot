@@ -66,7 +66,7 @@ const PATH_PRIORITY_GROUPS: Array<{ paths: string[]; score: number }> = [
   { paths: ["/docs", "/documentation", "/api"], score: 7_000 },
   { paths: ["/about", "/company", "/team"], score: 6_600 },
   { paths: ["/careers", "/jobs"], score: 6_300 },
-  { paths: ["/blog", "/news", "/changelog"], score: 6_000 },
+  { paths: ["/blog", "/writing", "/news", "/changelog"], score: 6_000 },
   { paths: ["/contact", "/contact-sales", "/demo", "/book-demo"], score: 5_700 },
   { paths: ["/login", "/signin"], score: 5_400 },
   { paths: ["/signup", "/register"], score: 5_100 },

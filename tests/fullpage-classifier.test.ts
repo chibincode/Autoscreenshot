@@ -80,8 +80,18 @@ const rules = normalizeEagleFolderRules({
         "/privacy/*",
       ],
     },
-    blog_list: { folderId: "blog-list-id", pathRules: ["/blog", "/blog/page/*", "/blog/tag/*"] },
-    blog_detail: { folderId: "blog-detail-id", pathRules: ["/blog/:slug"] },
+    blog_list: {
+      folderId: "blog-list-id",
+      pathRules: [
+        "/blog",
+        "/blog/page/*",
+        "/blog/tag/*",
+        "/writing",
+        "/writing/page/*",
+        "/writing/tag/*",
+      ],
+    },
+    blog_detail: { folderId: "blog-detail-id", pathRules: ["/blog/:slug", "/writing/:slug"] },
     changelog_list: { folderId: "changelog-list-id", pathRules: ["/changelog"] },
     changelog_detail: { folderId: "changelog-detail-id", pathRules: ["/changelog/:slug"] },
     help: {
@@ -144,6 +154,20 @@ describe("classifyFullPageType", () => {
     );
   });
 
+  it("treats writing as a blog list and its direct entries as blog details", () => {
+    expect(classifyFullPageType("https://www.generalintelligencecompany.com/writing", rules).type).toBe(
+      "blog_list",
+    );
+    expect(
+      classifyFullPageType("https://www.generalintelligencecompany.com/writing/why-models-learn", rules)
+        .type,
+    ).toBe("blog_detail");
+    expect(
+      classifyFullPageType("https://www.generalintelligencecompany.com/writing/tag/research", rules)
+        .type,
+    ).toBe("blog_list");
+  });
+
   it("strictly distinguishes changelog list and detail", () => {
     expect(classifyFullPageType("https://example.com/changelog", rules).type).toBe(
       "changelog_list",
@@ -194,6 +218,47 @@ describe("classifyFullPageType", () => {
     expect(classifyFullPageType("https://example.com/portfolio/atlas", rules).type).toBe(
       "project_detail",
     );
+  });
+
+  it("classifies flat portfolio case-study routes from strong page-title signals", () => {
+    expect(
+      classifyFullPageType("https://danielsun.space/dibsy", rules, {
+        pageTitle: "Dibsy - fintech brand identity and platform redesign",
+      }).type,
+    ).toBe("project_detail");
+    expect(
+      classifyFullPageType("https://danielsun.space/ruby", rules, {
+        pageTitle: "Ruby - fintech rebrand and Framer website for a YC company",
+      }).type,
+    ).toBe("project_detail");
+    expect(
+      classifyFullPageType("https://danielsun.space/clerk", rules, {
+        pageTitle: "Clerk - brand, web, and marketing design for a developer tools company",
+      }).type,
+    ).toBe("project_detail");
+    expect(
+      classifyFullPageType("https://danielsun.space/artem-astakhov", rules, {
+        pageTitle: "Artem Astakhov - personal brand and interactive Framer portfolio",
+      }).type,
+    ).toBe("project_detail");
+  });
+
+  it("does not treat weak flat-route titles as project details", () => {
+    expect(
+      classifyFullPageType("https://example.com/platform", rules, {
+        pageTitle: "AI platform for customer support",
+      }).type,
+    ).toBe("unmatched");
+    expect(
+      classifyFullPageType("https://example.com/branding", rules, {
+        pageTitle: "Branding services for startups",
+      }).type,
+    ).toBe("unmatched");
+    expect(
+      classifyFullPageType("https://example.com/services", rules, {
+        pageTitle: "Brand and web design services",
+      }).type,
+    ).toBe("unmatched");
   });
 
   it("classifies contact and product/solutions pages", () => {
@@ -291,6 +356,8 @@ describe("shipped eagle folder rules", () => {
       ["/projects", "projects_list"],
       ["/project/atlas", "project_detail"],
       ["/blog", "blog_list"],
+      ["/writing", "blog_list"],
+      ["/writing/the-future-of-learning", "blog_detail"],
       ["/security", "security"],
     ];
 
