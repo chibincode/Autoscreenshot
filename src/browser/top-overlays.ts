@@ -23,6 +23,12 @@ const TOP_OVERLAY_MAX_HEIGHT = 240;
 const TOP_OVERLAY_MIN_HEIGHT = 24;
 const TOP_OVERLAY_MIN_WIDTH_RATIO = 0.35;
 const COMPACT_SEMANTIC_NAV_MIN_WIDTH = 180;
+// Fixed conversion/download islands often have no nav semantics and are much
+// narrower than a desktop navigation bar. They should not repeat in tiles once
+// they become visible after scrolling, but ordinary in-flow CTAs must stay.
+const COMPACT_ACTION_ISLAND_MIN_WIDTH = 180;
+const COMPACT_ACTION_ISLAND_MAX_WIDTH_RATIO = 0.45;
+const COMPACT_ACTION_ISLAND_MIN_HEIGHT = 40;
 const TOP_OVERLAY_MIN_CAPTURE_HEIGHT = 64;
 const TOP_OVERLAY_EXTRA_PADDING = 8;
 const TOP_OVERLAY_HIDDEN_ATTR = "data-autosnap-top-overlay-hidden";
@@ -93,7 +99,19 @@ async function findTopOverlayCandidate(params: {
   viewportHeight: number;
 }): Promise<TopOverlayCandidate | null> {
   return params.page.evaluate(
-    ({ compactSemanticNavMinWidth, maxHeight, maxTop, minHeight, minWidthRatio, pageWidth, selectors, viewportHeight }) => {
+    ({
+      compactActionIslandMaxWidthRatio,
+      compactActionIslandMinHeight,
+      compactActionIslandMinWidth,
+      compactSemanticNavMinWidth,
+      maxHeight,
+      maxTop,
+      minHeight,
+      minWidthRatio,
+      pageWidth,
+      selectors,
+      viewportHeight,
+    }) => {
       const elements = Array.from(document.querySelectorAll<HTMLElement>(selectors));
       const elementSet = new Set(elements);
       for (const element of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
@@ -134,9 +152,18 @@ async function findTopOverlayCandidate(params: {
           pinnedElement.tagName.toLowerCase() === "nav" ||
           element.getAttribute("role") === "navigation" ||
           pinnedElement.getAttribute("role") === "navigation";
+        const hasActionControl =
+          element.querySelector("a, button") !== null || pinnedElement.querySelector("a, button") !== null;
+        const isCompactActionIsland =
+          !hasNavigationSemantics &&
+          hasActionControl &&
+          rect.width >= compactActionIslandMinWidth &&
+          rect.width <= pageWidth * compactActionIslandMaxWidthRatio &&
+          rect.height >= compactActionIslandMinHeight;
         const hasEligibleWidth =
           rect.width >= pageWidth * minWidthRatio ||
-          (hasNavigationSemantics && rect.width >= compactSemanticNavMinWidth);
+          (hasNavigationSemantics && rect.width >= compactSemanticNavMinWidth) ||
+          isCompactActionIsland;
         const isTopPinned =
           (style.position === "fixed" || style.position === "sticky") &&
           rect.top <= maxTop &&
@@ -190,6 +217,9 @@ async function findTopOverlayCandidate(params: {
     {
       maxHeight: TOP_OVERLAY_MAX_HEIGHT,
       maxTop: TOP_OVERLAY_MAX_TOP,
+      compactActionIslandMaxWidthRatio: COMPACT_ACTION_ISLAND_MAX_WIDTH_RATIO,
+      compactActionIslandMinHeight: COMPACT_ACTION_ISLAND_MIN_HEIGHT,
+      compactActionIslandMinWidth: COMPACT_ACTION_ISLAND_MIN_WIDTH,
       compactSemanticNavMinWidth: COMPACT_SEMANTIC_NAV_MIN_WIDTH,
       minHeight: TOP_OVERLAY_MIN_HEIGHT,
       minWidthRatio: TOP_OVERLAY_MIN_WIDTH_RATIO,
@@ -259,7 +289,20 @@ export async function hideTopOverlaysForCapture(params: {
   log?: (level: "info" | "warn", message: string) => void;
 }): Promise<(() => Promise<void>) | null> {
   const hiddenCount = await params.page.evaluate(
-    ({ attrName, compactSemanticNavMinWidth, maxHeight, maxTop, minHeight, minWidthRatio, pageWidth, selectors, viewportHeight }) => {
+    ({
+      attrName,
+      compactActionIslandMaxWidthRatio,
+      compactActionIslandMinHeight,
+      compactActionIslandMinWidth,
+      compactSemanticNavMinWidth,
+      maxHeight,
+      maxTop,
+      minHeight,
+      minWidthRatio,
+      pageWidth,
+      selectors,
+      viewportHeight,
+    }) => {
       const elements = Array.from(document.querySelectorAll<HTMLElement>(selectors));
       const elementSet = new Set(elements);
       for (const element of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
@@ -297,9 +340,18 @@ export async function hideTopOverlaysForCapture(params: {
           pinnedElement.tagName.toLowerCase() === "nav" ||
           element.getAttribute("role") === "navigation" ||
           pinnedElement.getAttribute("role") === "navigation";
+        const hasActionControl =
+          element.querySelector("a, button") !== null || pinnedElement.querySelector("a, button") !== null;
+        const isCompactActionIsland =
+          !hasNavigationSemantics &&
+          hasActionControl &&
+          rect.width >= compactActionIslandMinWidth &&
+          rect.width <= pageWidth * compactActionIslandMaxWidthRatio &&
+          rect.height >= compactActionIslandMinHeight;
         const hasEligibleWidth =
           rect.width >= pageWidth * minWidthRatio ||
-          (hasNavigationSemantics && rect.width >= compactSemanticNavMinWidth);
+          (hasNavigationSemantics && rect.width >= compactSemanticNavMinWidth) ||
+          isCompactActionIsland;
         const hasMeaningfulContent =
           (element.textContent || pinnedElement.textContent || "").trim().length > 0 ||
           element.querySelector("a, button, img, svg") !== null ||
@@ -329,6 +381,9 @@ export async function hideTopOverlaysForCapture(params: {
     },
     {
       attrName: TOP_OVERLAY_HIDDEN_ATTR,
+      compactActionIslandMaxWidthRatio: COMPACT_ACTION_ISLAND_MAX_WIDTH_RATIO,
+      compactActionIslandMinHeight: COMPACT_ACTION_ISLAND_MIN_HEIGHT,
+      compactActionIslandMinWidth: COMPACT_ACTION_ISLAND_MIN_WIDTH,
       compactSemanticNavMinWidth: COMPACT_SEMANTIC_NAV_MIN_WIDTH,
       maxHeight: TOP_OVERLAY_MAX_HEIGHT,
       maxTop: TOP_OVERLAY_MAX_TOP,
