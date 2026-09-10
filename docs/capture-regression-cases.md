@@ -131,6 +131,17 @@ Evidence may be either currently reproducible from local artifacts or historical
 - Site verification: Targeted `/customers` rerun produced asset `#1858`, `calendly_com_20260904_173013_fullpage_full_page_q92_dpr2.jpg`; the navigation appears only at the page top, with no copies across the customer grid or CTA section. The capture log records `top_overlay_hidden_for_tiles count=1`.
 - Status: `site-verified`, local changes not yet committed.
 
+### CR-011 Blume's delayed compact Download island repeated in stitched slices
+
+- Context: Core Pages capture of `https://blume.codes/`, job `AR5qaB0mhSZq`, asset `#1882`.
+- Evidence source: Asset `#1882` and live DOM geometry after scrolling.
+- Symptom: A compact `Get Blume / Download` bar appears again across later stitched viewports.
+- Evidence: At the initial viewport it is off-canvas (`top: -16px` after its transform); after scrolling to roughly `2160px` it becomes a visible `position: fixed` `305 x 58px` island at `top: 16px`.
+- Cause: The generic top-overlay rule accepts full-width chrome or compact elements with navigation semantics. This conversion island has neither, so it was deliberately ignored despite being fixed UI.
+- Decision: Treat a visible compact fixed top island as repeated chrome only when it has an action control, is at least `180px` wide, at least `40px` tall, and remains under `45%` of page width. In-flow Download CTAs remain untouched.
+- Regression: `removes a delayed compact fixed action island from stitched slices` in `tests/e2e.capture.test.ts`.
+- Status: `implemented`, awaiting targeted rescan.
+
 ## Existing executable coverage
 
 The current E2E suite already protects these capture families:

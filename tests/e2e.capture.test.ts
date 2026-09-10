@@ -406,6 +406,68 @@ function delayedFixedNavigationPageTemplate(): string {
   `;
 }
 
+function delayedCompactActionIslandPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Delayed Compact Action Island</title>
+        <style>
+          body {
+            margin: 0;
+            font-family: sans-serif;
+          }
+          section {
+            height: 1080px;
+            padding: 120px 64px 64px;
+            box-sizing: border-box;
+          }
+          .panel-one { background: rgb(240, 253, 244); }
+          .panel-two { background: rgb(219, 234, 254); }
+          .panel-three { background: rgb(254, 243, 199); }
+          .floating-download {
+            position: fixed;
+            top: -58px;
+            left: 50%;
+            z-index: 60;
+            width: 305px;
+            height: 58px;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            border-radius: 29px;
+            background: rgb(37, 83, 235);
+            color: white;
+            opacity: 0;
+          }
+          .floating-download.is-visible {
+            top: 16px;
+            opacity: 1;
+          }
+          .floating-download a {
+            color: white;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="floating-download"><span>Get app</span><a href="#download">Download</a></div>
+        <main>
+          <section class="panel-one"><h1>First viewport</h1></section>
+          <section class="panel-two"><h2>Second viewport before action island</h2></section>
+          <section class="panel-three"><h2>Third viewport after action island activates</h2></section>
+        </main>
+        <script>
+          const actionIsland = document.querySelector('.floating-download');
+          const updateActionIsland = () => actionIsland.classList.toggle('is-visible', window.scrollY >= 1500);
+          window.addEventListener('scroll', updateActionIsland, { passive: true });
+          updateActionIsland();
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 function compactSemanticNavigationPageTemplate(): string {
   return `
     <html>
@@ -2942,6 +3004,11 @@ beforeAll(async () => {
       res.end(delayedFixedNavigationPageTemplate());
       return;
     }
+    if (pathname.startsWith("/delayed-compact-action-island")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(delayedCompactActionIslandPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/compact-semantic-navigation")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(compactSemanticNavigationPageTemplate());
@@ -3408,6 +3475,47 @@ describe("fullPage tiled capture", () => {
     expect(secondViewport[0]).toBeGreaterThan(180);
     expect(secondViewport[1]).toBeGreaterThan(180);
     expect(secondViewport[2]).toBeGreaterThan(180);
+    expect(thirdViewport[0]).toBeGreaterThan(180);
+    expect(thirdViewport[1]).toBeGreaterThan(180);
+    expect(thirdViewport[2]).toBeGreaterThan(180);
+  }, 25_000);
+
+  it("removes a delayed compact fixed action island from stitched slices", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-delayed-action-island-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/delayed-compact-action-island`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    expect(fullPageAsset).toBeTruthy();
+    expect(logs).toContain("top_overlay_hidden_for_tiles count=1");
+
+    const secondViewport = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 1110, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    const thirdViewport = await sharp(fullPageAsset!.filePath)
+      .extract({ left: 960, top: 2200, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(secondViewport[0]).toBeGreaterThan(180);
+    expect(secondViewport[1]).toBeGreaterThan(190);
+    expect(secondViewport[2]).toBeGreaterThan(220);
     expect(thirdViewport[0]).toBeGreaterThan(180);
     expect(thirdViewport[1]).toBeGreaterThan(180);
     expect(thirdViewport[2]).toBeGreaterThan(180);
