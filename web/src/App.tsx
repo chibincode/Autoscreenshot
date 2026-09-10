@@ -295,6 +295,15 @@ interface FolderPickerState {
 interface ActionToastState {
   message: string;
   tone?: ActionToastTone;
+  durationMs?: number;
+  actionLabel?: string;
+  onAction?: () => void;
+  undoJobId?: string;
+}
+
+interface PendingQuickHistoryCleanup {
+  jobId: string;
+  expiresAt: number;
 }
 
 interface ArchivedCleanupPreview {
@@ -468,6 +477,41 @@ const ASSET_VIRTUALIZE_THRESHOLD = 36;
 const ASSET_GRID_ROW_HEIGHT = 336;
 const ASSET_GRID_OVERSCAN_ROWS = 2;
 const ARCHIVE_EXIT_MS = 220;
+const QUICK_HISTORY_UNDO_MS = 5000;
+const QUICK_HISTORY_UNDO_STORAGE_KEY = "autoscreenshot.pending-quick-history-cleanup";
+
+function readPendingQuickHistoryCleanup(): PendingQuickHistoryCleanup | null {
+  try {
+    const raw = window.localStorage.getItem(QUICK_HISTORY_UNDO_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<PendingQuickHistoryCleanup>;
+    if (typeof parsed.jobId !== "string" || !parsed.jobId || !Number.isFinite(parsed.expiresAt)) {
+      window.localStorage.removeItem(QUICK_HISTORY_UNDO_STORAGE_KEY);
+      return null;
+    }
+    return { jobId: parsed.jobId, expiresAt: parsed.expiresAt };
+  } catch {
+    return null;
+  }
+}
+
+function savePendingQuickHistoryCleanup(pendingCleanup: PendingQuickHistoryCleanup): void {
+  try {
+    window.localStorage.setItem(QUICK_HISTORY_UNDO_STORAGE_KEY, JSON.stringify(pendingCleanup));
+  } catch {
+    // The immediate in-memory recovery path remains available when storage is unavailable.
+  }
+}
+
+function clearPendingQuickHistoryCleanup(): void {
+  try {
+    window.localStorage.removeItem(QUICK_HISTORY_UNDO_STORAGE_KEY);
+  } catch {
+    // Storage cleanup is best effort only.
+  }
+}
 
 function getAssetGridColumns(width: number): number {
   if (width >= 960) {
@@ -1379,7 +1423,8 @@ const JobsListPanel = memo(function JobsListPanel({
                       type="button"
                       className="job-card-quick-action job-card-clean-action"
                       disabled={archivingJobId !== null}
-                      aria-keyshortcuts="D"
+                      aria-keyshortcuts="Shift+D"
+                      title="Shift + D moves this task to history and lets you undo it"
                       onClick={(event) => {
                         event.stopPropagation();
                         onCleanJob(job.id);
@@ -2728,6 +2773,7 @@ export function App() {
   const [folderPickerState, setFolderPickerState] = useState<FolderPickerState | null>(null);
   const [folderPickerSaving, setFolderPickerSaving] = useState(false);
   const [assetCropPending, setAssetCropPending] = useState(false);
+  const quickHistoryCleanupRef = useRef<{ jobId: string; timer: number } | null>(null);
   const [recentEagleFolderIds, setRecentEagleFolderIds] = useState<string[]>(() => {
     try {
       return parseRecentFolderIds(window.localStorage.getItem(RECENT_EAGLE_FOLDER_IDS_STORAGE_KEY));
@@ -3382,7 +3428,7 @@ export function App() {
 
     const timer = window.setTimeout(() => {
       setActionToast(null);
-    }, 2600);
+    }, actionToast.durationMs ?? 2600);
 
     return () => window.clearTimeout(timer);
   }, [actionToast]);
@@ -3879,9 +3925,13 @@ export function App() {
     });
   }, [executeCancelJob]);
 
-  const executeArchiveJob = useCallback(async (jobId: string, archived: boolean): Promise<void> => {
+  const executeArchiveJob = useCallback(async (
+    jobId: string,
+    archived: boolean,
+    showFeedback = true,
+  ): Promise<boolean> => {
     if (archivingJobIdRef.current !== null) {
-      return;
+      return false;
     }
     archivingJobIdRef.current = jobId;
     setArchivingJobId(jobId);
@@ -3909,9 +3959,13 @@ export function App() {
         await loadJobDetail(jobId);
       }
       setErrorText(null);
-      showToast(archived ? "任务已归档" : "任务已取消归档");
+      if (showFeedback) {
+        showToast(archived ? "任务已归档" : "任务已取消归档");
+      }
+      return true;
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : archived ? "归档任务失败" : "取消归档失败");
+      return false;
     } finally {
       archivingJobIdRef.current = null;
       setArchivingJobId((current) => (current === jobId ? null : current));
@@ -3997,6 +4051,91 @@ export function App() {
     });
   }, [executeCleanJobFiles, jobs, selectedJobDetail]);
 
+  const scheduleQuickHistoryCleanup = useCallback((pendingCleanup: PendingQuickHistoryCleanup): void => {
+    const remainingMs = Math.max(0, pendingCleanup.expiresAt - Date.now());
+    const timer = window.setTimeout(() => {
+      if (quickHistoryCleanupRef.current?.jobId !== pendingCleanup.jobId) {
+        return;
+      }
+      quickHistoryCleanupRef.current = null;
+      clearPendingQuickHistoryCleanup();
+      setActionToast((current) => current?.undoJobId === pendingCleanup.jobId ? null : current);
+      void executeCleanJobFiles(pendingCleanup.jobId);
+    }, remainingMs);
+    quickHistoryCleanupRef.current = { jobId: pendingCleanup.jobId, timer };
+  }, [executeCleanJobFiles]);
+
+  const undoQuickMoveToHistory = useCallback(async (): Promise<void> => {
+    const pendingCleanup = quickHistoryCleanupRef.current;
+    if (!pendingCleanup) {
+      return;
+    }
+
+    window.clearTimeout(pendingCleanup.timer);
+    quickHistoryCleanupRef.current = null;
+    clearPendingQuickHistoryCleanup();
+    setActionToast((current) => current?.undoJobId === pendingCleanup.jobId ? null : current);
+
+    const restored = await executeArchiveJob(pendingCleanup.jobId, false, false);
+    if (restored) {
+      showToast("已撤销，任务已返回队列", "info");
+    }
+  }, [executeArchiveJob, showToast]);
+
+  const quickMoveJobToHistory = useCallback(async (jobId: string): Promise<void> => {
+    if (quickHistoryCleanupRef.current) {
+      return;
+    }
+
+    const archived = await executeArchiveJob(jobId, true, false);
+    if (!archived) {
+      return;
+    }
+
+    const pendingCleanup = {
+      jobId,
+      expiresAt: Date.now() + QUICK_HISTORY_UNDO_MS,
+    };
+    savePendingQuickHistoryCleanup(pendingCleanup);
+    scheduleQuickHistoryCleanup(pendingCleanup);
+    setActionToast({
+      message: "已移至历史，将在 5 秒后清理本地文件",
+      tone: "success",
+      durationMs: QUICK_HISTORY_UNDO_MS,
+      actionLabel: "撤销",
+      onAction: () => void undoQuickMoveToHistory(),
+      undoJobId: jobId,
+    });
+  }, [executeArchiveJob, scheduleQuickHistoryCleanup, undoQuickMoveToHistory]);
+
+  useEffect(() => {
+    const pendingCleanup = readPendingQuickHistoryCleanup();
+    if (!pendingCleanup || quickHistoryCleanupRef.current) {
+      return undefined;
+    }
+
+    const remainingMs = Math.max(0, pendingCleanup.expiresAt - Date.now());
+    scheduleQuickHistoryCleanup(pendingCleanup);
+    if (remainingMs > 0) {
+      setActionToast({
+        message: `已移至历史，将在 ${Math.ceil(remainingMs / 1000)} 秒后清理本地文件`,
+        tone: "success",
+        durationMs: remainingMs,
+        actionLabel: "撤销",
+        onAction: () => void undoQuickMoveToHistory(),
+        undoJobId: pendingCleanup.jobId,
+      });
+    }
+
+    return () => {
+      const scheduledCleanup = quickHistoryCleanupRef.current;
+      if (scheduledCleanup?.jobId === pendingCleanup.jobId) {
+        window.clearTimeout(scheduledCleanup.timer);
+        quickHistoryCleanupRef.current = null;
+      }
+    };
+  }, [scheduleQuickHistoryCleanup, undoQuickMoveToHistory]);
+
   const setHoveredJob = useCallback((jobId: string | null): void => {
     hoveredJobIdRef.current = jobId;
   }, []);
@@ -4013,6 +4152,7 @@ export function App() {
     const handleMoveToHistoryShortcut = (event: globalThis.KeyboardEvent) => {
       if (
         event.key.toLowerCase() !== "d" ||
+        !event.shiftKey ||
         event.repeat ||
         event.metaKey ||
         event.ctrlKey ||
@@ -4027,17 +4167,17 @@ export function App() {
         return;
       }
       event.preventDefault();
-      cleanJobFiles(hoveredJob.id);
+      void quickMoveJobToHistory(hoveredJob.id);
     };
 
     window.addEventListener("keydown", handleMoveToHistoryShortcut);
     return () => window.removeEventListener("keydown", handleMoveToHistoryShortcut);
   }, [
     actionDialog,
-    cleanJobFiles,
     folderPickerState,
     jobs,
     previewAssetId,
+    quickMoveJobToHistory,
   ]);
 
   const executeCleanArchivedFiles = useCallback(async (): Promise<void> => {
@@ -4737,6 +4877,8 @@ export function App() {
         open={Boolean(actionToast)}
         message={actionToast?.message ?? ""}
         tone={actionToast?.tone}
+        actionLabel={actionToast?.actionLabel}
+        onAction={actionToast?.onAction}
       />
     </div>
   );

@@ -62,6 +62,7 @@ export function DesignSystemPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dangerDialogOpen, setDangerDialogOpen] = useState(false);
   const [toastOpen, setToastOpen] = useState(false);
+  const [undoToastOpen, setUndoToastOpen] = useState(false);
   const [asyncFlowPhase, setAsyncFlowPhase] = useState<AsyncFlowPhase>("idle");
   const [asyncFlowOutcome, setAsyncFlowOutcome] = useState<"success" | "failed">("success");
   const tokenNames = useMemo(() => COLOR_TOKENS.map((token) => token.name), []);
@@ -111,6 +112,14 @@ export function DesignSystemPage() {
     const timer = window.setTimeout(() => setToastOpen(false), 2400);
     return () => window.clearTimeout(timer);
   }, [toastOpen]);
+
+  useEffect(() => {
+    if (!undoToastOpen) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setUndoToastOpen(false), 5000);
+    return () => window.clearTimeout(timer);
+  }, [undoToastOpen]);
 
   useEffect(() => {
     const nextPhase: Partial<Record<AsyncFlowPhase, AsyncFlowPhase>> = {
@@ -407,6 +416,13 @@ export function DesignSystemPage() {
                   <Button size="sm" onClick={() => setToastOpen(true)}>Show toast</Button>
                 </div>
               </PreviewFrame>
+              <PreviewFrame label="Undoable history move" note="Direct action keeps a short recovery window">
+                <div className="ds-feedback-demo">
+                  <span className="ds-feedback-demo__icon ds-feedback-demo__icon--success">↶</span>
+                  <div><strong>Move first, delete after the undo window</strong><p>Undo restores the task before local files are cleaned.</p></div>
+                  <Button size="sm" onClick={() => setUndoToastOpen(true)}>Show undo</Button>
+                </div>
+              </PreviewFrame>
             </div>
           </SpecSection>
 
@@ -506,6 +522,13 @@ export function DesignSystemPage() {
         onConfirm={() => setDangerDialogOpen(false)}
       />
       <ActionToast open={toastOpen} message="Page queued for rescan" tone="success" />
+      <ActionToast
+        open={undoToastOpen}
+        message="Moved to history. Local files will be cleaned in 5 seconds."
+        tone="success"
+        actionLabel="Undo"
+        onAction={() => setUndoToastOpen(false)}
+      />
     </div>
   );
 }

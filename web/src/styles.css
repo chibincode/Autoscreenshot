@@ -3188,6 +3188,17 @@ summary:focus-visible {
   pointer-events: none;
 }
 
+.action-toast-layer-actionable {
+  right: 96px;
+}
+
+@media (max-width: 640px) {
+  .action-toast-layer-actionable {
+    right: 24px;
+    bottom: 88px;
+  }
+}
+
 .action-toast {
   min-height: 44px;
   max-width: min(420px, calc(100vw - 48px));
@@ -3217,6 +3228,30 @@ summary:focus-visible {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.9);
   box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.08);
+}
+
+.action-toast-action {
+  min-height: 28px;
+  margin-right: -8px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: inherit;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+.action-toast-action:hover,
+.action-toast-action:focus-visible {
+  background: rgba(255, 255, 255, 0.24);
+  outline: none;
 }
 
 .detail-columns {
