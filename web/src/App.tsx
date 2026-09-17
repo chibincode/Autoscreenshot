@@ -184,6 +184,7 @@ interface JobAsset {
   eagleFolderId?: string | null;
   eagleFolderPath?: string | null;
   previewUrl: string;
+  previewDisplayUrl: string;
   thumbnailUrl: string;
   thumbnailWidth: number;
   thumbnailHeight: number;
@@ -2164,8 +2165,8 @@ const PreviewModal = memo(function PreviewModal({
               ref={cropStageRef}
             >
               <img
-                key={previewAsset.previewUrl}
-                src={previewAsset.previewUrl}
+                key={previewAsset.previewDisplayUrl}
+                src={previewAsset.previewDisplayUrl}
                 alt={previewAsset.fileName}
                 className="asset-preview-image"
                 decoding="async"

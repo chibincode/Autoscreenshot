@@ -726,6 +726,63 @@ function scrollScenePageTemplate(): string {
   `;
 }
 
+function sparseScrollScenePageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Sparse Scroll Scene Demo</title>
+        <style>
+          * { box-sizing: border-box; }
+          body { margin: 0; font-family: Arial, sans-serif; background: #111; color: #f8fafc; }
+          .intro, footer { min-height: 720px; padding: 72px; }
+          .intro { background: #f8fafc; color: #111827; }
+          .sparse-scroll-scene { position: relative; height: 6600px; background: #111; }
+          .scene-window { position: sticky; top: 0; height: 100vh; overflow: hidden; }
+          .scene-title { position: absolute; top: 45%; left: 50%; transform: translate(-50%, -50%); font: 64px Georgia, serif; white-space: nowrap; }
+          .node { position: absolute; width: 10px; height: 10px; background: #6ee7b7; }
+          .node-a { top: 15%; left: 16%; } .node-b { top: 19%; right: 18%; background: #a5b4fc; }
+          .node-c { bottom: 18%; left: 18%; background: #fda4af; } .node-d { bottom: 16%; right: 18%; background: #fde68a; }
+          .scene-card { position: absolute; width: 160px; min-height: 78px; padding: 14px; border: 1px solid #475569; background: #171717; color: #e2e8f0; }
+          .scene-card strong { display: block; margin-bottom: 8px; color: #f8fafc; }
+          footer { background: #f8fafc; color: #111827; }
+        </style>
+      </head>
+      <body>
+        <section class="intro"><h1>Intro</h1><p>Small scene updates should still unfold.</p></section>
+        <section class="sparse-scroll-scene" id="sparse-scroll-scene">
+          <div class="scene-window">
+            <span class="node node-a"></span><span class="node node-b"></span><span class="node node-c"></span><span class="node node-d"></span>
+            <h2 class="scene-title">How it works</h2>
+            <article class="scene-card" id="scene-card"><strong>Data</strong><span>Small moving scene detail.</span></article>
+          </div>
+        </section>
+        <footer><h2>Footer</h2><p>Later content remains available.</p></footer>
+        <script>
+          const scene = document.getElementById('sparse-scroll-scene');
+          const card = document.getElementById('scene-card');
+          const states = [
+            { title: 'Data', left: '12%', top: '22%' },
+            { title: 'Shadow Ledger', left: '72%', top: '28%' },
+            { title: 'Always-On Agents', left: '68%', top: '62%' },
+            { title: 'Close Management', left: '16%', top: '65%' },
+          ];
+          function renderScene() {
+            const start = scene.offsetTop;
+            const end = start + scene.offsetHeight - window.innerHeight;
+            const progress = Math.max(0, Math.min(0.9999, (window.scrollY - start) / Math.max(1, end - start)));
+            const state = states[Math.min(states.length - 1, Math.floor(progress * states.length))];
+            card.style.left = state.left;
+            card.style.top = state.top;
+            card.querySelector('strong').textContent = state.title;
+          }
+          window.addEventListener('scroll', renderScene, { passive: true });
+          renderScene();
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 function shallowViewportScrollScenePageTemplate(): string {
   return `
     <html>
@@ -3033,6 +3090,11 @@ beforeAll(async () => {
       res.end(scrollSceneOverlayPageTemplate());
       return;
     }
+    if (pathname.startsWith("/sparse-scroll-scene")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(sparseScrollScenePageTemplate());
+      return;
+    }
     if (pathname.startsWith("/shallow-viewport-scroll-scene")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(shallowViewportScrollScenePageTemplate());
@@ -4444,6 +4506,34 @@ describe("scroll scene unfolding", () => {
 
     const uniqueColors = new Set(samples.map((sample) => `${sample[0]}-${sample[1]}-${sample[2]}`));
     expect(uniqueColors.size).toBeGreaterThanOrEqual(Math.min(3, firstScene.distinctFrameCount));
+  }, 20_000);
+
+  it("unfolds sparse dark scroll scenes whose small cards move between states", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-sparse-scroll-scene-"));
+    const task: ParsedTask = {
+      url: `${baseUrl}/sparse-scroll-scene`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: ["e2e"],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+    });
+
+    const fullPageAsset = result.assets.find((asset) => asset.kind === "fullPage");
+    const scene = result.scrollSceneDebug?.[0];
+    expect(fullPageAsset).toBeTruthy();
+    expect(scene?.layoutMode).toBe("sticky_only_unfold");
+    expect(scene?.distinctFrameCount).toBeGreaterThanOrEqual(2);
+
+    const metadata = await sharp(fullPageAsset!.filePath).metadata();
+    expect(metadata.height).toBeLessThan(result.fullPageSize.height - 1_800);
   }, 20_000);
 
   it("keeps later page content when a full-viewport sticky scene only owns two viewports", async () => {

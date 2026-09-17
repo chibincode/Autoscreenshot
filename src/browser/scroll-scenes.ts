@@ -21,6 +21,8 @@ const FRAME_SETTLE_MS = 220;
 const FRAME_GAP_CSS = 24;
 const DIFF_SAMPLE_SIZE = 64;
 const DIFF_THRESHOLD = 0.012;
+const SPARSE_CHANGED_PIXEL_DELTA = 32;
+const SPARSE_CHANGED_PIXEL_RATIO = 0.003;
 const SCROLL_SETTLE_TOLERANCE = 12;
 const SCROLL_SETTLE_MAX_PASSES = 14;
 const SPLIT_CONTENT_MIN_HEIGHT_RATIO = 0.85;
@@ -333,11 +335,28 @@ export async function filterDistinctSceneFrames<T extends { buffer: Buffer }>(
     }
 
     let diffTotal = 0;
+    let changedPixels = 0;
     for (let index = 0; index < signature.length; index += 1) {
-      diffTotal += Math.abs(signature[index] - previousSignature[index]);
+      const delta = Math.abs(signature[index] - previousSignature[index]);
+      diffTotal += delta;
+      if (index % 3 === 2) {
+        const pixelOffset = index - 2;
+        const maxChannelDelta = Math.max(
+          Math.abs(signature[pixelOffset] - previousSignature[pixelOffset]),
+          Math.abs(signature[pixelOffset + 1] - previousSignature[pixelOffset + 1]),
+          delta,
+        );
+        if (maxChannelDelta >= SPARSE_CHANGED_PIXEL_DELTA) {
+          changedPixels += 1;
+        }
+      }
     }
     const normalizedDiff = diffTotal / (signature.length * 255);
-    if (normalizedDiff >= DIFF_THRESHOLD) {
+    const changedPixelRatio = changedPixels / (signature.length / 3);
+    // A dark scrollytelling canvas can move one small card while most of the
+    // viewport is unchanged. Retain that meaningful state transition instead
+    // of only relying on a diluted full-frame average.
+    if (normalizedDiff >= DIFF_THRESHOLD || changedPixelRatio >= SPARSE_CHANGED_PIXEL_RATIO) {
       distinct.push(frame);
       previousSignature = signature;
     }
