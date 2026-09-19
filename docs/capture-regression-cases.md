@@ -142,6 +142,18 @@ Evidence may be either currently reproducible from local artifacts or historical
 - Regression: `removes a delayed compact fixed action island from stitched slices` in `tests/e2e.capture.test.ts`.
 - Status: `implemented`, awaiting targeted rescan.
 
+### CR-012 Nominal's sparse dark scroll scene was left as a mostly empty canvas
+
+- Context: Core Pages capture of `https://nominal.so/`, job `unbozk1hwBIa`, asset `#1872`.
+- Evidence source: Original asset, route log, and live `1920 x 1080` inspection.
+- Symptom: The homepage's `How it works` section contains large, almost empty black bands, with its small state cards scattered far apart.
+- Evidence: The `9936px` sticky scene was detected and sampled at four scroll positions, but the old `64px` full-frame average marked only one frame as distinct. The source section is intentionally dark and changes a compact card at each state, so those changes were diluted by the black canvas.
+- Cause: Scroll-scene deduplication only used a global mean color delta, which cannot recognize a sparse but meaningful state transition.
+- Decision: Keep the existing global threshold, then also retain a frame when a meaningful share of sampled pixels has a high channel-level delta. This only runs after a tall sticky scene has already qualified for unfolding.
+- Regression: `unfolds sparse dark scroll scenes whose small cards move between states` in `tests/e2e.capture.test.ts`.
+- Site verification: Targeted rerun produced asset `#1887` (`nominal_so_20260907_183545_fullpage_full_page_q92_dpr2.jpg`) at `3840 x 21920`. The scroll-scene log retained all four sampled states and reduced the unfolded scene from `9936px` to `4392px`; the console preview was reviewed after the run.
+- Status: `site-verified`.
+
 ## Existing executable coverage
 
 The current E2E suite already protects these capture families:

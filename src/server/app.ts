@@ -101,6 +101,13 @@ const EAGLE_IMPORT_ALREADY_QUEUED_MESSAGE = "Eagle import for this job is alread
 const ROUTE_RERUN_ALREADY_QUEUED_MESSAGE = "A page rerun for this job is already queued or running";
 const ROUTE_CAPTURE_ALREADY_QUEUED_MESSAGE = "A page capture for this job is already queued or running";
 const MANUAL_ROUTE_PRIORITY_SCORE = 1_100;
+const PREVIEW_MAX_WIDTH = 1600;
+const PREVIEW_MAX_HEIGHT = 7_200;
+
+function resolvePreviewWidth(imageWidth: number, imageHeight: number): number {
+  const heightBoundedWidth = Math.floor((imageWidth * PREVIEW_MAX_HEIGHT) / Math.max(1, imageHeight));
+  return Math.max(160, Math.min(imageWidth, PREVIEW_MAX_WIDTH, heightBoundedWidth));
+}
 
 function statusFromManifest(manifest: RunManifest | null): JobStatus {
   if (!manifest) {
@@ -538,6 +545,12 @@ async function decorateAssetsForResponse(
       ...asset,
       pageTitle: manifestAsset?.pageTitle,
       previewUrl: `/api/assets/${asset.id}/file?v=${cacheVersion}`,
+      previewDisplayUrl: buildThumbnailUrl(
+        asset.id,
+        resolvePreviewWidth(imageMetadata.width, imageMetadata.height),
+        80,
+        cacheVersion,
+      ),
       thumbnailUrl: buildThumbnailUrl(asset.id, thumbnailWidth, undefined, cacheVersion),
       thumbnailWidth,
       thumbnailHeight,

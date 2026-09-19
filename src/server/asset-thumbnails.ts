@@ -8,7 +8,7 @@ const THUMBNAIL_CACHE_DIR = path.resolve(process.cwd(), "data/cache/asset-thumbn
 const DEFAULT_THUMBNAIL_WIDTH = 360;
 const DEFAULT_THUMBNAIL_QUALITY = 42;
 const MIN_THUMBNAIL_WIDTH = 160;
-const MAX_THUMBNAIL_WIDTH = 960;
+const MAX_THUMBNAIL_WIDTH = 1600;
 const MIN_THUMBNAIL_QUALITY = 20;
 const MAX_THUMBNAIL_QUALITY = 80;
 

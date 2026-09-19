@@ -482,6 +482,7 @@ export interface AssetPreviewRecord extends AssetRecord {
   eagleFolderId: string | null;
   eagleFolderPath: string | null;
   previewUrl: string;
+  previewDisplayUrl: string;
   thumbnailUrl: string;
   thumbnailWidth: number;
   thumbnailHeight: number;
