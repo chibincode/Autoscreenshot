@@ -89,9 +89,15 @@ const rules = normalizeEagleFolderRules({
         "/writing",
         "/writing/page/*",
         "/writing/tag/*",
+        "/insights",
+        "/insights/page/*",
+        "/insights/tag/*",
       ],
     },
-    blog_detail: { folderId: "blog-detail-id", pathRules: ["/blog/:slug", "/writing/:slug"] },
+    blog_detail: {
+      folderId: "blog-detail-id",
+      pathRules: ["/blog/:slug", "/writing/:slug", "/insights/:slug"],
+    },
     changelog_list: { folderId: "changelog-list-id", pathRules: ["/changelog"] },
     changelog_detail: { folderId: "changelog-detail-id", pathRules: ["/changelog/:slug"] },
     help: {
@@ -165,6 +171,18 @@ describe("classifyFullPageType", () => {
     expect(
       classifyFullPageType("https://www.generalintelligencecompany.com/writing/tag/research", rules)
         .type,
+    ).toBe("blog_list");
+  });
+
+  it("treats insights as a blog list and its direct entries as blog details", () => {
+    expect(classifyFullPageType("https://www.concourse.ai/insights", rules).type).toBe(
+      "blog_list",
+    );
+    expect(
+      classifyFullPageType("https://www.concourse.ai/insights/ai-reporting-agent", rules).type,
+    ).toBe("blog_detail");
+    expect(
+      classifyFullPageType("https://www.concourse.ai/insights/tag/finance", rules).type,
     ).toBe("blog_list");
   });
 
@@ -358,6 +376,8 @@ describe("shipped eagle folder rules", () => {
       ["/blog", "blog_list"],
       ["/writing", "blog_list"],
       ["/writing/the-future-of-learning", "blog_detail"],
+      ["/insights", "blog_list"],
+      ["/insights/ai-reporting-agent", "blog_detail"],
       ["/security", "security"],
     ];
 

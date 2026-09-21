@@ -520,6 +520,25 @@ describe("server api", () => {
       await writeTestJpeg(routeImage, 1600, 2400);
       const next: RunManifest = {
         ...existing,
+        routes: [
+          ...(existing.routes ?? []).filter((route) => route.url !== params.routeUrl),
+          {
+            url: params.routeUrl,
+            path: params.routePath,
+            title: params.routeTitle ?? null,
+            source: params.routeSource,
+            depth: params.routeDepth,
+            priorityScore: params.routePriorityScore,
+            status: "success",
+            error: null,
+            attemptCount: params.routeAttemptCount + 1,
+            startedAt: new Date().toISOString(),
+            finishedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            assetCount: 1,
+            lastExecutedAt: new Date().toISOString(),
+          },
+        ],
         assets: [
           ...existing.assets.filter((asset) => asset.sourceUrl !== params.routeUrl),
           {
@@ -1759,6 +1778,83 @@ describe("server api", () => {
     expect(nextRouteAssets).toHaveLength(1);
     expect(nextRouteAssets[0]?.id).not.toBe(previousRouteAssets[0]?.id);
     expect(nextRouteAssets[0]?.fileName).toContain("retry-");
+  });
+
+  it("adds one missed same-domain page to a completed Core Pages job", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and map core routes",
+        mode: "core-routes",
+        maxRoutes: 8,
+      },
+    });
+    const createData = createResponse.json() as { jobId: string };
+    const initialStatus = await waitForTerminalStatus(app, createData.jobId);
+
+    const addResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${createData.jobId}/add-route`,
+      payload: { url: "https://www.example.com/missed-page?utm_source=test#details" },
+    });
+    expect(addResponse.statusCode).toBe(202);
+
+    await waitForNextTerminalStatus(app, createData.jobId, initialStatus);
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: `/api/jobs/${createData.jobId}`,
+    });
+    const detail = detailResponse.json() as {
+      routes: Array<{ url: string; path: string; source: string; status: string; attemptCount: number }>;
+      assets: Array<{ sourceUrl: string }>;
+      manifest: { routes: Array<{ url: string; source: string }> };
+    };
+    const addedRoute = detail.routes.find((route) => route.path === "/missed-page");
+    expect(addedRoute).toMatchObject({
+      url: "https://example.com/missed-page",
+      source: "manual",
+      status: "success",
+      attemptCount: 1,
+    });
+    expect(detail.assets.some((asset) => asset.sourceUrl === "https://example.com/missed-page")).toBe(true);
+    expect(detail.manifest.routes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: "https://example.com/missed-page", source: "manual" }),
+    ]));
+  });
+
+  it("rejects external and duplicate pages when manually adding a Core Pages route", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/jobs",
+      payload: {
+        instruction: "open https://example.com and map core routes",
+        mode: "core-routes",
+        maxRoutes: 8,
+      },
+    });
+    const createData = createResponse.json() as { jobId: string };
+    await waitForTerminalStatus(app, createData.jobId);
+
+    const externalResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${createData.jobId}/add-route`,
+      payload: { url: "https://outside.example.net/missed-page" },
+    });
+    expect(externalResponse.statusCode).toBe(400);
+    expect(externalResponse.json()).toEqual({
+      error: "Custom pages must use the same domain as this Core Pages job",
+    });
+
+    const duplicateResponse = await app.inject({
+      method: "POST",
+      url: `/api/jobs/${createData.jobId}/add-route`,
+      payload: { url: "https://example.com/pricing#duplicate" },
+    });
+    expect(duplicateResponse.statusCode).toBe(409);
+    expect(duplicateResponse.json()).toEqual({
+      error: "This page is already included in the Core Pages job",
+    });
   });
 
   it("shows general Eagle folders for unmatched page and unknown section assets", async () => {

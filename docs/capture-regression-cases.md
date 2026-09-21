@@ -154,6 +154,26 @@ Evidence may be either currently reproducible from local artifacts or historical
 - Site verification: Targeted rerun produced asset `#1887` (`nominal_so_20260907_183545_fullpage_full_page_q92_dpr2.jpg`) at `3840 x 21920`. The scroll-scene log retained all four sampled states and reduced the unfolded scene from `9936px` to `4392px`; the console preview was reviewed after the run.
 - Status: `site-verified`.
 
+### CR-013 Joshua Baker's separate header blur covered the image strip
+
+- Context: Core Pages capture of `https://www.joshuabaker.com/about`, job `IwPpEv0JVPmS`, original asset `#1939`.
+- Evidence source: Original screenshot and live `1920 x 1080` DOM inspection.
+- Symptom: A dark horizontal bar cuts through the Leadership image strip at the first viewport seam.
+- Cause: The sticky header is normalized into the document before stitching, but its separate `aria-hidden` fixed blur and gradient layer remains pinned at the top of every scrolled slice.
+- Decision: Hide an inert fixed visual layer on later slices only when it matches the width and height of a pinned or normalized header. Preserve the first viewport's header treatment.
+- Regression: `hides a separate fixed header backdrop over content at viewport seams` in `tests/e2e.capture.test.ts`.
+- Site verification: Targeted `/about` rerun produced asset `#1957` (`joshuabaker_com_20260918_160944_fullpage_full_page_q92_dpr2.jpg`). The Leadership image strip is continuous, and the capture log records `top_overlay_hidden_for_tiles count=2`.
+- Status: `site-verified`.
+
+### CR-014 Insights routes were not treated as Blog pages
+
+- Context: Core Pages capture of `https://www.concourse.ai/insights/ai-reporting-agent`, job `IZ4GrIEmFXpv`, asset `#1970`.
+- Evidence: `/insights` is Concourse's content index and individual reports are direct children, but the shipped folder rules only recognized `/blog` and the explicitly validated `/writing` alias.
+- Cause: Core-route scoring and full-page classification had no bounded rule for the top-level `insights` content family, so reports resolved to the general page folder.
+- Decision: Recognize only the top-level `/insights` alias: its root plus pagination/tag paths are Blog List, while a direct child is Blog Detail. Give the alias the same discovery priority as `/blog`; do not match nested paths that merely contain the word `insights`.
+- Regression: `treats insights as a blog list and its direct entries as blog details` in `tests/fullpage-classifier.test.ts` and `scores core template routes above generic pages` in `tests/route-discovery.test.ts`.
+- Status: `covered`; refresh the task detail to confirm the existing selected asset resolves to Blog Detail.
+
 ## Existing executable coverage
 
 The current E2E suite already protects these capture families:

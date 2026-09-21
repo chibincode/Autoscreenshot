@@ -57,9 +57,9 @@ import type {
   JobStatus,
   JobMode,
   JobRecord,
+  RouteTargetRecord,
   PluginContextEagleItem,
   PluginContextResponse,
-  RouteTargetRecord,
   RouteTargetSummary,
   RunManifest,
 } from "../types.js";
@@ -2234,11 +2234,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       reply.code(400);
       return { error: "add-route is only available for core-routes mode jobs" };
     }
+    if (job.cleanedAt) {
+      reply.code(409);
+      return { error: "Local files were cleaned for this history task" };
+    }
     if (!isTerminalJobStatus(job.status)) {
       reply.code(400);
       return { error: "add-route is only available after the core-routes job has finished" };
     }
-
     const requestedUrl = request.body?.url?.trim() ?? "";
     if (!requestedUrl || !isHttpUrl(requestedUrl)) {
       reply.code(400);
@@ -2247,7 +2250,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
 
     const requestedRouteUrl = new URL(requestedUrl);
     requestedRouteUrl.hash = "";
-    const routeUrl = requestedRouteUrl.toString();
+    let routeUrl = requestedRouteUrl.toString();
     const existingRoutes = repo.listRouteTargets(job.id);
     const baseUrl = getJobBaseUrl(job, existingRoutes);
     const baseHostname = baseUrl ? extractNormalizedHostname(baseUrl) : null;
@@ -2261,7 +2264,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       return { error: "Custom pages must use the same domain as this Core Pages job" };
     }
 
+    const base = new URL(baseUrl!);
+    requestedRouteUrl.protocol = base.protocol;
+    requestedRouteUrl.host = base.host;
     const rulesState = await loadEagleFolderRules(process.cwd());
+    if (rulesState.rules.urlNormalization.stripQuery) {
+      requestedRouteUrl.search = "";
+    }
+    routeUrl = requestedRouteUrl.toString();
     const normalizedRouteUrl = normalizeUrlForComparison(routeUrl, rulesState.rules.urlNormalization);
     if (!normalizedRouteUrl) {
       reply.code(400);
@@ -2294,7 +2304,6 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       jobId: job.id,
       at: new Date().toISOString(),
     });
-
     reply.code(202);
     return { jobId: job.id, routeId: route.id, status: "queued" };
   });

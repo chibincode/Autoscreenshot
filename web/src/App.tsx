@@ -542,7 +542,7 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
     let message = await response.text();
     try {
       const payload = JSON.parse(message) as { error?: unknown };
-      if (typeof payload.error === "string") {
+      if (typeof payload.error === "string" && payload.error.trim()) {
         message = payload.error;
       }
     } catch {

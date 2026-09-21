@@ -108,12 +108,15 @@
         "/blog/tag/*",
         "/writing",
         "/writing/page/*",
-        "/writing/tag/*"
+        "/writing/tag/*",
+        "/insights",
+        "/insights/page/*",
+        "/insights/tag/*"
       ]
     },
     "blog_detail": {
       "folderId": "K09RVEOJXWLA9",
-      "pathRules": ["/blog/:slug", "/writing/:slug"]
+      "pathRules": ["/blog/:slug", "/writing/:slug", "/insights/:slug"]
     },
     "changelog_list": {
       "folderId": "KEK5UISMJ0V1J",

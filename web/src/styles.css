@@ -2893,6 +2893,46 @@ summary:focus-visible {
   cursor: not-allowed;
 }
 
+.add-page-modal {
+  width: min(500px, 100%);
+}
+
+.add-page-field {
+  display: grid;
+  gap: 8px;
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.add-page-field input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid rgba(17, 24, 39, 0.1);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.92rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.add-page-field input:focus {
+  outline: 2px solid rgba(10, 132, 255, 0.36);
+  outline-offset: 1px;
+  border-color: rgba(10, 132, 255, 0.44);
+}
+
+.add-page-error {
+  margin: -8px 0 0;
+  color: #b42318;
+  font-size: 0.86rem;
+}
+
 .confirm-secondary-button {
   background: var(--surface-soft);
   color: var(--text);

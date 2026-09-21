@@ -301,6 +301,8 @@ export async function hideTopOverlaysForCapture(params: {
       minWidthRatio,
       pageWidth,
       selectors,
+      stickyNormalizedAttr,
+      stickyOriginalTopAttr,
       viewportHeight,
     }) => {
       const elements = Array.from(document.querySelectorAll<HTMLElement>(selectors));
@@ -313,6 +315,19 @@ export async function hideTopOverlaysForCapture(params: {
         }
       }
       const hidden = new Set<HTMLElement>();
+      const header = document.querySelector<HTMLElement>("header");
+      const headerStyle = header ? window.getComputedStyle(header) : null;
+      const headerRect = header?.getBoundingClientRect();
+      const headerWasSticky =
+        header?.getAttribute(stickyNormalizedAttr) === "true" &&
+        Number(header.getAttribute(stickyOriginalTopAttr)) <= maxTop;
+      const hasPinnedHeader =
+        headerRect &&
+        headerStyle &&
+        (headerWasSticky ||
+          ((headerStyle.position === "fixed" || headerStyle.position === "sticky") &&
+            headerRect.top <= maxTop &&
+            headerRect.bottom >= minHeight));
 
       for (const element of elements) {
         let pinnedElement: HTMLElement | null = element;
@@ -358,6 +373,16 @@ export async function hideTopOverlaysForCapture(params: {
           pinnedElement.querySelector("a, button, img, svg") !== null ||
           element.tagName.toLowerCase() === "canvas" ||
           pinnedElement.tagName.toLowerCase() === "canvas";
+        const isHeaderBackdrop =
+          hasPinnedHeader &&
+          pinnedElement !== header &&
+          pinnedStyle.position === "fixed" &&
+          pinnedElement.getAttribute("aria-hidden") === "true" &&
+          pinnedStyle.pointerEvents === "none" &&
+          (pinnedStyle.backgroundImage !== "none" || pinnedStyle.backdropFilter !== "none") &&
+          Math.abs(rect.left - headerRect.left) <= 8 &&
+          rect.width >= headerRect.width * 0.9 &&
+          rect.height <= headerRect.height + 16;
 
         if (
           (pinnedStyle.position === "fixed" || pinnedStyle.position === "sticky") &&
@@ -370,7 +395,7 @@ export async function hideTopOverlaysForCapture(params: {
           pinnedStyle.display !== "none" &&
           pinnedStyle.visibility !== "hidden" &&
           opacity > 0.01 &&
-          hasMeaningfulContent
+          (hasMeaningfulContent || isHeaderBackdrop)
         ) {
           pinnedElement.setAttribute(attrName, "true");
           hidden.add(pinnedElement);
@@ -391,6 +416,8 @@ export async function hideTopOverlaysForCapture(params: {
       minWidthRatio: TOP_OVERLAY_MIN_WIDTH_RATIO,
       pageWidth: params.pageWidth,
       selectors: TOP_OVERLAY_SELECTORS,
+      stickyNormalizedAttr: STICKY_NORMALIZED_ATTR,
+      stickyOriginalTopAttr: STICKY_ORIGINAL_TOP_ATTR,
       viewportHeight: params.viewportHeight,
     },
   );

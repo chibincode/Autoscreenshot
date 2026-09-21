@@ -169,6 +169,29 @@ function smoothScrollPageTemplate(): string {
   `;
 }
 
+function splitHeaderBackdropPageTemplate(): string {
+  return `
+    <html>
+      <head>
+        <title>Split Header Backdrop</title>
+        <style>
+          body { margin: 0; background: #050505; color: white; font-family: sans-serif; }
+          .header-backdrop { position: fixed; z-index: 40; inset: 0 0 auto; height: 64px; pointer-events: none; background: linear-gradient(rgba(3, 3, 3, .9), rgba(3, 3, 3, .8)); backdrop-filter: blur(24px); }
+          header { position: sticky; z-index: 50; top: 0; height: 64px; display: flex; align-items: center; padding: 0 32px; box-sizing: border-box; }
+          .intro { height: 850px; padding: 80px; box-sizing: border-box; }
+          .image-strip { height: 300px; background: #ee4545; }
+          .outro { min-height: 1000px; padding: 80px; }
+        </style>
+      </head>
+      <body>
+        <div class="header-backdrop" aria-hidden="true"></div>
+        <header><nav>Sticky navigation</nav></header>
+        <main><section class="intro"><h1>About</h1></section><div class="image-strip"></div><section class="outro"><h2>Later content</h2></section></main>
+      </body>
+    </html>
+  `;
+}
+
 function fixedCanvasRulerPageTemplate(): string {
   return `
     <html>
@@ -3056,6 +3079,11 @@ beforeAll(async () => {
       res.end(genericFixedNavigationPageTemplate());
       return;
     }
+    if (pathname.startsWith("/split-header-backdrop")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(splitHeaderBackdropPageTemplate());
+      return;
+    }
     if (pathname.startsWith("/delayed-fixed-navigation")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(delayedFixedNavigationPageTemplate());
@@ -3368,6 +3396,37 @@ describe("top overlay capture", () => {
 });
 
 describe("fullPage tiled capture", () => {
+  it("hides a separate fixed header backdrop over content at viewport seams", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-split-header-backdrop-"));
+    const logs: string[] = [];
+    const task: ParsedTask = {
+      url: `${baseUrl}/split-header-backdrop`,
+      waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }],
+      image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 },
+      tags: [],
+      eagle: {},
+    };
+
+    const result = await captureTask(task, {
+      outputDir,
+      sectionScope: "classic",
+      classicMaxSections: 10,
+      log: (_level, message) => logs.push(message),
+    });
+    const asset = result.assets.find((item) => item.kind === "fullPage");
+    expect(asset).toBeTruthy();
+    expect(logs, logs.join("\n")).toContain("top_overlay_hidden_for_tiles count=1");
+
+    const seamPixel = await sharp(asset!.filePath)
+      .extract({ left: 960, top: 1100, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+    expect(seamPixel[0]).toBeGreaterThan(180);
+    expect(seamPixel[1]).toBeLessThan(120);
+  }, 40_000);
+
   it("keeps a fixed canvas ruler once instead of repeating it at every viewport seam", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-fixed-canvas-ruler-"));
     const logs: string[] = [];

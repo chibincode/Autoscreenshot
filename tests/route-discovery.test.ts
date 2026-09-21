@@ -7,12 +7,14 @@ describe("route-discovery", () => {
     const pricing = scoreCoreRoute("/pricing", "nav", 0);
     const security = scoreCoreRoute("/security", "nav", 0);
     const writing = scoreCoreRoute("/writing", "nav", 0);
+    const insights = scoreCoreRoute("/insights", "nav", 0);
     const generic = scoreCoreRoute("/random-page", "link", 2);
 
     expect(home).toBeGreaterThan(pricing);
     expect(pricing).toBeGreaterThan(generic);
     expect(security).toBeGreaterThan(generic);
     expect(writing).toBeGreaterThan(generic);
+    expect(insights).toBeGreaterThan(generic);
   });
 
   it("applies exclusion rules", () => {
