@@ -29,6 +29,22 @@ function makeSnapshot(partial: Partial<OverlaySnapshot>): OverlaySnapshot {
 }
 
 describe("overlay cleanup classification", () => {
+  it("classifies compact dismissible booking widgets even below the normal overlay width", () => {
+    expect(classifyOverlaySnapshot(makeSnapshot({
+      position: "sticky", width: 160, height: 156,
+      bookingActionCount: 1, closeActionCount: 1,
+    }))).toEqual({ type: "promo", vendor: "generic" });
+  });
+
+  it("preserves inline booking cards, large sticky sections, and undismissible CTAs", () => {
+    const booking = { bookingActionCount: 1, closeActionCount: 1, text: "Book a demo Choose a time" };
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...booking, position: "static" }))).toBeNull();
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...booking, position: "sticky", width: 1200, height: 700 }))).toBeNull();
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...booking, closeActionCount: 0 }))).toBeNull();
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...booking, tagName: "NAV" }))).toBeNull();
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...booking, role: "navigation" }))).toBeNull();
+  });
+
   it("classifies Osano cookie banners as consent overlays", () => {
     const result = classifyOverlaySnapshot(
       makeSnapshot({

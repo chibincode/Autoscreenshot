@@ -32,6 +32,7 @@ export interface OverlaySnapshot {
   confirmActionCount: number;
   checkboxLikeControlCount: number;
   hostSignalCount: number;
+  bookingActionCount?: number;
 }
 
 export interface OverlayClassification {
@@ -108,6 +109,18 @@ const PROMO_KEYWORDS = [
   "contact us later",
 ];
 
+const BOOKING_LABELS = [
+  "book a demo",
+  "book demo",
+  "schedule a demo",
+  "schedule demo",
+  "book a call",
+  "schedule a call",
+  "book a meeting",
+  "schedule a meeting",
+  "choose a time",
+];
+
 const REJECT_LABELS = [
   "reject all",
   "reject",
@@ -126,6 +139,7 @@ const CLOSE_LABELS = [
   "skip",
   "continue to site",
   "maybe later",
+  "collapse booking card",
 ];
 
 const ACCEPT_WORDS = ["accept", "agree", "allow all", "yes, i agree"];
@@ -225,14 +239,28 @@ function isOverlayGeometry(snapshot: OverlaySnapshot): boolean {
 }
 
 export function classifyOverlaySnapshot(snapshot: OverlaySnapshot): OverlayClassification | null {
-  if (!isOverlayGeometry(snapshot)) {
-    return null;
-  }
-
   const haystack = normalizeText(
     [snapshot.role, snapshot.ariaLabel, snapshot.id, snapshot.className, snapshot.text].join(" "),
   );
   const vendor = detectVendor(haystack);
+
+  const compactBookingWidget =
+    (snapshot.position === "fixed" || snapshot.position === "sticky") &&
+    !["NAV", "HEADER"].includes(snapshot.tagName.toUpperCase()) &&
+    snapshot.role !== "navigation" && snapshot.role !== "menubar" &&
+    (snapshot.bookingActionCount ?? 0) > 0 &&
+    snapshot.closeActionCount > 0 &&
+    snapshot.width >= 60 && snapshot.height >= 60 &&
+    snapshot.width <= Math.min(480, snapshot.viewportWidth * 0.45) &&
+    snapshot.height <= Math.min(500, snapshot.viewportHeight * 0.7);
+
+  if (compactBookingWidget) {
+    return { type: "promo", vendor: "generic" };
+  }
+
+  if (!isOverlayGeometry(snapshot)) {
+    return null;
+  }
 
   if (
     vendor !== "generic" ||
@@ -265,8 +293,25 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
       genericConsentDiscoveryKeywords,
       consentHostKeywords,
       vendorNeedles,
+      bookingLabels,
     }) => {
       const candidateNodes = new Set(Array.from(document.querySelectorAll<HTMLElement>(selector)));
+      // Scheduling widgets can have anonymous, zero-sized sticky shells. Discover
+      // their pinned owner through the action label, then classify its visible subtree.
+      for (const action of Array.from(document.querySelectorAll<HTMLElement>(actionSelector))) {
+        const label = [action.getAttribute("aria-label"), action.getAttribute("title"), action.innerText]
+          .join(" ").replace(/\s+/g, " ").trim().toLowerCase();
+        if (!bookingLabels.some((phrase) => label.includes(phrase))) continue;
+        let owner: HTMLElement | null = action;
+        while (owner && owner !== document.body && owner !== document.documentElement) {
+          const style = window.getComputedStyle(owner);
+          if (style.position === "fixed" || style.position === "sticky") {
+            candidateNodes.add(owner);
+            break;
+          }
+          owner = owner.parentElement;
+        }
+      }
       const consentTextOwners = new Set<HTMLElement>();
       const consentTextWalker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
 
@@ -387,6 +432,7 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
         let rejectActionCount = 0;
         let closeActionCount = 0;
         let confirmActionCount = 0;
+        let bookingActionCount = 0;
         const actions = Array.from(node.querySelectorAll<HTMLElement>(actionSelector));
         for (const action of actions) {
           const text = [
@@ -414,6 +460,9 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           if (confirmLabels.some((word) => text.includes(word))) {
             confirmActionCount += 1;
           }
+          if (bookingLabels.some((word) => text.includes(word))) {
+            bookingActionCount += 1;
+          }
         }
         const checkboxLikeControlCount = node.querySelectorAll(checkboxSelector).length;
 
@@ -436,6 +485,7 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           confirmActionCount,
           checkboxLikeControlCount,
           hostSignalCount,
+          bookingActionCount,
         });
       }
 
@@ -587,6 +637,7 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
       genericConsentDiscoveryKeywords: GENERIC_CONSENT_DISCOVERY_KEYWORDS,
       consentHostKeywords: CONSENT_HOST_KEYWORDS,
       vendorNeedles: KNOWN_VENDOR_MARKERS.flatMap((marker) => marker.needles),
+      bookingLabels: BOOKING_LABELS,
     },
   );
 }

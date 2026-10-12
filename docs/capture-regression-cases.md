@@ -174,16 +174,41 @@ Evidence may be either currently reproducible from local artifacts or historical
 - Regression: `treats insights as a blog list and its direct entries as blog details` in `tests/fullpage-classifier.test.ts` and `scores core template routes above generic pages` in `tests/route-discovery.test.ts`.
 - Status: `covered`; refresh the task detail to confirm the existing selected asset resolves to Blog Detail.
 
+### CR-015 Loops' floating booking card repeated in stitched screenshots
+
+- Context: Core Pages capture of `https://loops.so/`, job `Eni3MzSOctoF`, asset `#1998`; image annotation `x=3427, y=1732, width=411, height=474` in the `3840 x 14386` original.
+- Symptom: The right-side Book a demo card appeared in every viewport slice.
+- Evidence: Live DOM inspection found an anonymous `position: sticky` shell with a zero-width, zero-height rect. Absolutely positioned children render the visible `192 x 220 CSS px` card. The booking link has `aria-label="Book a demo"`, and a sibling button has `aria-label="Collapse booking card"`.
+- Cause: Overlay discovery did not consider booking actions, and ordinary minimum overlay width excluded compact scheduling widgets.
+- Decision: Discover the nearest fixed/sticky owner of a booking action and remove it only when its visible subtree is compact and includes a dismiss control. Preserve inline booking links, large sticky content, undismissible CTAs, and semantic navigation/header containers.
+- Regression: `removes anonymous zero-size sticky booking widgets without deleting inline demo CTAs` in `tests/e2e.capture.test.ts`; classification boundary tests in `tests/overlay-cleanup.test.ts`.
+- Site verification: One-page verification job `3TuYYYKd6eXy` produced asset `#2032`, `loops_so_20261012_174102_fullpage_full_page_q92_dpr2.jpg`, still `3840 x 14386`. The booking card is absent throughout the image; the inline hero demo button and footer remain. Logs confirm `overlay_action phase=pre_capture action=hide_dom_offscreen type=promo vendor=generic`. Original asset `#1998` was retained for comparison.
+- Validation (2026-10-12): Full capture E2E plus overlay classification suite: `53 passed`, `7 skipped`; server TypeScript build and `git diff --check` passed. Additional navigation/header classification guards passed their targeted tests.
+- Status: `site-verified`.
+
+### CR-016 Sundrop's narrow floating download button repeated
+
+- Context: Core Pages capture of `https://trysundrop.app/`, job `46R9SPLprs1u`, asset `#2010`; annotation `x=3477, y=2172, width=337, height=151` in the `3840 x 21436` original.
+- Symptom: The top-right Get the app button appeared repeatedly after scrolling.
+- Evidence: Live DOM at `1920 x 1080` shows a fixed `146 x 44 CSS px` owner at `top: 20px`, with one absolutely positioned App Store link. The link starts transparent and becomes visible on scroll. Hero and closing download buttons are ordinary page content.
+- Cause: Compact non-navigation action islands required at least `180px` width; direct fixed links were also missed because action detection only considered descendants.
+- Decision: Include the pinned element itself in action detection. Extend top-overlay handling to single-action surfaces at least `96px` wide and `32px` high, capped at `96px` height and `45%` viewport width. Keep existing navigation and larger-island thresholds. First-slice content stays; later slices hide eligible fixed controls. Do not change inline CTAs, tiny tools, narrow multi-action groups, or tall content cards.
+- Regression: `deduplicates narrow fixed download buttons while retaining inline downloads` validates delayed/initial buttons and image pixels. `bounds narrow single-action cleanup and restores hidden controls` checks exclusions and reversible hiding.
+- Site verification (2026-10-12): Independent job `fRx6jvRgRR9u`, asset `#2033`, remains `3840 x 21436`. Full-image inspection and a `1920 x 1080` in-app preview confirm no repeated floating download button and intact hero/closing CTAs. Original asset `#2010` was retained. Evidence: `/private/tmp/sundrop-fixed-desktop.jpg`, `/private/tmp/sundrop-before-after.png` (original left, fixed right).
+- Validation: Six targeted E2E tests passed, including delayed action islands, compact navigation, sticky hero cards and bottom CTAs; server TypeScript build passed.
+- Status: `site-verified`.
+
 ## Existing executable coverage
 
 The current E2E suite already protects these capture families:
 
 | Family | Protected behavior | Representative reports |
 | --- | --- | --- |
-| Fixed top chrome | Full-width and compact semantic navigation, announcements, reading progress, and table-of-contents controls appear once | CoreWeave, Incident.io, Giga, Daniel Sun, General Intelligence Company |
+| Fixed top chrome | Full-width and compact semantic navigation, narrow single-action download buttons, announcements, reading progress, and table-of-contents controls appear once | CoreWeave, Incident.io, Giga, Daniel Sun, General Intelligence Company, Sundrop |
 | Fixed bottom chrome | Region selectors and compact CTAs appear only at the page bottom; sticky AI composers are excluded from every slice | Samsara, ianneo, Glide |
 | Fixed side badges | Narrow side badges appear once | Khasiyev / Awwwards badge |
 | Consent overlays | Banners, launchers, inline cards, delayed modals, and anonymous zero-height fixed shells are removed | Jarsy, General Intelligence Company, and other cookie controls |
+| Booking overlays | Compact dismissible fixed/sticky scheduling cards are removed; inline demo CTAs stay visible | Loops |
 | Render readiness | Delayed hero images, lazy backgrounds, viewport media, and WebGL are settled before capture | Aave, Bevel, Incident.io |
 | Scroll scenes | Standalone and split sticky scenes unfold without deleting adjacent or later content | Fruitful, Granola |
 | Footer reveals | Transformed and sticky footers keep their final visual state without replacing page content | Vercel/footer reports and Fruitful |

@@ -14,7 +14,8 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Crop } from "lucide-react";
+import { Crop, SquareDashedMousePointer } from "lucide-react";
+import { AssetAnnotator } from "./AssetAnnotator";
 import {
   buildFeedbackContext,
   buildAssetLookupIndex,
@@ -2089,6 +2090,7 @@ const PreviewModal = memo(function PreviewModal({
   const imageWrapRef = useRef<HTMLDivElement | null>(null);
   const cropStageRef = useRef<HTMLDivElement | null>(null);
   const [cropMode, setCropMode] = useState(false);
+  const [annotationMode, setAnnotationMode] = useState(false);
   const [cropToolMode, setCropToolMode] = useState<CropToolMode>(readLastCropToolMode);
   const [cropKeepHeight, setCropKeepHeight] = useState(previewAsset.imageHeight);
   const [cropBandStartY, setCropBandStartY] = useState(0);
@@ -2129,6 +2131,7 @@ const PreviewModal = memo(function PreviewModal({
 
   useEffect(() => {
     setCropMode(false);
+    setAnnotationMode(false);
     setCropKeepHeight(previewAsset.imageHeight);
     setCropBandStartY(0);
     setCropBandEndY(0);
@@ -2274,7 +2277,23 @@ const PreviewModal = memo(function PreviewModal({
             Close
           </button>
         </div>
-        <div className="asset-preview-modal-body">
+        {annotationMode ? (
+          <AssetAnnotator
+            key={`${previewAsset.id}:${previewAsset.previewDisplayUrl}`}
+            src={previewAsset.previewUrl}
+            fileName={previewAsset.fileName}
+            width={previewAsset.imageWidth}
+            height={previewAsset.imageHeight}
+            draftKey={`autoscreenshot.annotations.v1:${previewAsset.id}:${previewAsset.previewDisplayUrl}`}
+            context={buildFeedbackContext({
+              job: { id: selectedJobDetail.job.id, mode: selectedJobMode, status: selectedJobDetail.job.status },
+              asset: previewAsset,
+              assetUrl: new URL(previewAsset.previewUrl, window.location.origin).href,
+              route: previewRoute,
+            })}
+            onDone={() => setAnnotationMode(false)}
+          />
+        ) : <div className="asset-preview-modal-body">
           <div className="asset-preview-image-wrap" ref={imageWrapRef}>
             <div
               className={cx("asset-preview-crop-stage", cropMode && "asset-preview-crop-stage-active")}
@@ -2382,6 +2401,9 @@ const PreviewModal = memo(function PreviewModal({
                   >
                     <Crop className="asset-preview-primary-action-icon" aria-hidden="true" />
                     <span>Crop image</span>
+                  </button>
+                  <button type="button" className="annotation-open-action" onClick={() => setAnnotationMode(true)}>
+                    <SquareDashedMousePointer size={16} aria-hidden="true" /> Annotate
                   </button>
                   <div
                     className={cx(
@@ -2710,7 +2732,7 @@ const PreviewModal = memo(function PreviewModal({
               ) : null}
             </dl>
           </aside>
-        </div>
+        </div>}
       </div>
     </div>
   );

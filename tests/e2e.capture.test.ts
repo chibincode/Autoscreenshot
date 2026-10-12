@@ -3089,6 +3089,27 @@ beforeAll(async () => {
       res.end(delayedFixedNavigationPageTemplate());
       return;
     }
+    if (pathname.startsWith("/narrow-fixed-download")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<html><head><title>Narrow fixed download buttons</title><style>
+        body { margin: 0; background: white; }
+        main { height: 3240px; padding-top: 300px; box-sizing: border-box; }
+        .late { position: fixed; top: 20px; right: 24px; width: 146px; height: 44px; }
+        .late a { position: absolute; inset: 0; opacity: 0; background: rgb(230, 20, 20); }
+        .late.visible a { opacity: 1; }
+        .initial { position: fixed; top: 20px; left: 24px; width: 110px; height: 36px; background: rgb(20, 200, 40); }
+        .inline { display: block; margin: 0 auto; width: 146px; height: 44px; background: rgb(20, 40, 230); }
+      </style></head><body>
+        <a class="initial" href="#download">Get the app</a>
+        <div class="late"><a href="#download">Get the app</a></div>
+        <main><a class="inline" href="#download">Download from App Store</a></main>
+        <script>
+          const update = () => document.querySelector('.late').classList.toggle('visible', scrollY >= 1100);
+          addEventListener('scroll', update); update();
+        </script>
+      </body></html>`);
+      return;
+    }
     if (pathname.startsWith("/delayed-compact-action-island")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(delayedCompactActionIslandPageTemplate());
@@ -3157,6 +3178,25 @@ beforeAll(async () => {
     if (pathname.startsWith("/consent-banner")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(consentBannerPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/anonymous-booking-widget")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><title>Booking widget fixture</title>
+        <style>
+          body { margin: 0; background: white; }
+          main { height: 3300px; }
+          .cta { display: block; width: 220px; height: 90px; background: rgb(0, 180, 0); }
+          .rail { position: absolute; inset: 0 0 auto; height: 3300px; pointer-events: none; }
+          .anchor { position: sticky; top: 600px; margin-left: auto; width: 0; height: 0; }
+          .face { position: absolute; right: 24px; width: 160px; height: 156px; background: rgb(255, 0, 0); pointer-events: auto; }
+        </style></head><body>
+          <main><h1>Booking fixture</h1><a class="cta" href="/demo">Book a demo</a></main>
+          <div class="rail"><div class="anchor"><style>.unused { color: red; }</style>
+            <div class="face"><a href="/demo" aria-label="Book a demo">Book a<span>demo</span></a>
+              <button aria-label="Collapse booking card">x</button><span>Choose a time</span>
+            </div></div></div>
+        </body></html>`);
       return;
     }
     if (pathname.startsWith("/anonymous-cookie-banner")) {
@@ -3343,6 +3383,35 @@ describe("fullPage stabilization", () => {
 });
 
 describe("top overlay capture", () => {
+  it("bounds narrow single-action cleanup and restores hidden controls", async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+      await page.setContent(`<style>
+        body { margin: 0; }
+        .pinned { position: fixed; top: 20px; width: 146px; height: 44px; }
+        #tall { height: 120px; }
+        #tiny { width: 80px; }
+        #inline { width: 146px; height: 44px; }
+      </style>
+      <a class="pinned" id="eligible" href="#">Download</a>
+      <div class="pinned" id="tall"><a href="#">Content card</a></div>
+      <div class="pinned" id="tiny"><button>Tool</button></div>
+      <nav class="pinned" id="nav"><a href="#">Menu</a></nav>
+      <div class="pinned" id="multiple"><a href="#">One</a><a href="#">Two</a></div>
+      <div id="inline"><a href="#">Download</a></div>`);
+      const visibility = () => page.locator('[id]').evaluateAll((elements) =>
+        Object.fromEntries(elements.map((element) => [element.id, getComputedStyle(element).visibility])));
+      const restore = await hideTopOverlaysForCapture({ page, pageWidth: 1920, viewportHeight: 1080 });
+      expect(await visibility()).toEqual({ eligible: "hidden", tall: "visible", tiny: "visible",
+        nav: "visible", multiple: "visible", inline: "visible" });
+      await restore?.();
+      expect((await visibility()).eligible).toBe("visible");
+    } finally {
+      await browser.close();
+    }
+  });
+
   it("hides a centered narrow fixed navigation after the first slice", async () => {
     const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
@@ -3641,6 +3710,32 @@ describe("fullPage tiled capture", () => {
     expect(thirdViewport[1]).toBeGreaterThan(180);
     expect(thirdViewport[2]).toBeGreaterThan(180);
   }, 25_000);
+
+  it("deduplicates narrow fixed download buttons while retaining inline downloads", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-narrow-download-"));
+    const logs: string[] = [];
+    const result = await captureTask({
+      url: `${baseUrl}/narrow-fixed-download`, waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }], image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 }, tags: [], eagle: {},
+    }, { outputDir, sectionScope: "classic", classicMaxSections: 10,
+      log: (_level, message) => logs.push(message) });
+    const asset = result.assets.find((item) => item.kind === "fullPage")!;
+    expect(asset).toBeTruthy();
+    const { data, info } = await sharp(asset.filePath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    let red = 0, green = 0, blue = 0;
+    for (let i = 0; i < data.length; i += info.channels) {
+      if (data[i] > 180 && data[i + 1] < 70 && data[i + 2] < 70) red++;
+      if (data[i] < 70 && data[i + 1] > 150 && data[i + 2] < 90) green++;
+      if (data[i] < 70 && data[i + 1] < 90 && data[i + 2] > 180) blue++;
+    }
+    expect(info.height).toBe(3240);
+    expect(red).toBe(0);
+    expect(green).toBeGreaterThan(3000);
+    expect(green).toBeLessThan(4200);
+    expect(blue).toBeGreaterThan(5000);
+    expect(logs.some((message) => message.includes("top_overlay_hidden_for_tiles"))).toBe(true);
+  }, 30_000);
 
   it("keeps a compact semantic navigation only in the first viewport", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-compact-semantic-navigation-"));
@@ -4746,6 +4841,29 @@ describe("scroll scene unfolding", () => {
 });
 
 describe("overlay cleanup", () => {
+  it("removes anonymous zero-size sticky booking widgets without deleting inline demo CTAs", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-booking-"));
+    const logs: string[] = [];
+    const result = await captureTask({
+      url: `${baseUrl}/anonymous-booking-widget`, waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }], image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 }, tags: [], eagle: {},
+    }, { outputDir, sectionScope: "classic", classicMaxSections: 10, log: (_level, message) => logs.push(message) });
+    const asset = result.assets.find((item) => item.kind === "fullPage")!;
+    expect(asset).toBeTruthy();
+    const { data, info } = await sharp(asset.filePath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    let redPixels = 0;
+    let greenPixels = 0;
+    for (let offset = 0; offset < data.length; offset += info.channels) {
+      if (data[offset] > 180 && data[offset + 1] < 70 && data[offset + 2] < 70) redPixels += 1;
+      if (data[offset] < 70 && data[offset + 1] > 120 && data[offset + 2] < 70) greenPixels += 1;
+    }
+    expect(redPixels).toBe(0);
+    expect(greenPixels).toBeGreaterThan(15000);
+    expect(info.height).toBeGreaterThanOrEqual(3300);
+    expect(logs.some((message) => message.includes("type=promo vendor=generic"))).toBe(true);
+  }, 25000);
+
   it("removes Osano-style consent banners before full-page capture", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-consent-"));
     const logs: string[] = [];

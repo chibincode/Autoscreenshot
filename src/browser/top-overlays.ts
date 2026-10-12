@@ -29,6 +29,9 @@ const COMPACT_SEMANTIC_NAV_MIN_WIDTH = 180;
 const COMPACT_ACTION_ISLAND_MIN_WIDTH = 180;
 const COMPACT_ACTION_ISLAND_MAX_WIDTH_RATIO = 0.45;
 const COMPACT_ACTION_ISLAND_MIN_HEIGHT = 40;
+const SINGLE_ACTION_MIN_WIDTH = 96;
+const SINGLE_ACTION_MIN_HEIGHT = 32;
+const SINGLE_ACTION_MAX_HEIGHT = 96;
 const TOP_OVERLAY_MIN_CAPTURE_HEIGHT = 64;
 const TOP_OVERLAY_EXTRA_PADDING = 8;
 const TOP_OVERLAY_HIDDEN_ATTR = "data-autosnap-top-overlay-hidden";
@@ -104,6 +107,9 @@ async function findTopOverlayCandidate(params: {
       compactActionIslandMinHeight,
       compactActionIslandMinWidth,
       compactSemanticNavMinWidth,
+      singleActionMinWidth,
+      singleActionMinHeight,
+      singleActionMaxHeight,
       maxHeight,
       maxTop,
       minHeight,
@@ -152,14 +158,17 @@ async function findTopOverlayCandidate(params: {
           pinnedElement.tagName.toLowerCase() === "nav" ||
           element.getAttribute("role") === "navigation" ||
           pinnedElement.getAttribute("role") === "navigation";
-        const hasActionControl =
-          element.querySelector("a, button") !== null || pinnedElement.querySelector("a, button") !== null;
+        const actionCount = pinnedElement.querySelectorAll("a, button").length +
+          (pinnedElement.matches("a, button") ? 1 : 0);
+        const isSingleAction = actionCount === 1 &&
+          rect.width >= singleActionMinWidth &&
+          rect.height >= singleActionMinHeight && rect.height <= singleActionMaxHeight;
         const isCompactActionIsland =
           !hasNavigationSemantics &&
-          hasActionControl &&
-          rect.width >= compactActionIslandMinWidth &&
+          actionCount > 0 &&
           rect.width <= pageWidth * compactActionIslandMaxWidthRatio &&
-          rect.height >= compactActionIslandMinHeight;
+          ((rect.width >= compactActionIslandMinWidth && rect.height >= compactActionIslandMinHeight) ||
+            isSingleAction);
         const hasEligibleWidth =
           rect.width >= pageWidth * minWidthRatio ||
           (hasNavigationSemantics && rect.width >= compactSemanticNavMinWidth) ||
@@ -221,6 +230,9 @@ async function findTopOverlayCandidate(params: {
       compactActionIslandMinHeight: COMPACT_ACTION_ISLAND_MIN_HEIGHT,
       compactActionIslandMinWidth: COMPACT_ACTION_ISLAND_MIN_WIDTH,
       compactSemanticNavMinWidth: COMPACT_SEMANTIC_NAV_MIN_WIDTH,
+      singleActionMinWidth: SINGLE_ACTION_MIN_WIDTH,
+      singleActionMinHeight: SINGLE_ACTION_MIN_HEIGHT,
+      singleActionMaxHeight: SINGLE_ACTION_MAX_HEIGHT,
       minHeight: TOP_OVERLAY_MIN_HEIGHT,
       minWidthRatio: TOP_OVERLAY_MIN_WIDTH_RATIO,
       pageWidth: params.pageWidth,
@@ -295,6 +307,9 @@ export async function hideTopOverlaysForCapture(params: {
       compactActionIslandMinHeight,
       compactActionIslandMinWidth,
       compactSemanticNavMinWidth,
+      singleActionMinWidth,
+      singleActionMinHeight,
+      singleActionMaxHeight,
       maxHeight,
       maxTop,
       minHeight,
@@ -355,14 +370,17 @@ export async function hideTopOverlaysForCapture(params: {
           pinnedElement.tagName.toLowerCase() === "nav" ||
           element.getAttribute("role") === "navigation" ||
           pinnedElement.getAttribute("role") === "navigation";
-        const hasActionControl =
-          element.querySelector("a, button") !== null || pinnedElement.querySelector("a, button") !== null;
+        const actionCount = pinnedElement.querySelectorAll("a, button").length +
+          (pinnedElement.matches("a, button") ? 1 : 0);
+        const isSingleAction = actionCount === 1 &&
+          rect.width >= singleActionMinWidth &&
+          rect.height >= singleActionMinHeight && rect.height <= singleActionMaxHeight;
         const isCompactActionIsland =
           !hasNavigationSemantics &&
-          hasActionControl &&
-          rect.width >= compactActionIslandMinWidth &&
+          actionCount > 0 &&
           rect.width <= pageWidth * compactActionIslandMaxWidthRatio &&
-          rect.height >= compactActionIslandMinHeight;
+          ((rect.width >= compactActionIslandMinWidth && rect.height >= compactActionIslandMinHeight) ||
+            isSingleAction);
         const hasEligibleWidth =
           rect.width >= pageWidth * minWidthRatio ||
           (hasNavigationSemantics && rect.width >= compactSemanticNavMinWidth) ||
@@ -410,6 +428,9 @@ export async function hideTopOverlaysForCapture(params: {
       compactActionIslandMinHeight: COMPACT_ACTION_ISLAND_MIN_HEIGHT,
       compactActionIslandMinWidth: COMPACT_ACTION_ISLAND_MIN_WIDTH,
       compactSemanticNavMinWidth: COMPACT_SEMANTIC_NAV_MIN_WIDTH,
+      singleActionMinWidth: SINGLE_ACTION_MIN_WIDTH,
+      singleActionMinHeight: SINGLE_ACTION_MIN_HEIGHT,
+      singleActionMaxHeight: SINGLE_ACTION_MAX_HEIGHT,
       maxHeight: TOP_OVERLAY_MAX_HEIGHT,
       maxTop: TOP_OVERLAY_MAX_TOP,
       minHeight: TOP_OVERLAY_MIN_HEIGHT,
