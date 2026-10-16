@@ -6,6 +6,7 @@ import {
   canFocusDebugAsset,
   findAssetForRoute,
   findAssetForRouteFromIndex,
+  findAssetsForRouteFromIndex,
   formatPendingImportLabel,
   getCoreRoutePreviewState,
 } from "../web/src/asset-feedback.js";
@@ -120,6 +121,21 @@ describe("asset feedback ui helpers", () => {
     expect(index.assetById.get(11)?.label).toBe("hero");
     expect(index.assetsBySourceUrl.get("https://example.com/pricing")?.length).toBe(2);
     expect(matched?.id).toBe(12);
+  });
+
+  it("keeps full asset metadata and identity when both interfaces share route assets", () => {
+    const asset = {
+      id: 22, kind: "fullPage" as const, sectionType: null, label: "full_page", fileName: "page.jpg",
+      quality: 92, dpr: 2, capturedAt: "2026-10-16T12:00:00.000Z", selectedForImport: true,
+      importStatus: "pending_confirmation" as const, importOk: false, importError: null, eagleId: null,
+      previewUrl: "/api/assets/22/file", ...thumbnailFields, sourceUrl: "https://example.com/pricing",
+      resolvedEagleFolderId: "pricing-folder", canRestoreOriginal: true,
+    };
+    const index = buildAssetLookupIndex([asset]);
+    const route = { url: asset.sourceUrl };
+    expect(findAssetForRouteFromIndex(route, index)?.resolvedEagleFolderId).toBe("pricing-folder");
+    expect(findAssetsForRouteFromIndex(route, index)[0]).toBe(asset);
+    expect(index.assetById.get(22)?.canRestoreOriginal).toBe(true);
   });
 
   it("only allows explicit debug focus for section assets with sectionDebug", () => {

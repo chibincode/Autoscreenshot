@@ -6,6 +6,7 @@ import { DesignSystemPage } from "./design-system/DesignSystemPage";
 import { resolveAppSurface } from "./app-route";
 import "./styles.css";
 import "./ui/button.css";
+import "./workspace-versions.css";
 
 const root = document.getElementById("root");
 if (!root) {

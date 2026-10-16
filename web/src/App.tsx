@@ -14,8 +14,11 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Crop, SquareDashedMousePointer } from "lucide-react";
+import { Archive, ArrowLeft, CheckCircle2, ChevronDown, Crop, Folder, FolderInput, Image as ImageIcon, Plus, RefreshCw, SquareDashedMousePointer, X } from "lucide-react";
+import { readInterfaceVersion, rememberInterfaceVersion, shortTaskDate, siteLabel, type InterfaceVersion } from "./interface-version";
+import { CaptureSurface, InterfaceVersionSwitch, NewCaptureButton, NewPagesToolbar, NewWorkspaceHeader, type PagePresentation } from "./WorkspaceChrome";
 import { AssetAnnotator } from "./AssetAnnotator";
+import { ImageMinimap } from "./ImageMinimap";
 import {
   buildFeedbackContext,
   buildAssetLookupIndex,
@@ -1108,6 +1111,7 @@ const AssetFolderControl = memo(function AssetFolderControl({
   asset,
   disabled,
   onOpenFolderPicker,
+  newAppearance = false,
 }: {
   asset: Pick<
     JobAsset,
@@ -1120,10 +1124,12 @@ const AssetFolderControl = memo(function AssetFolderControl({
   >;
   disabled: boolean;
   onOpenFolderPicker: (assetId: number) => void;
+  newAppearance?: boolean;
 }) {
   const isImported = asset.importStatus === "imported";
   const currentPath = asset.targetEagleFolderPath ?? "";
-  const displayName = currentPath ? formatFolderNameForCard(currentPath) : "";
+  const folderName = currentPath ? formatFolderNameForCard(currentPath) : "";
+  const displayName = newAppearance ? folderName.replace(/^Page_/, "").replaceAll("_", " ") : folderName;
   const displayPath = currentPath ? formatFolderPathForCard(currentPath, 38) : "";
   const showSecondaryPath = Boolean(displayPath) && displayPath !== displayName;
   const needsFolderSelection =
@@ -1139,6 +1145,7 @@ const AssetFolderControl = memo(function AssetFolderControl({
       </div>
       {isImported ? (
         <div className="asset-folder-readonly" title={currentPath || undefined}>
+          {newAppearance ? <Folder aria-hidden="true" /> : null}
           {displayName ? (
             <div className="asset-folder-path-stack">
               <span className="asset-folder-path-primary">{displayName}</span>
@@ -1155,7 +1162,9 @@ const AssetFolderControl = memo(function AssetFolderControl({
           disabled={disabled}
           onClick={() => onOpenFolderPicker(asset.id)}
           title={currentPath || undefined}
+          aria-label={newAppearance ? `Destination folder: ${displayName || "Choose folder"}` : undefined}
         >
+          {newAppearance ? <Folder aria-hidden="true" /> : null}
           {displayName ? (
             <span className="asset-folder-path-stack">
               <span className="asset-folder-path-primary">{displayName}</span>
@@ -1164,7 +1173,7 @@ const AssetFolderControl = memo(function AssetFolderControl({
           ) : (
             <span className="asset-folder-path asset-folder-path-empty">Choose an Eagle folder</span>
           )}
-          <span className="asset-folder-trigger-chevron" aria-hidden="true" />
+          {newAppearance ? <ChevronDown aria-hidden="true" /> : <span className="asset-folder-trigger-chevron" aria-hidden="true" />}
         </button>
       )}
       {asset.folderSelectionSource === "manual" &&
@@ -1195,6 +1204,8 @@ const AssetCard = memo(function AssetCard({
   onOpenPreview,
   onFocusDebug,
   trailingToolbarAction,
+  newAppearance = false,
+  heading,
 }: {
   asset: JobAsset;
   selected: boolean;
@@ -1207,6 +1218,8 @@ const AssetCard = memo(function AssetCard({
   onOpenPreview: (assetId: number) => void;
   onFocusDebug: (asset: JobAsset) => void;
   trailingToolbarAction?: ReactNode;
+  newAppearance?: boolean;
+  heading?: string;
 }) {
   const needsFolderSelection =
     asset.selectedForImport && asset.importStatus !== "imported" && asset.folderSelectionSource === "missing";
@@ -1215,9 +1228,11 @@ const AssetCard = memo(function AssetCard({
   return (
     <article
       data-asset-id={asset.id}
+      data-import-status={asset.importStatus}
       data-needs-folder={needsFolderSelection ? "true" : undefined}
       className={cx(
         compact ? "route-asset-card" : "asset-card",
+        newAppearance && "new-asset-card",
         !asset.selectedForImport && (compact ? "route-asset-card-unselected" : "asset-card-unselected"),
         selected && (compact ? "route-asset-card-focused" : "asset-card-focused"),
         needsFolderSelection && (compact ? "route-asset-card-needs-folder" : "asset-card-needs-folder"),
@@ -1227,6 +1242,7 @@ const AssetCard = memo(function AssetCard({
         <label className="asset-select-control">
           <input
             type="checkbox"
+            aria-label={newAppearance ? `Select ${heading ?? asset.label} for import` : undefined}
             checked={asset.selectedForImport}
             disabled={assetActionsDisabled}
             onChange={(event) => void onToggleSelection(asset.id, event.target.checked)}
@@ -1256,16 +1272,26 @@ const AssetCard = memo(function AssetCard({
       <button
         type="button"
         className={cx("asset-preview-trigger", compact && "core-route-preview-trigger")}
+        aria-label={newAppearance ? `Review ${heading ?? asset.label}` : undefined}
         onClick={() => onOpenPreview(asset.id)}
       >
         <AssetThumbnail asset={asset} alt={asset.fileName} />
+        {newAppearance && asset.imageWidth > 0 && asset.imageHeight > 0 ? <span className="new-thumbnail-size"><ImageIcon aria-hidden="true" />{asset.imageWidth.toLocaleString()} × {asset.imageHeight.toLocaleString()}</span> : null}
       </button>
+      {newAppearance ? (
+        <div className="new-asset-heading">
+          <button type="button" onClick={() => onOpenPreview(asset.id)} title={heading ?? asset.label}>{heading ?? asset.label}</button>
+          <CheckCircle2 aria-label="Captured successfully" />
+        </div>
+      ) : null}
       <div className={compact ? "route-asset-meta" : "asset-meta"}>
-        {!compact ? <strong>{asset.label}</strong> : null}
+        {!compact && !newAppearance ? <strong>{asset.label}</strong> : null}
+        {newAppearance && !compact ? <span>{formatAssetImportStatus(asset.importStatus, asset.selectedForImport, asset.importError)}</span> : null}
         {compact ? <span>{formatAssetImportStatus(asset.importStatus, asset.selectedForImport, asset.importError)}</span> : null}
       </div>
       <div className={compact ? "route-asset-folder-wrap" : "asset-folder-wrap"}>
         <AssetFolderControl
+          newAppearance={newAppearance}
           asset={asset}
           disabled={assetActionsDisabled || folderSaving}
           onOpenFolderPicker={onOpenFolderPicker}
@@ -1296,6 +1322,7 @@ const JobsListPanel = memo(function JobsListPanel({
   onCleanJob,
   onPreviousPage,
   onNextPage,
+  newAppearance = false,
 }: {
   jobs: JobSummary[];
   selectedJobId: string | null;
@@ -1310,6 +1337,7 @@ const JobsListPanel = memo(function JobsListPanel({
   onCleanJob: (jobId: string) => void;
   onPreviousPage: () => void;
   onNextPage: () => void;
+  newAppearance?: boolean;
 }) {
   return (
     <section className="jobs-list">
@@ -1361,7 +1389,7 @@ const JobsListPanel = memo(function JobsListPanel({
                             pending: job.pendingConfirmationCount,
                           })
                         : null;
-                    return <StatusBadge status={job.status} label={badge?.label} tone={badge?.tone} />;
+                    return <StatusBadge status={job.status} label={newAppearance && job.status === "awaiting_confirmation" ? "Ready to import" : badge?.label} tone={badge?.tone} />;
                   })()}
                   {job.cleanedAt ? (
                     <span className="job-cleaned-pill">files cleaned</span>
@@ -1371,7 +1399,7 @@ const JobsListPanel = memo(function JobsListPanel({
                 </div>
               </div>
               <div className="job-title">
-                {job.sourceUrl ? <ExternalLink href={job.sourceUrl} label={job.sourceUrl} /> : "No URL"}
+                {job.sourceUrl ? newAppearance ? <span title={job.sourceUrl}>{siteLabel(job.sourceUrl)}</span> : <ExternalLink href={job.sourceUrl} label={job.sourceUrl} /> : "No URL"}
               </div>
               {shouldShowJobInstruction(job) ? (
                 <div className="job-instruction">
@@ -1379,13 +1407,13 @@ const JobsListPanel = memo(function JobsListPanel({
                 </div>
               ) : null}
               <div className="job-stats">
-                <span>Assets {job.assetCount}</span>
+                <span>{newAppearance ? `${job.assetCount} ${job.assetCount === 1 ? "capture" : "captures"}` : `Assets ${job.assetCount}`}</span>
                 <span>Pending {job.pendingConfirmationCount}</span>
                 <span>Imported {job.importSuccessCount}</span>
                 <span>Failed {job.importFailedCount}</span>
               </div>
               <div className="job-meta-row">
-                <span className="job-time">{formatDate(job.createdAt)}</span>
+                <span className="job-time" title={newAppearance ? formatDate(job.createdAt) : undefined}>{newAppearance ? shortTaskDate(job.createdAt) : formatDate(job.createdAt)}</span>
                 {job.cleanedAt ? (
                   <div className="job-cleaned-note">Files cleaned · {formatDate(job.cleanedAt)}</div>
                 ) : job.archivedAt ? (
@@ -1433,7 +1461,7 @@ const JobsListPanel = memo(function JobsListPanel({
                       }}
                       aria-label={job.archivedAt ? "Clean local files" : "Move job to history"}
                     >
-                      {job.archivedAt ? "Clean files" : "Move to history"}
+                      {newAppearance ? <Archive aria-hidden="true" /> : job.archivedAt ? "Clean files" : "Move to history"}
                     </button>
                   ) : null}
                 </div>
@@ -1483,6 +1511,7 @@ const JobDetailSummary = memo(function JobDetailSummary({
   onImportSelected,
   onRevealImportBlocker,
   onRetryImport,
+  newAppearance = false,
 }: {
   detail: JobDetail;
   statusNote: string | null;
@@ -1507,20 +1536,67 @@ const JobDetailSummary = memo(function JobDetailSummary({
   onImportSelected: (jobId: string) => void | Promise<void>;
   onRevealImportBlocker: () => void;
   onRetryImport: (jobId: string) => void | Promise<void>;
+  newAppearance?: boolean;
 }) {
   const importBlockedByFolders =
     !canImportSelected &&
     !importingSelected &&
     assetImportSummary.selectedPending > 0 &&
     assetImportSummary.selectedPendingMissingFolderCount > 0;
+  const sourceUrl = detail.assets.find(asset => asset.sourceUrl)?.sourceUrl ?? detail.routes[0]?.url ?? resolveLinkHref(detail.job.instruction.match(URL_PATTERN)?.[0] ?? "");
+
+  if (newAppearance) {
+    const captureFailures = detail.routes.filter(route => route.status === "failed").length;
+    const skipped = detail.routes.filter(route => route.status === "skipped").length;
+    const sample = detail.assets[0];
+    return <div className="new-job-summary">
+      <div className="new-job-header">
+        <div className="new-job-identity">
+          <div><h3>{siteLabel(sourceUrl)}</h3><span>{formatJobModeLabel(mode)}</span></div>
+          {sourceUrl ? <ExternalLink href={sourceUrl} label={siteLabel(sourceUrl)} /> : null}
+        </div>
+        <div className="new-job-actions">
+          {canClean ? <Button size="sm" className="new-job-icon" title={detail.job.archivedAt ? "Clean files" : "Move to history"} aria-label={detail.job.archivedAt ? "Clean files" : "Move to history"} disabled={archiving} onClick={() => onClean(detail.job.id)}><Archive /></Button> : null}
+          {canArchive ? <Button size="sm" className="new-job-icon" title={detail.job.archivedAt ? "Unarchive" : "Archive"} aria-label={detail.job.archivedAt ? "Unarchive" : "Archive"} loading={archiving} onClick={() => onArchive(detail.job.id, !Boolean(detail.job.archivedAt))}><Archive /></Button> : null}
+          {canRescan ? <Button size="sm" className="new-job-icon" title={`Rescan ${formatJobModeLabel(mode)}`} aria-label={`Rescan ${formatJobModeLabel(mode)}`} disabled={rescanDisabled || rescanning} loading={rescanning} onClick={() => void onRescan(detail.job.id)}><RefreshCw /></Button> : null}
+          {canCancel ? <Button variant="danger" size="sm" onClick={() => onCancel(detail.job.id)}>Cancel</Button> : null}
+          {assetImportSummary.failed > 0 ? <Button size="sm" disabled={!canRetryFailedImport} loading={retryingFailedImport} onClick={() => void onRetryImport(detail.job.id)}>Retry failed import</Button> : null}
+          {!detail.job.cleanedAt ? <Button variant="primary" size="sm" disabled={!canImportSelected && !importBlockedByFolders} loading={importingSelected} loadingLabel="Queueing..." onClick={() => {
+            if (canImportSelected) void onImportSelected(detail.job.id);
+            else if (importBlockedByFolders) onRevealImportBlocker();
+          }}><FolderInput />{importBlockedByFolders ? "Fix folders" : `Import ${assetImportSummary.selectedPending} selected`}</Button> : null}
+        </div>
+      </div>
+      <details className="new-job-activity">
+        <summary>
+          <span className={cx("new-capture-result", (captureFailures > 0 || skipped > 0 || detail.job.status === "failed" || detail.job.status === "cancelled") && "has-warning")}><CheckCircle2 />{detail.assets.length} captured{isRunning ? " · Running" : detail.job.status === "failed" ? " · Failed" : detail.job.status === "cancelled" ? " · Cancelled" : detail.job.status === "queued" ? " · Queued" : ""}{captureFailures > 0 ? ` · ${captureFailures} failed` : ""}{skipped > 0 ? ` · ${skipped} skipped` : ""}</span>
+          <span>{detail.job.cleanedAt ? "Files cleaned · history retained" : `${assetImportSummary.selectedPending} selected for import`}</span>
+          <span>{shortTaskDate(detail.job.createdAt)}{sample ? ` · JPEG ${sample.quality} · DPR ${sample.dpr}` : ""}</span>
+          <span className="new-activity-toggle">Activity <ChevronDown /></span>
+        </summary>
+        <div className="new-activity-details">
+          <StatusBadge status={detail.job.status} />
+          {statusNote ? <p>{statusNote}</p> : null}
+          <p><LinkifiedText text={detail.job.instruction} /></p>
+          <p>Pending: {assetImportSummary.pending} · Imported: {assetImportSummary.imported} · Failed imports: {assetImportSummary.failed}</p>
+          <p>Started: {formatDate(detail.job.startedAt)} · Finished: {formatDate(detail.job.finishedAt)}</p>
+          {assetImportSummary.selectedPendingMissingFolderCount > 0 ? <p>Pending folders: {assetImportSummary.selectedPendingMissingFolderCount}</p> : null}
+          {assetImportSummary.selectedFailedMissingFolderCount > 0 ? <p>Retry folders: {assetImportSummary.selectedFailedMissingFolderCount}</p> : null}
+          {detail.job.importCompletedAt && !detail.job.cleanedAt ? <p>Auto history: {formatAutoHistoryDate(detail.job.importCompletedAt)}</p> : null}
+          {detail.job.archivedAt ? <p>Archived: {formatDate(detail.job.archivedAt)}</p> : null}
+          {detail.job.cleanedAt ? <p>Cleaned: {formatDate(detail.job.cleanedAt)}</p> : null}
+        </div>
+      </details>
+    </div>;
+  }
 
   return (
     <>
       <div className="detail-header">
         <div>
-          <h3>Detail</h3>
+          <h3>{newAppearance ? siteLabel(sourceUrl) : "Detail"}</h3>
           <p>
-            <LinkifiedText text={detail.job.instruction} />
+            {newAppearance && sourceUrl ? <ExternalLink href={sourceUrl} label={`${formatJobModeLabel(mode)} · ${siteLabel(sourceUrl)}`} /> : <LinkifiedText text={detail.job.instruction} />}
           </p>
         </div>
         <div className={cx("detail-status", isRunning && "detail-status-live")}>
@@ -1655,9 +1731,10 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
   onAddCustomRoute,
   addingCustomRoute,
   browserActionsDisabled,
+  presentation,
 }: {
   detail: JobDetail;
-  assetLookup: ReturnType<typeof buildAssetLookupIndex>;
+  assetLookup: ReturnType<typeof buildAssetLookupIndex<JobAsset>>;
   selectedAssetId: number | null;
   assetActionsDisabled: boolean;
   folderSavingAssetIds: Set<number>;
@@ -1671,10 +1748,19 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
   onAddCustomRoute: (jobId: string, url: string) => Promise<boolean>;
   addingCustomRoute: boolean;
   browserActionsDisabled: boolean;
+  presentation?: PagePresentation;
 }) {
   const [showCustomRouteForm, setShowCustomRouteForm] = useState(false);
   const [customRouteUrl, setCustomRouteUrl] = useState("");
   const canAddCustomRoute = isTerminalJobStatus(detail.job.status);
+  const selectedRoutes = detail.routes.filter(route => findAssetsForRouteFromIndex(route, assetLookup).some(asset => asset.selectedForImport));
+  const visibleRoutes = presentation?.filter === "selected" ? selectedRoutes : detail.routes;
+  const addPageButton = canAddCustomRoute ? (
+    <Button variant="secondary" size="sm" className="route-add-button" disabled={browserActionsDisabled || addingCustomRoute}
+      onClick={() => setShowCustomRouteForm(current => !current)} aria-expanded={showCustomRouteForm}>
+      {presentation ? <Plus aria-hidden="true" /> : null}Add page
+    </Button>
+  ) : null;
 
   const submitCustomRoute = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -1692,19 +1778,9 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
           <h4>Core Pages</h4>
           <p>Each page is captured as one full-length screenshot.</p>
         </div>
-        {canAddCustomRoute ? (
-          <Button
-            variant="secondary"
-            size="sm"
-            className="route-add-button"
-            disabled={browserActionsDisabled || addingCustomRoute}
-            onClick={() => setShowCustomRouteForm((current) => !current)}
-            aria-expanded={showCustomRouteForm}
-          >
-            Add page
-          </Button>
-        ) : null}
+        {!presentation ? addPageButton : null}
       </div>
+      {presentation ? <NewPagesToolbar presentation={presentation} total={detail.routes.length} selected={selectedRoutes.length}>{addPageButton}</NewPagesToolbar> : null}
       {showCustomRouteForm ? (
         <form className="route-add-form" onSubmit={(event) => void submitCustomRoute(event)}>
           <label htmlFor={`custom-route-url-${detail.job.id}`}>Page URL</label>
@@ -1734,7 +1810,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
         </form>
       ) : null}
       <div className="core-route-card-list">
-        {detail.routes.map((route) => {
+        {visibleRoutes.map((route) => {
           const asset = findAssetForRouteFromIndex(route, assetLookup);
           const assets = findAssetsForRouteFromIndex(route, assetLookup);
           const previewState = getCoreRoutePreviewState(route.status, asset);
@@ -1748,10 +1824,21 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
               aria-label={`${route.status === "failed" ? "Retry" : "Rescan"} ${formatCoreRouteCardLabel(route.path)}`}
               onClick={() => void onRerunRoute(detail.job.id, route)}
             >
-              {route.status === "failed" ? "Retry page" : "Rescan page"}
+              {presentation && asset ? <RefreshCw aria-hidden="true" /> : route.status === "failed" ? "Retry page" : "Rescan page"}
             </Button>
           ) : null;
           const canFocusRouteDebug = asset ? canFocusDebugAsset(asset, hasSectionDebug) : false;
+
+          if (presentation && assets.length > 0) {
+            return <div className="new-route-asset-group" key={route.id}>
+              {assets.map(routeAsset => <AssetCard key={routeAsset.id} asset={routeAsset} compact newAppearance
+                heading={formatCoreRouteCardLabel(route.path)} selected={selectedAssetId === routeAsset.id}
+                assetActionsDisabled={assetActionsDisabled} folderSaving={folderSavingAssetIds.has(routeAsset.id)}
+                hasSectionDebug={hasSectionDebug} onToggleSelection={onToggleAssetSelection}
+                onOpenFolderPicker={onOpenFolderPicker} onOpenPreview={onOpenPreview} onFocusDebug={onFocusDebug}
+                trailingToolbarAction={routeAsset.id === asset?.id ? rerunAction : null} />)}
+            </div>;
+          }
 
           return (
             <article
@@ -1826,6 +1913,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
           );
         })}
       </div>
+      {presentation && visibleRoutes.length === 0 ? <div className="new-pages-empty"><strong>{detail.routes.length ? "No pages selected" : "Waiting for capture"}</strong>{detail.routes.length ? <button type="button" onClick={() => presentation.onFilterChange("all")}>View all pages</button> : null}</div> : null}
     </div>
   ) : null;
 });
@@ -1840,6 +1928,7 @@ const AssetGridPanel = memo(function AssetGridPanel({
   onOpenFolderPicker,
   onOpenPreview,
   onFocusDebug,
+  presentation,
 }: {
   assets: JobAsset[];
   selectedAssetId: number | null;
@@ -1850,12 +1939,14 @@ const AssetGridPanel = memo(function AssetGridPanel({
   onOpenFolderPicker: (assetId: number) => void;
   onOpenPreview: (assetId: number) => void;
   onFocusDebug: (asset: JobAsset) => void;
+  presentation?: PagePresentation;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const { width, height } = useElementSize(containerRef);
   const [scrollTop, setScrollTop] = useState(0);
-  const shouldVirtualize = assets.length > ASSET_VIRTUALIZE_THRESHOLD;
-  const columns = useMemo(() => getAssetGridColumns(width), [width]);
+  const shouldVirtualize = assets.length > ASSET_VIRTUALIZE_THRESHOLD && presentation?.layout !== "list";
+  const rowHeight = presentation ? 420 : ASSET_GRID_ROW_HEIGHT;
+  const columns = useMemo(() => presentation?.layout === "list" ? 1 : getAssetGridColumns(width), [width, presentation?.layout]);
 
   const virtualWindow = useMemo(() => {
     if (!shouldVirtualize) {
@@ -1871,9 +1962,9 @@ const AssetGridPanel = memo(function AssetGridPanel({
 
     const activeColumns = columns || 1;
     const rowCount = Math.ceil(assets.length / activeColumns);
-    const viewportHeight = Math.max(height || ASSET_GRID_ROW_HEIGHT * 2, ASSET_GRID_ROW_HEIGHT * 2);
-    const startRow = Math.max(0, Math.floor(scrollTop / ASSET_GRID_ROW_HEIGHT) - ASSET_GRID_OVERSCAN_ROWS);
-    const visibleRowCount = Math.ceil(viewportHeight / ASSET_GRID_ROW_HEIGHT) + ASSET_GRID_OVERSCAN_ROWS * 2;
+    const viewportHeight = Math.max(height || rowHeight * 2, rowHeight * 2);
+    const startRow = Math.max(0, Math.floor(scrollTop / rowHeight) - ASSET_GRID_OVERSCAN_ROWS);
+    const visibleRowCount = Math.ceil(viewportHeight / rowHeight) + ASSET_GRID_OVERSCAN_ROWS * 2;
     const endRow = Math.min(rowCount, startRow + visibleRowCount);
     const startIndex = startRow * activeColumns;
     const endIndex = Math.min(assets.length, endRow * activeColumns);
@@ -1881,28 +1972,30 @@ const AssetGridPanel = memo(function AssetGridPanel({
     return {
       startIndex,
       endIndex,
-      offsetTop: startRow * ASSET_GRID_ROW_HEIGHT,
-      totalHeight: rowCount * ASSET_GRID_ROW_HEIGHT,
+      offsetTop: startRow * rowHeight,
+      totalHeight: rowCount * rowHeight,
       visibleAssets: assets.slice(startIndex, endIndex),
       columns: activeColumns,
     };
-  }, [assets, columns, height, scrollTop, shouldVirtualize]);
+  }, [assets, columns, height, rowHeight, scrollTop, shouldVirtualize]);
 
   if (assets.length === 0) {
-    return <div className="empty-text">暂无产物</div>;
+    return <div className="empty-text">{presentation ? "No captures in this view" : "暂无产物"}</div>;
   }
 
   if (!shouldVirtualize) {
     return (
       <div
         ref={containerRef}
-        className="assets-grid"
+        className={cx("assets-grid", presentation && "new-section-grid")}
         style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
       >
         {assets.map((asset) => (
           <AssetCard
             key={asset.id}
             asset={asset}
+            newAppearance={Boolean(presentation)}
+            heading={asset.label}
             selected={selectedAssetId === asset.id}
             assetActionsDisabled={assetActionsDisabled}
             folderSaving={folderSavingAssetIds.has(asset.id)}
@@ -1925,7 +2018,7 @@ const AssetGridPanel = memo(function AssetGridPanel({
     >
       <div className="assets-grid-virtual-spacer" style={{ height: `${virtualWindow.totalHeight}px` }}>
         <div
-          className="assets-grid assets-grid-virtual"
+            className={cx("assets-grid assets-grid-virtual", presentation && "new-section-grid")}
           style={
             {
               transform: `translateY(${virtualWindow.offsetTop}px)`,
@@ -1937,6 +2030,8 @@ const AssetGridPanel = memo(function AssetGridPanel({
             <AssetCard
               key={asset.id}
               asset={asset}
+              newAppearance={Boolean(presentation)}
+              heading={asset.label}
               selected={selectedAssetId === asset.id}
               assetActionsDisabled={assetActionsDisabled}
               folderSaving={folderSavingAssetIds.has(asset.id)}
@@ -2048,6 +2143,10 @@ const ManifestPanel = memo(function ManifestPanel({
 });
 
 const PreviewModal = memo(function PreviewModal({
+  onOpenFolderPicker,
+  folderSaving,
+  interfaceVersion,
+  onInterfaceVersionChange,
   previewAsset,
   previewRoute,
   previewEagleName,
@@ -2065,6 +2164,10 @@ const PreviewModal = memo(function PreviewModal({
   onCrop,
   onRestoreOriginal,
 }: {
+  onOpenFolderPicker: (assetId: number) => void;
+  folderSaving: boolean;
+  interfaceVersion: InterfaceVersion;
+  onInterfaceVersionChange: (version: InterfaceVersion) => void;
   previewAsset: JobAsset;
   previewRoute: RouteTargetSummary | null;
   previewEagleName: string | null;
@@ -2273,6 +2376,7 @@ const PreviewModal = memo(function PreviewModal({
             <strong>{previewEagleName ?? previewAsset.fileName}</strong>
             <span>{previewRoute ? `${previewRoute.path} · ${previewRoute.status}` : previewAsset.label}</span>
           </div>
+          <InterfaceVersionSwitch value={interfaceVersion} onChange={onInterfaceVersionChange} />
           <button type="button" className="asset-preview-close" onClick={onClose}>
             Close
           </button>
@@ -2281,6 +2385,7 @@ const PreviewModal = memo(function PreviewModal({
           <AssetAnnotator
             key={`${previewAsset.id}:${previewAsset.previewDisplayUrl}`}
             src={previewAsset.previewUrl}
+            thumbnailSrc={previewAsset.thumbnailUrl}
             fileName={previewAsset.fileName}
             width={previewAsset.imageWidth}
             height={previewAsset.imageHeight}
@@ -2294,6 +2399,7 @@ const PreviewModal = memo(function PreviewModal({
             onDone={() => setAnnotationMode(false)}
           />
         ) : <div className="asset-preview-modal-body">
+          <div className="asset-preview-image-pane">
           <div className="asset-preview-image-wrap" ref={imageWrapRef}>
             <div
               className={cx("asset-preview-crop-stage", cropMode && "asset-preview-crop-stage-active")}
@@ -2302,6 +2408,8 @@ const PreviewModal = memo(function PreviewModal({
               <img
                 key={previewAsset.previewDisplayUrl}
                 src={previewAsset.previewDisplayUrl}
+                width={previewAsset.imageWidth}
+                height={previewAsset.imageHeight}
                 alt={previewAsset.fileName}
                 className="asset-preview-image"
                 decoding="async"
@@ -2374,6 +2482,9 @@ const PreviewModal = memo(function PreviewModal({
                 </>
               ) : null}
             </div>
+          </div>
+            <ImageMinimap key={previewAsset.previewDisplayUrl} scrollRef={imageWrapRef} contentRef={cropStageRef}
+              src={previewAsset.thumbnailUrl} width={previewAsset.imageWidth} height={previewAsset.imageHeight} />
           </div>
           <aside className="asset-preview-sidebar">
             <div className="asset-preview-actions">
@@ -2630,6 +2741,12 @@ const PreviewModal = memo(function PreviewModal({
                 </div>
               </div>
             ) : null}
+            {interfaceVersion === "new" && !cropMode && !annotationMode ? <section className="preview-destination">
+              <h4>Destination</h4>
+              <AssetFolderControl asset={previewAsset} disabled={assetActionsDisabled || folderSaving} onOpenFolderPicker={onOpenFolderPicker} newAppearance />
+              <p>{previewAsset.targetEagleFolderPath ?? "No destination selected"}</p>
+              <span>{previewAsset.importStatus === "imported" ? "Imported · Read only" : folderSaving ? "Saving..." : formatFolderSelectionSourceLabel(previewAsset.folderSelectionSource)}</span>
+            </section> : null}
             <dl className="asset-preview-meta">
               <div>
                 <dt>Eagle Path</dt>
@@ -2741,6 +2858,19 @@ const PreviewModal = memo(function PreviewModal({
 export function App() {
   const initialSelectedJobId = readSelectedJobIdFromSearch(window.location.search);
   const initialSelectedAssetId = readSelectedAssetIdFromSearch(window.location.search);
+  const [interfaceVersion, setInterfaceVersion] = useState<InterfaceVersion>(() => {
+    try { return readInterfaceVersion(window.localStorage); } catch { return "classic"; }
+  });
+  const isNewInterface = interfaceVersion === "new";
+  const [newCaptureOpen, setNewCaptureOpen] = useState(false);
+  const [newMobileDetail, setNewMobileDetail] = useState(Boolean(initialSelectedJobId));
+  const [newPageFilter, setNewPageFilter] = useState<"all" | "selected">("all");
+  const [newPageLayout, setNewPageLayout] = useState<"grid" | "list">("grid");
+  const [newOverview, setNewOverview] = useState(false);
+  const newPresentation = useMemo<PagePresentation>(() => ({
+    filter: newPageFilter, layout: newPageLayout, overview: newOverview,
+    onFilterChange: setNewPageFilter, onLayoutChange: setNewPageLayout, onOverviewChange: setNewOverview,
+  }), [newPageFilter, newPageLayout, newOverview]);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [eagleFolders, setEagleFolders] = useState<EagleFolderOption[]>([]);
   const [eagleFoldersError, setEagleFoldersError] = useState<string | null>(null);
@@ -3389,7 +3519,7 @@ export function App() {
   }, [folderPickerAsset, folderPickerResults.length, folderPickerState]);
 
   useEffect(() => {
-    if (previewAssetId === null) {
+    if (previewAssetId === null || folderPickerState !== null) {
       return;
     }
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -3399,7 +3529,7 @@ export function App() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [previewAssetId]);
+  }, [previewAssetId, folderPickerState]);
 
   useEffect(() => {
     if (!selectedJobId) {
@@ -3528,6 +3658,7 @@ export function App() {
       });
       setInstruction("");
       selectJob(result.jobId);
+      if (isNewInterface) { setNewCaptureOpen(false); setNewMobileDetail(true); }
       await loadJobs(result.jobId);
       await loadJobDetail(result.jobId);
     } catch (error) {
@@ -4167,7 +4298,8 @@ export function App() {
     if (
       actionDialog ||
       previewAssetId !== null ||
-      folderPickerState
+      folderPickerState ||
+      newCaptureOpen
     ) {
       return undefined;
     }
@@ -4199,6 +4331,7 @@ export function App() {
     actionDialog,
     folderPickerState,
     jobs,
+    newCaptureOpen,
     previewAssetId,
     quickMoveJobToHistory,
   ]);
@@ -4359,8 +4492,38 @@ export function App() {
     }
   }, [previewAsset, previewRoute, selectedJobDetail, selectedJobMode]);
 
+  const selectNewJob = useCallback((jobId: string): void => {
+    selectJob(jobId);
+    setNewMobileDetail(true);
+  }, [selectJob]);
+
+  const changeInterfaceVersion = useCallback((version: InterfaceVersion): void => {
+    if (version === interfaceVersion) return;
+    setInterfaceVersion(version);
+    setNewCaptureOpen(false);
+    if (version === "new" && selectedJobId) setNewMobileDetail(true);
+    try { rememberInterfaceVersion(window.localStorage, version); } catch { /* Session-only preference. */ }
+  }, [interfaceVersion, selectedJobId]);
+
+  const changeHistoryView = (history: boolean): void => {
+    if (history === archivedOnly) return;
+    selectJob(null);
+    setSelectedJobDetail(null);
+    setArchivedOnly(history);
+    setPage(1);
+    setNewMobileDetail(false);
+  };
+
+  const queueStatusFilter = <select aria-label="Filter tasks" value={statusFilter} onChange={event => { setStatusFilter(event.target.value); setPage(1); }}>
+    <option value="">All</option><option value="queued">queued</option><option value="running">running</option>
+    <option value="awaiting_confirmation">awaiting_confirmation</option><option value="success">success</option>
+    <option value="partial_success">partial_success</option><option value="failed">failed</option>
+  </select>;
+  const queueSearch = <input aria-label="Search tasks" placeholder="Search prompt" value={keywordFilter} onChange={event => { setKeywordFilter(event.target.value); setPage(1); }} />;
+
   return (
-    <div className="layout">
+    <div className={cx("layout", isNewInterface && "layout-new", isNewInterface && newMobileDetail && "new-mobile-detail", isNewInterface && newPageLayout === "list" && "new-view-list", isNewInterface && newOverview && "new-overview")} data-interface={interfaceVersion}>
+      {isNewInterface ? <NewWorkspaceHeader history={archivedOnly} onHistoryChange={changeHistoryView} version={interfaceVersion} onVersionChange={changeInterfaceVersion} connected={liveConnected} /> : null}
       {showPlaywrightBanner ? (
         <div className="runtime-banner" role="alert">
           <div className="runtime-banner-copy">
@@ -4381,9 +4544,11 @@ export function App() {
           </div>
         </div>
       ) : null}
+      <CaptureSurface version={interfaceVersion} open={newCaptureOpen} onClose={() => setNewCaptureOpen(false)}>
       <aside className="panel panel-create">
         <div className="panel-header">
-          <h1>Autoscreenshot</h1>
+          <h1>{isNewInterface ? "New capture" : "Autoscreenshot"}</h1>
+          {isNewInterface ? <><InterfaceVersionSwitch value={interfaceVersion} onChange={changeInterfaceVersion} /><button type="button" className="new-capture-close" aria-label="Close new capture" onClick={() => setNewCaptureOpen(false)}><X /></button></> : null}
         </div>
 
         <label className="field-label" htmlFor="instruction">
@@ -4519,11 +4684,14 @@ export function App() {
           <a className="design-system-link" href="/design-system">Design System</a>
         </div>
       </aside>
+      </CaptureSurface>
 
       <main className="panel panel-main">
         <div className="toolbar">
-          <h2>Queue</h2>
+          <h2>{isNewInterface && archivedOnly ? "History" : "Queue"}{isNewInterface ? <span className="new-task-count">{totalJobs} tasks</span> : null}</h2>
+          {isNewInterface ? <NewCaptureButton onClick={() => setNewCaptureOpen(true)} /> : null}
           <div className="toolbar-actions">
+            {!isNewInterface ? <InterfaceVersionSwitch value={interfaceVersion} onChange={changeInterfaceVersion} /> : null}
             {archivedOnly ? (
               <button
                 type="button"
@@ -4551,36 +4719,14 @@ export function App() {
               </button>
             ) : null}
             <div className="filters">
-              <select value={statusFilter} onChange={(event) => {
-                setStatusFilter(event.target.value);
-                setPage(1);
-              }}
-              >
-                <option value="">All</option>
-                <option value="queued">queued</option>
-                <option value="running">running</option>
-                <option value="awaiting_confirmation">awaiting_confirmation</option>
-                <option value="success">success</option>
-                <option value="partial_success">partial_success</option>
-                <option value="failed">failed</option>
-              </select>
-              <input
-                placeholder="Search prompt"
-                value={keywordFilter}
-                onChange={(event) => {
-                  setKeywordFilter(event.target.value);
-                  setPage(1);
-                }}
-              />
+              {isNewInterface ? <>{queueSearch}{queueStatusFilter}</> : <>{queueStatusFilter}{queueSearch}</>}
+              {!isNewInterface ? (
               <label className={cx("filter-toggle", archivedOnly && "active")}>
                 <input
                   type="checkbox"
                   checked={archivedOnly}
                   onChange={(event) => {
-                    selectJob(null);
-                    setSelectedJobDetail(null);
-                    setArchivedOnly(event.target.checked);
-                    setPage(1);
+                    changeHistoryView(event.target.checked);
                   }}
                 />
                 <span className="filter-toggle-indicator" aria-hidden="true">
@@ -4588,12 +4734,14 @@ export function App() {
                 </span>
                 <span>History</span>
               </label>
+              ) : null}
             </div>
           </div>
         </div>
 
         <div className="split">
           <JobsListPanel
+            newAppearance={isNewInterface}
             jobs={jobs}
             selectedJobId={selectedJobId}
             runningJobId={runningJobId}
@@ -4601,7 +4749,7 @@ export function App() {
             archivingJobId={archivingJobId}
             totalPages={totalPages}
             page={page}
-            onSelectJob={selectJob}
+            onSelectJob={isNewInterface ? selectNewJob : selectJob}
             onHoverJob={setHoveredJob}
             onArchiveJob={archiveJob}
             onCleanJob={cleanJobFiles}
@@ -4610,11 +4758,14 @@ export function App() {
           />
 
           <section className="job-detail">
+            {isNewInterface ? <button type="button" className="new-mobile-back" onClick={() => setNewMobileDetail(false)}><ArrowLeft />Back to tasks</button> : null}
+            {isNewInterface && errorText && !newCaptureOpen ? <div className="error-text" role="alert">{errorText}</div> : null}
             {!selectedJobDetail ? (
               <div className="empty-text">Select a job</div>
             ) : (
               <>
                 <JobDetailSummary
+                  newAppearance={isNewInterface}
                   detail={selectedJobDetail}
                   statusNote={selectedJobStatusNote}
                   isRunning={selectedJobIsRunning}
@@ -4641,7 +4792,7 @@ export function App() {
                 />
                 {eagleFoldersError ? <div className="detail-inline-warning">{eagleFoldersError}</div> : null}
 
-                {!selectedJobDetail.job.cleanedAt && selectedJobMode === "core-routes" ? (
+                {!selectedJobDetail.job.cleanedAt && selectedJobMode === "core-routes" && (!isNewInterface || selectedJobIsRunning) ? (
                   <div className={cx("progress-panel", selectedJobIsRunning && "progress-panel-live")}>
                     <div className="progress-panel-top">
                       <div>
@@ -4688,6 +4839,7 @@ export function App() {
                   </div>
                 ) : selectedJobMode === "core-routes" ? (
                   <CoreRoutesPanel
+                    presentation={isNewInterface ? newPresentation : undefined}
                     detail={selectedJobDetail}
                     assetLookup={assetLookup}
                     selectedAssetId={selectedAssetId}
@@ -4705,8 +4857,11 @@ export function App() {
                     browserActionsDisabled={browserActionsDisabled}
                   />
                 ) : (
+                  <>
+                  {isNewInterface ? <NewPagesToolbar presentation={newPresentation} total={selectedJobDetail.assets.length} selected={selectedJobDetail.assets.filter(asset => asset.selectedForImport).length} /> : null}
                   <AssetGridPanel
-                    assets={selectedJobDetail.assets}
+                    presentation={isNewInterface ? newPresentation : undefined}
+                    assets={isNewInterface && newPageFilter === "selected" ? selectedJobDetail.assets.filter(asset => asset.selectedForImport) : selectedJobDetail.assets}
                     selectedAssetId={selectedAssetId}
                     assetActionsDisabled={assetActionsDisabled}
                     folderSavingAssetIds={folderSavingAssetIds}
@@ -4716,6 +4871,7 @@ export function App() {
                     onOpenPreview={openPreview}
                     onFocusDebug={focusDebugFromAsset}
                   />
+                  </>
                 )}
 
                 {sectionDebug ? (
@@ -4848,6 +5004,10 @@ export function App() {
 
       {previewAsset ? (
         <PreviewModal
+          onOpenFolderPicker={openFolderPicker}
+          folderSaving={folderSavingAssetIds.has(previewAsset.id)}
+          interfaceVersion={interfaceVersion}
+          onInterfaceVersionChange={changeInterfaceVersion}
           previewAsset={previewAsset}
           previewRoute={previewRoute}
           previewEagleName={previewEagleName}
@@ -4870,6 +5030,8 @@ export function App() {
         />
       ) : null}
       <FolderPickerDialog
+        newAppearance={isNewInterface}
+        selectionSource={folderPickerAsset?.folderSelectionSource ?? "missing"}
         open={folderPickerAsset !== null}
         assetLabel={folderPickerAsset?.label ?? ""}
         assetKind={folderPickerAsset?.kind ?? "section"}

@@ -1,0 +1,393 @@
+/* Current visual language, applied only to the isolated interaction proposal. */
+.destination-dialog { width: 600px; height: min(800px, 78dvh); max-height: calc(100dvh - 32px); overflow: hidden; }
+.destination-dialog[open] { display: flex; flex-direction: column; }
+.destination-dialog>header { flex-shrink: 0; margin-bottom: 20px; }
+.destination-current { display: flex; flex-direction: column; gap: 8px; padding-bottom: 20px; }
+.destination-current>div { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+.destination-current>strong { font-size: 15px; font-weight: 600; }
+.destination-current>small { overflow-wrap: anywhere; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.destination-dialog>.search { flex-shrink: 0; }
+.destination-result-count { padding-top: 12px; color: var(--muted); font-size: 12px; }
+.destination-dialog .destination-options { flex: 1; min-height: 0; max-height: none; overscroll-behavior: contain; margin-top: 8px; }
+.destination-options h3 { margin: 12px 8px 4px; font-size: 12px; color: var(--muted); font-weight: 550; }
+.destination-options>button { flex-shrink: 0; min-height: 72px; }
+.destination-options .destination-option-copy { flex: 1; min-width: 0; }
+.destination-options>button>svg { flex-shrink: 0; }
+.destination-options>button .destination-badges { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 11px; color: var(--muted); }
+.destination-options>button[aria-pressed="true"] { background: var(--surface-soft); box-shadow: inset 0 0 0 1px var(--control-edge); }
+.review-sidebar .destination-edit { width: 100%; padding: 12px; text-align: left; align-items: flex-start; justify-content: flex-start; gap: 10px; }
+.destination-edit>span { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 6px; }
+.destination-edit small { font-size: 12px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+.destination-edit>svg { width: 16px; height: 16px; flex-shrink: 0; }
+@media(max-width:640px) {
+  .destination-dialog { width: calc(100vw - 24px); height: 84dvh; }
+  .review-sidebar .destination-section { display: block; padding-top: 16px; }
+  .destination-options>button { gap: 8px; }
+}
+:root {
+  --canvas: #e6eaf0;
+  --panel: oklch(.984 .003 247.9);
+  --panel-stroke: linear-gradient(145deg, #fff 0%, rgba(255,255,255,.72) 42%, rgba(255,255,255,.18) 100%);
+  --surface: oklch(1 0 0);
+  --surface-soft: oklch(.960 .006 255.5);
+  --surface-hover: oklch(.925 .006 255.5);
+  --surface-selected: rgba(233, 236, 241, .96);
+  --text: #17191d;
+  --muted: oklch(.430 .018 257.2);
+  --text-subtle: oklch(.500 .022 257.5);
+  --text-disabled: oklch(.520 .018 259.4);
+  --surface-disabled: oklch(.933 .007 260.7);
+  --control-edge: oklch(.325 .045 255.2 / .12);
+  --control-edge-hover: oklch(.325 .045 255.2 / .28);
+  --green: oklch(.460 .120 152.6);
+  --text-warning: oklch(.450 .090 82.6);
+  --text-error: oklch(.470 .154 20.2);
+  --text-link: oklch(.460 .140 254.8);
+  --shadow-soft: 0 10px 24px rgba(15, 23, 42, .045);
+  --shadow-panel: 0 16px 34px rgba(15, 23, 42, .06);
+  --panel-inset: inset 0 1px 0 rgba(255, 255, 255, .85);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / .025), 0 6px 16px -6px rgb(0 0 0 / .055);
+  --shadow-card-hover: inset 0 0 0 1px var(--control-edge), 0 2px 4px rgb(0 0 0 / .035), 0 8px 20px -6px rgb(0 0 0 / .075);
+  --shadow-image-control: 0 0 0 1px rgb(0 0 0 / .04), 0 2px 4px rgb(0 0 0 / .06);
+}
+
+.proposed {
+  padding: 14px 22px 22px;
+  gap: 12px;
+  background:
+    radial-gradient(circle at top left, rgba(255,255,255,.68), transparent 34%),
+    radial-gradient(circle at top right, rgba(255,255,255,.4), transparent 30%),
+    linear-gradient(180deg, #f7f8fa 0%, var(--canvas) 100%);
+}
+
+.proposed :where(button:not(.image-open):not(.proto-picker-item)),
+.proposed .button,
+.small-dialog :where(button),
+.small-dialog .button {
+  border-radius: 999px;
+  border: 0;
+  background: var(--surface-soft);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--control-edge);
+}
+
+.proposed button.primary,
+.small-dialog button.primary,
+.review-dialog button.primary {
+  color: #fff;
+  background: linear-gradient(180deg, #2f3742 0%, #1f252d 100%);
+  box-shadow: 0 8px 18px rgba(15,23,42,.14);
+}
+
+.proposed button.primary:disabled,
+.small-dialog button.primary:disabled,
+.review-dialog button.primary:disabled {
+  color: var(--text-disabled);
+  background: var(--surface-disabled);
+  box-shadow: none;
+}
+
+.app-header {
+  height: 64px;
+  padding: 0 8px;
+  background: transparent;
+  border: 0;
+}
+.brand { min-width: 222px; }
+.brand strong { font-size: 24px; font-weight: 650; }
+.brand-symbol { display: none; }
+.main-nav { align-self: center; padding: 4px; border-radius: 999px; background: var(--surface-soft); }
+.proposed .main-nav button { background: transparent; box-shadow: none; color: var(--muted); }
+.proposed .main-nav button.active { background: var(--surface); color: var(--text); box-shadow: 0 3px 8px rgba(15,23,42,.07); }
+.main-nav button span { background: transparent; }
+.workspace { gap: 22px; }
+.queue-sidebar,
+.main-workspace {
+  background: linear-gradient(var(--panel), var(--panel)) padding-box, var(--panel-stroke) border-box;
+  border: 1px solid transparent;
+  border-radius: 26px;
+  box-shadow: 0 8px 18px rgba(15,23,42,.035);
+}
+.queue-sidebar { padding: 24px 14px 0; }
+.main-workspace { padding: 0 26px; }
+.queue-heading h2 { font-size: 20px; }
+.queue-heading { padding: 0 4px; margin-bottom: 16px; }
+.queue-new-capture {
+  width: calc(100% - 8px);
+  min-height: 44px;
+  margin: 0 4px 16px;
+  flex-shrink: 0;
+}
+.header-actions .new-capture-compact { display: none; }
+.search { border: 0; border-radius: 16px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--control-edge); }
+.search input { background: transparent; }
+.queue-sidebar>.search { margin: 0 4px; }
+.queue-filter { border-radius: 12px; padding: 4px 8px; margin: 8px 4px 16px; }
+.queue-rows { gap: 12px; padding: 2px 4px 18px; }
+.proposed .queue-row {
+  border-radius: 22px;
+  background: var(--surface);
+  padding: 17px 16px;
+  min-height: 114px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.82), 0 5px 14px rgba(15,23,42,.025);
+}
+.proposed .queue-row.selected {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 2px rgba(10,132,255,.65), 0 6px 18px rgba(10,132,255,.1);
+}
+.queue-row>.site-letter { display: none; }
+.queue-domain strong { font-size: 14px; }
+.queue-domain>span { font-size: 12px; }
+.queue-state { margin-top: 12px; }
+.queue-footer { padding-bottom: 74px; }
+.job-header { padding-top: 26px; padding-bottom: 20px; }
+.job-identity>.site-letter { display: none; }
+.job-title h1 { font-size: 22px; }
+.job-summary { border: 0; background: var(--surface-soft); border-radius: 18px; padding: 12px 16px; min-height: 52px; }
+.pages-toolbar { padding-top: 18px; }
+.proposed .page-tabs button,
+.proposed .job-summary>button,
+.proposed .quiet,
+.proposed .card-title button { background: transparent; box-shadow: none; }
+.page-tabs { gap: 4px; padding: 4px; border-radius: 999px; background: var(--surface-soft); }
+.proposed .page-tabs button { min-height: 32px; padding: 0 12px; }
+.proposed .page-tabs button.active { background: var(--surface); box-shadow: 0 1px 3px rgb(0 0 0 / .06); }
+.pages-toolbar { flex-wrap: wrap; row-gap: 12px; }
+.view-toggle { background: var(--surface-soft); padding: 3px; border-radius: 999px; }
+.proposed .view-toggle .icon-button { border-radius: 999px; background: transparent; box-shadow: none; }
+.proposed .view-toggle .icon-button[aria-pressed="true"] { background: var(--surface); box-shadow: 0 2px 5px rgba(15,23,42,.05); }
+.asset-area { gap: 20px 18px; }
+.asset-card {
+  --asset-radius: 20px;
+  --asset-inset: 16px;
+  border: 0;
+  border-radius: var(--asset-radius);
+  background: var(--surface);
+  padding: var(--asset-inset);
+  box-shadow: var(--shadow-card);
+  transition: box-shadow 150ms ease-out;
+}
+.thumbnail,
+.list-layout .thumbnail {
+  border: 0;
+  border-radius: max(0px, calc(var(--asset-radius) - var(--asset-inset)));
+  background: var(--surface-soft);
+  outline: 1px solid oklch(0 0 0 / .1);
+  outline-offset: -1px;
+}
+.card-description { display: grid; gap: 8px; padding: 16px 0 0; }
+.card-title { min-height: 28px; }
+.proposed .card-folder {
+  min-height: 44px;
+  padding: 0 12px;
+  gap: 8px;
+  border-radius: 12px;
+  background: var(--surface-soft);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+}
+.card-folder span { flex: 1; min-width: 0; }
+.card-folder svg { width: 16px; height: 16px; }
+.list-layout .card-description { padding: 0 8px 0 0; }
+.list-layout .asset-card { --asset-inset: 10px; padding: var(--asset-inset); gap: 16px; }
+.thumbnail-select,
+.list-layout .thumbnail-select,
+.proposed .thumbnail-rescan {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.94);
+  box-shadow: var(--shadow-image-control);
+}
+.proposed .thumbnail-rescan svg { width: 16px; height: 16px; }
+.thumbnail-size { border-radius: 999px; }
+.queue-heading>span,
+.queue-domain>span,
+.queue-row-meta,
+.queue-footer,
+.job-actions .primary,
+.page-tabs button span,
+.crop-fields input { font-variant-numeric: tabular-nums; }
+.proposed button.primary>svg,
+.small-dialog button.primary>svg,
+.review-dialog button.primary>svg { width: 16px; height: 16px; stroke-width: 2; }
+.workspace-footer { padding-bottom: 74px; }
+.activity-panel { background: var(--surface-soft); border-radius: 18px; }
+.tuning-panel { border: 0; border-radius: 18px; background: var(--panel); box-shadow: var(--panel-inset), var(--shadow-panel); }
+.proposed input:not([type="checkbox"]):not([type="range"]),
+.proposed select,
+.small-dialog input:not([type="checkbox"]),
+.small-dialog select { border-radius: 14px; }
+
+.review-dialog,
+.small-dialog { border-radius: 28px; background: var(--panel); box-shadow: 0 34px 90px rgba(15,23,42,.22); }
+.review-dialog::backdrop,
+.small-dialog::backdrop { background: rgba(24,28,34,.4); backdrop-filter: blur(7px); }
+.review-header { background: var(--panel); }
+.review-scroll { padding: 20px; }
+.review-canvas { background: var(--panel); }
+.review-stage { border-radius: 20px; overflow: hidden; }
+.review-sidebar { background: var(--panel); }
+.review-sidebar { padding: 24px; }
+.sidebar-section { padding-top: 24px; }
+.technical-toggle { margin-top: 24px; }
+.import-select { margin-bottom: 16px; }
+.tool-heading { margin-bottom: 20px; }
+.review-dialog :where(button:not(.proto-picker-item)),
+.review-dialog .button { border-radius: 10px; border: 0; background: var(--surface-soft); color: var(--text); box-shadow: inset 0 0 0 1px var(--control-edge); }
+.review-dialog button.primary { background: linear-gradient(180deg,#2b2f36,#17191d); box-shadow: 0 8px 18px rgba(15,23,42,.12); }
+.review-dialog .review-header .icon-button,
+.review-dialog .tool-heading .icon-button,
+.review-dialog .annotation-label .icon-button { background: transparent; box-shadow: none; border-radius: 999px; }
+.review-dialog .technical-toggle { background: transparent; box-shadow: none; }
+.review-dialog .segmented { border-radius: 14px; padding: 4px; }
+.review-dialog .segmented button[aria-pressed="true"] { background: var(--surface); box-shadow: 0 3px 8px rgba(15,23,42,.07); }
+.review-dialog .crop-fields input,
+.review-dialog textarea { border-radius: 12px; background: var(--surface); }
+.crop-fields input { height: 44px; padding-inline: 12px 30px; }
+.crop-fields label>span {
+  right: 12px;
+  bottom: 0;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  pointer-events: none;
+}
+.small-dialog .folder-options>button { border-radius: 16px; background: transparent; box-shadow: none; }
+.small-dialog .technical-toggle { background: transparent; box-shadow: none; }
+.toast { border: 0; border-radius: 18px; background: var(--panel); box-shadow: var(--panel-inset), var(--shadow-panel); }
+
+/* Readable roles cover the original hard-coded inspector and metadata colors. */
+.queue-row-meta,
+.queue-heading>span,
+.queue-domain>span,
+.queue-footer,
+.mode-label,
+.connection,
+.job-identity a,
+.job-summary,
+.job-summary>button,
+.page-tabs button,
+.overview-toggle,
+.workspace-footer,
+.folder-display span,
+.compact-facts dt,
+.technical-toggle,
+.technical-details,
+.sidebar-footnote,
+.demo-caption,
+.folder-options small,
+.region-coordinates,
+.tuning-panel output,
+.activity-panel time,
+.crop-fields label,
+.import-select { color: var(--muted); }
+.page-tabs button span,
+.eyebrow,
+.thumbnail-size { color: var(--text-subtle); }
+.header-dot,.footer-separator { color: var(--text-subtle); }
+.proposed .card-folder { color: var(--muted); }
+.search svg,.folder-display>svg { color: var(--muted); }
+.proposed .thumbnail-rescan,
+.proposed .view-toggle .icon-button { color: var(--muted); }
+.proposed .view-toggle .icon-button[aria-pressed="true"] { color: var(--text); box-shadow: inset 0 0 0 1px var(--control-edge); }
+.queue-state { color: var(--text-warning); }
+.queue-state.review,.warning-summary { color: var(--text-warning); }
+.auto-match { color: var(--green); font-size: 12px; }
+.error-text { color: var(--text-error); }
+.eyebrow,.sidebar-footnote,.region-coordinates,.folder-options small { font-size: 12px; }
+.proposed input::placeholder,
+.small-dialog input::placeholder,
+.review-dialog textarea::placeholder { color: var(--text-subtle); opacity: 1; }
+.proposed input:not([type="checkbox"]):not([type="range"]),
+.proposed select,
+.small-dialog input:not([type="checkbox"]),
+.small-dialog select,
+.review-dialog .crop-fields input,
+.review-dialog textarea { color: var(--text); background: var(--surface); }
+.search input { background: transparent !important; }
+.unselected .thumbnail { filter: none; }
+.unselected .card-title { color: var(--text); }
+.proposed button:disabled,
+.review-dialog button:disabled,
+.small-dialog button:disabled { color: var(--text-disabled); background: var(--surface-disabled); box-shadow: none; }
+
+:is(.proposed,.small-dialog,.review-dialog) button:not(.proto-picker-item),
+:is(.proposed,.small-dialog,.review-dialog) .button {
+  transition: background-color 130ms ease-out, box-shadow 130ms ease-out, scale 150ms ease-out;
+}
+:is(.proposed,.small-dialog,.review-dialog) :where(button:not(.proto-picker-item):not(:disabled)):active,
+:is(.proposed,.small-dialog,.review-dialog) .button:active {
+  transform: none;
+  scale: .96;
+}
+.proposed :is(.queue-row,.image-open,.card-folder):active,
+.proposed :is(.main-nav,.page-tabs,.view-toggle,.card-title) button:active,
+.review-dialog .segmented button:active,
+.small-dialog .folder-options>button:active {
+  transform: none;
+  scale: 1;
+}
+@media (prefers-reduced-motion:reduce) {
+  :is(.proposed,.small-dialog,.review-dialog) button:not(.proto-picker-item):active,
+  :is(.proposed,.small-dialog,.review-dialog) .button:active { scale: 1; }
+}
+
+@media (hover:hover) and (pointer:fine) {
+  .proposed button:hover:not(:disabled):not(.primary):not(.image-open):not(.queue-row):not(.proto-picker-item):not(.active):not([aria-pressed="true"]),
+  .proposed .button:hover,
+  .small-dialog button:hover:not(:disabled):not(.primary),
+  .review-dialog button:hover:not(:disabled):not(.primary):not(.proto-picker-item):not([aria-pressed="true"]),
+  .review-dialog .button:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+    box-shadow: inset 0 0 0 1px var(--control-edge-hover);
+  }
+  .proposed .queue-row:hover { background: var(--surface); box-shadow: inset 0 0 0 1px var(--control-edge-hover), 0 8px 18px rgba(15,23,42,.06); }
+  .proposed .queue-row.selected:hover { background: var(--surface); box-shadow: inset 0 0 0 2px rgba(10,132,255,.85), 0 8px 18px rgba(10,132,255,.12); }
+  .asset-card:hover { box-shadow: var(--shadow-card-hover); }
+  .proposed button.primary:hover:not(:disabled),
+  .small-dialog button.primary:hover:not(:disabled),
+  .review-dialog button.primary:hover:not(:disabled) { color: var(--surface); background: linear-gradient(180deg,#36404d,#232a33); box-shadow: 0 8px 18px rgba(15,23,42,.16); }
+}
+@media (max-width:1250px) {
+  .brand { min-width: 190px; }
+  .workspace { grid-template-columns: 256px minmax(0,1fr); gap: 18px; }
+  .main-workspace { padding: 0 22px; }
+}
+@media (max-width:1000px) {
+  .show-detail .header-actions .new-capture-compact { display: inline-flex; }
+  .proposed { padding: 12px 16px 16px; gap: 10px; }
+  .app-header { height: 58px; padding: 0 4px; }
+  .brand { min-width: 0; }
+  .brand strong { font-size: 20px; }
+  .workspace { display: block; }
+  .main-workspace { padding: 0 20px; }
+  .review-sidebar { padding: 20px 16px; }
+  .queue-rows { gap: 12px; }
+  .queue-sidebar { padding: 22px 16px 0; }
+}
+@media (max-width:640px) {
+  .proposed { padding: 8px 10px 12px; gap: 8px; }
+  .app-header { height: 100px; padding: 0 4px; }
+  .brand strong { font-size: 18px; }
+  .main-nav { width: auto; margin: 0 auto; }
+  .queue-sidebar,.main-workspace { border-radius: 22px; }
+  .main-workspace { padding: 0 14px; }
+  .job-title h1 { font-size: 20px; }
+  .job-summary { gap: 9px; padding: 12px; }
+  .asset-card { --asset-inset: 12px; }
+  .thumbnail-select,
+  .list-layout .thumbnail-select,
+  .proposed .thumbnail-rescan { width: 44px; height: 44px; }
+  .card-description { padding-top: 12px; }
+  .asset-area { gap: 16px; }
+  .review-dialog { border-radius: 22px; }
+  .review-stage { border-radius: 14px; }
+  .review-scroll { padding: 12px; }
+  .review-sidebar { padding: 12px 16px 16px; }
+  .import-select { margin-bottom: 8px; }
+  .tool-heading { margin-bottom: 8px; }
+}

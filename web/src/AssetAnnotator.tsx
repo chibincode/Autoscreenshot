@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { ArrowLeft, Check, Copy, Download, SquareDashed, Trash2 } from "lucide-react";
 import { Button } from "./ui/Button";
+import { ImageMinimap } from "./ImageMinimap";
 import {
   annotationFeedbackText,
   imagePoint,
@@ -13,8 +14,9 @@ import {
 } from "./image-annotations";
 import "./asset-annotations.css";
 
-export function AssetAnnotator({ src, fileName, width, height, context, draftKey, onDone }: {
+export function AssetAnnotator({ src, thumbnailSrc, fileName, width, height, context, draftKey, onDone }: {
   src: string;
+  thumbnailSrc: string;
   fileName: string;
   width: number;
   height: number;
@@ -33,6 +35,7 @@ export function AssetAnnotator({ src, fileName, width, height, context, draftKey
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const imageRef = useRef<HTMLImageElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const drag = useRef<{ pointerId: number; start: ImagePoint } | null>(null);
@@ -127,7 +130,8 @@ export function AssetAnnotator({ src, fileName, width, height, context, draftKey
         else onDone();
       }
     }}>
-      <div className="asset-preview-image-wrap">
+      <div className="asset-preview-image-pane">
+      <div className="asset-preview-image-wrap" ref={scrollRef}>
         <div className="annotation-stage" ref={stageRef}
           onPointerDown={(event) => {
             if (event.button !== 0 || !loaded || busy || annotations.length >= 20) return;
@@ -143,7 +147,7 @@ export function AssetAnnotator({ src, fileName, width, height, context, draftKey
           }}
           onPointerUp={finishDrag}
           onPointerCancel={() => { drag.current = null; setDraft(null); }}>
-          <img ref={imageRef} src={src} alt={fileName} className="asset-preview-image" draggable={false}
+          <img ref={imageRef} src={src} width={width} height={height} alt={fileName} className="asset-preview-image" draggable={false}
             onLoad={() => setLoaded(true)} onError={() => { setLoaded(false); setError("Could not load the screenshot. Reopen the preview and retry."); }} />
           {annotations.map((annotation, index) => (
             <button key={annotation.id} type="button" className={`annotation-region${selectedId === annotation.id ? " is-selected" : ""}`}
@@ -154,6 +158,8 @@ export function AssetAnnotator({ src, fileName, width, height, context, draftKey
           ))}
           {draft && <div className="annotation-region annotation-region-draft" style={regionStyle(draft)} />}
         </div>
+      </div>
+        <ImageMinimap scrollRef={scrollRef} contentRef={stageRef} src={thumbnailSrc} width={width} height={height} />
       </div>
       <aside className="asset-preview-sidebar annotation-sidebar">
         <div className="annotation-toolbar">

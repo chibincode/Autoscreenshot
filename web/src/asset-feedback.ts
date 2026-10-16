@@ -49,10 +49,10 @@ export interface AssetFeedbackRoute {
 
 export type CoreRoutePreviewState = "ready" | "pending" | "failed" | "empty";
 
-export interface AssetLookupIndex {
-  assetById: Map<number, AssetFeedbackAsset>;
-  assetsBySourceUrl: Map<string, AssetFeedbackAsset[]>;
-  latestAssetBySourceUrl: Map<string, AssetFeedbackAsset>;
+export interface AssetLookupIndex<T extends AssetFeedbackAsset = AssetFeedbackAsset> {
+  assetById: Map<number, T>;
+  assetsBySourceUrl: Map<string, T[]>;
+  latestAssetBySourceUrl: Map<string, T>;
 }
 
 export function formatPendingImportLabel(selectedForImport: boolean): string {
@@ -80,9 +80,9 @@ function compareAssets(left: AssetFeedbackAsset, right: AssetFeedbackAsset): num
   return right.id - left.id;
 }
 
-export function buildAssetLookupIndex(assets: AssetFeedbackAsset[]): AssetLookupIndex {
-  const assetById = new Map<number, AssetFeedbackAsset>();
-  const grouped = new Map<string, AssetFeedbackAsset[]>();
+export function buildAssetLookupIndex<T extends AssetFeedbackAsset>(assets: T[]): AssetLookupIndex<T> {
+  const assetById = new Map<number, T>();
+  const grouped = new Map<string, T[]>();
 
   for (const asset of assets) {
     assetById.set(asset.id, asset);
@@ -97,8 +97,8 @@ export function buildAssetLookupIndex(assets: AssetFeedbackAsset[]): AssetLookup
     }
   }
 
-  const assetsBySourceUrl = new Map<string, AssetFeedbackAsset[]>();
-  const latestAssetBySourceUrl = new Map<string, AssetFeedbackAsset>();
+  const assetsBySourceUrl = new Map<string, T[]>();
+  const latestAssetBySourceUrl = new Map<string, T>();
   for (const [sourceUrl, groupedAssets] of grouped.entries()) {
     const sortedAssets = [...groupedAssets].sort(compareAssets);
     assetsBySourceUrl.set(sourceUrl, sortedAssets);
@@ -129,17 +129,17 @@ export function findAssetsForRoute(
   return findAssetsForRouteFromIndex(route, buildAssetLookupIndex(assets));
 }
 
-export function findAssetForRouteFromIndex(
+export function findAssetForRouteFromIndex<T extends AssetFeedbackAsset>(
   route: Pick<AssetFeedbackRoute, "url">,
-  index: AssetLookupIndex,
-): AssetFeedbackAsset | null {
+  index: AssetLookupIndex<T>,
+): T | null {
   return index.latestAssetBySourceUrl.get(route.url) ?? null;
 }
 
-export function findAssetsForRouteFromIndex(
+export function findAssetsForRouteFromIndex<T extends AssetFeedbackAsset>(
   route: Pick<AssetFeedbackRoute, "url">,
-  index: AssetLookupIndex,
-): AssetFeedbackAsset[] {
+  index: AssetLookupIndex<T>,
+): T[] {
   return index.assetsBySourceUrl.get(route.url) ?? [];
 }
 
