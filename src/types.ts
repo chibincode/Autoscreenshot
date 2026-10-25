@@ -145,6 +145,14 @@ export interface SectionDetectionDebug {
   selectedCandidates: SectionDebugCandidate[];
 }
 
+export interface MotionAnchor {
+  selector: string;
+  bbox: { x: number; y: number; width: number; height: number };
+  viewport: { width: number; height: number };
+}
+
+export type AuthPageIntent = "login" | "signup" | "combined";
+
 export interface CapturedAsset {
   kind: CaptureMode;
   sectionType?: SectionType;
@@ -152,10 +160,12 @@ export interface CapturedAsset {
   filePath: string;
   fileName: string;
   pageTitle?: string;
+  authPageIntent?: AuthPageIntent;
   sourceUrl: string;
   quality: number;
   dpr: number;
   capturedAt: string;
+  motionAnchor?: MotionAnchor;
 }
 
 export interface CaptureRunResult {
@@ -408,6 +418,7 @@ export interface QueueStats {
 
 export interface JobSummary {
   id: string;
+  mode: JobMode;
   status: JobStatus;
   instruction: string;
   createdAt: string;

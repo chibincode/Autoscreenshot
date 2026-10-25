@@ -1,4 +1,5 @@
-import type { EagleFolderRules, FullPageType } from "../types.js";
+import type { AuthPageIntent, EagleFolderRules, FullPageType } from "../types.js";
+import { inferAuthPageIntent, isAuthEntryPath } from "./auth-page.js";
 import {
   normalizeHostname,
   normalizePathname,
@@ -134,7 +135,7 @@ export function matchPathRule(pathname: string, rule: string): boolean {
 export function classifyFullPageType(
   sourceUrl: string,
   rules: EagleFolderRules,
-  context: { pageTitle?: string | null } = {},
+  context: { pageTitle?: string | null; authPageIntent?: AuthPageIntent } = {},
 ): { type: FullPageType; normalizedPathname: string } {
   try {
     const parsedUrl = new URL(sourceUrl);
@@ -164,6 +165,14 @@ export function classifyFullPageType(
         normalizedPathname,
       };
     }
+  }
+
+  if (isAuthEntryPath(normalizedPathname.split(/[?#]/)[0])) {
+    const intent = context.authPageIntent ?? inferAuthPageIntent({ pageTitle: context.pageTitle });
+    if (intent === "login" || intent === "signup" || intent === "combined") {
+      return { type: intent === "login" ? "login" : "signup", normalizedPathname };
+    }
+    return { type: "unmatched", normalizedPathname };
   }
 
   if (isLikelyFlatProjectDetail(normalizedPathname, context.pageTitle)) {

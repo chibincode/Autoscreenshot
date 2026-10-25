@@ -14,9 +14,12 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Archive, ArrowLeft, CheckCircle2, ChevronDown, Crop, Folder, FolderInput, Image as ImageIcon, Plus, RefreshCw, SquareDashedMousePointer, X } from "lucide-react";
+import { Archive, ArrowLeft, Check, CheckCircle2, ChevronDown, Crop, Folder, FolderInput, Image as ImageIcon, ImageOff, Play, Plus, RefreshCw, SquareDashedMousePointer, Trash2, Video, X } from "lucide-react";
+import { MotionControls, MotionViewer, useAssetMotion, type MotionSummary } from "./AssetMotion";
+import { OverlayScrollArea } from "./OverlayScrollArea";
+import { SiteFavicon } from "./SiteFavicon";
 import { readInterfaceVersion, rememberInterfaceVersion, shortTaskDate, siteLabel, type InterfaceVersion } from "./interface-version";
-import { CaptureSurface, InterfaceVersionSwitch, NewCaptureButton, NewPagesToolbar, NewWorkspaceHeader, type PagePresentation } from "./WorkspaceChrome";
+import { CaptureSurface, InterfaceVersionSwitch, NewCaptureButton, NewPagesToolbar, NewTaskViews, NewWorkspaceHeader, type PagePresentation } from "./WorkspaceChrome";
 import { AssetAnnotator } from "./AssetAnnotator";
 import { ImageMinimap } from "./ImageMinimap";
 import {
@@ -148,6 +151,7 @@ interface ManifestAssetView {
 
 interface JobSummary {
   id: string;
+  mode?: JobMode;
   status: JobStatus;
   instruction: string;
   createdAt: string;
@@ -166,6 +170,7 @@ interface JobSummary {
 }
 
 interface JobAsset {
+  motion?: MotionSummary;
   id: number;
   kind: "fullPage" | "section";
   sectionType: string | null;
@@ -476,8 +481,6 @@ function LinkifiedText({
 }
 
 const PLAYWRIGHT_RUNTIME_POLL_MS = 30_000;
-const LOG_VIRTUALIZE_THRESHOLD = 80;
-const LOG_ROW_HEIGHT = 42;
 const ASSET_VIRTUALIZE_THRESHOLD = 36;
 const ASSET_GRID_ROW_HEIGHT = 336;
 const ASSET_GRID_OVERSCAN_ROWS = 2;
@@ -677,6 +680,7 @@ function areJobSummariesEqual(left: JobSummary[], right: JobSummary[]): boolean 
     const rightItem = right[index];
     if (
       leftItem.id !== rightItem.id ||
+      leftItem.mode !== rightItem.mode ||
       leftItem.status !== rightItem.status ||
       leftItem.instruction !== rightItem.instruction ||
       leftItem.createdAt !== rightItem.createdAt ||
@@ -1247,6 +1251,7 @@ const AssetCard = memo(function AssetCard({
             disabled={assetActionsDisabled}
             onChange={(event) => void onToggleSelection(asset.id, event.target.checked)}
           />
+          {newAppearance ? <Check className="asset-select-check" aria-hidden="true" /> : null}
           <span>Import</span>
         </label>
         {trailingToolbarAction || canFocusDebug ? (
@@ -1276,6 +1281,7 @@ const AssetCard = memo(function AssetCard({
         onClick={() => onOpenPreview(asset.id)}
       >
         <AssetThumbnail asset={asset} alt={asset.fileName} />
+        {asset.motion?.videoUrl ? <span className="asset-motion-badge"><Play size={12} />{asset.motion.result?.duration}s</span> : null}
         {newAppearance && asset.imageWidth > 0 && asset.imageHeight > 0 ? <span className="new-thumbnail-size"><ImageIcon aria-hidden="true" />{asset.imageWidth.toLocaleString()} × {asset.imageHeight.toLocaleString()}</span> : null}
       </button>
       {newAppearance ? (
@@ -1340,6 +1346,7 @@ const JobsListPanel = memo(function JobsListPanel({
   newAppearance?: boolean;
 }) {
   return (
+    <OverlayScrollArea enabled={newAppearance}>
     <section className="jobs-list">
       {jobs.map((job) => {
         const jobIsLive = runningJobId === job.id || isActiveStatus(job.status);
@@ -1399,6 +1406,7 @@ const JobsListPanel = memo(function JobsListPanel({
                 </div>
               </div>
               <div className="job-title">
+                {newAppearance && <SiteFavicon key={job.sourceUrl} url={job.sourceUrl ?? ""} />}
                 {job.sourceUrl ? newAppearance ? <span title={job.sourceUrl}>{siteLabel(job.sourceUrl)}</span> : <ExternalLink href={job.sourceUrl} label={job.sourceUrl} /> : "No URL"}
               </div>
               {shouldShowJobInstruction(job) ? (
@@ -1407,6 +1415,7 @@ const JobsListPanel = memo(function JobsListPanel({
                 </div>
               ) : null}
               <div className="job-stats">
+                {newAppearance && job.mode ? <span className="job-capture-mode">{job.mode === "core-routes" ? "Pages" : "Sections"}</span> : null}
                 <span>{newAppearance ? `${job.assetCount} ${job.assetCount === 1 ? "capture" : "captures"}` : `Assets ${job.assetCount}`}</span>
                 <span>Pending {job.pendingConfirmationCount}</span>
                 <span>Imported {job.importSuccessCount}</span>
@@ -1484,6 +1493,7 @@ const JobsListPanel = memo(function JobsListPanel({
         </button>
       </div>
     </section>
+    </OverlayScrollArea>
   );
 });
 
@@ -1728,6 +1738,8 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
   onFocusDebug,
   onRerunRoute,
   rerunningRouteId,
+  onRemoveRoute,
+  removingRouteId,
   onAddCustomRoute,
   addingCustomRoute,
   browserActionsDisabled,
@@ -1745,6 +1757,8 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
   onFocusDebug: (asset: JobAsset) => void;
   onRerunRoute: (jobId: string, route: RouteTargetSummary) => void | Promise<void>;
   rerunningRouteId: number | null;
+  onRemoveRoute: (jobId: string, route: RouteTargetSummary) => void;
+  removingRouteId: number | null;
   onAddCustomRoute: (jobId: string, url: string) => Promise<boolean>;
   addingCustomRoute: boolean;
   browserActionsDisabled: boolean;
@@ -1822,11 +1836,20 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
               loading={rerunningRouteId === route.id}
               loadingLabel={route.status === "failed" ? "Retrying..." : "Rescanning..."}
               aria-label={`${route.status === "failed" ? "Retry" : "Rescan"} ${formatCoreRouteCardLabel(route.path)}`}
+              title={route.status === "failed" ? "Retry page" : "Rescan page"}
               onClick={() => void onRerunRoute(detail.job.id, route)}
             >
-              {presentation && asset ? <RefreshCw aria-hidden="true" /> : route.status === "failed" ? "Retry page" : "Rescan page"}
+              {presentation ? <RefreshCw aria-hidden="true" /> : route.status === "failed" ? "Retry page" : "Rescan page"}
             </Button>
           ) : null;
+          const removeAction = (
+            <Button size="sm" variant="ghost" className="route-remove-button"
+              aria-label={`Remove ${formatCoreRouteCardLabel(route.path)}`} title="Remove page"
+              disabled={removingRouteId !== null} loading={removingRouteId === route.id} loadingLabel="Removing..."
+              onClick={() => onRemoveRoute(detail.job.id, route)}>
+              <Trash2 aria-hidden="true" />
+            </Button>
+          );
           const canFocusRouteDebug = asset ? canFocusDebugAsset(asset, hasSectionDebug) : false;
 
           if (presentation && assets.length > 0) {
@@ -1836,8 +1859,34 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                 assetActionsDisabled={assetActionsDisabled} folderSaving={folderSavingAssetIds.has(routeAsset.id)}
                 hasSectionDebug={hasSectionDebug} onToggleSelection={onToggleAssetSelection}
                 onOpenFolderPicker={onOpenFolderPicker} onOpenPreview={onOpenPreview} onFocusDebug={onFocusDebug}
-                trailingToolbarAction={routeAsset.id === asset?.id ? rerunAction : null} />)}
+                trailingToolbarAction={<>{removeAction}{routeAsset.id === asset?.id ? rerunAction : null}</>} />)}
             </div>;
+          }
+
+          if (presentation) {
+            return (
+              <article key={route.id} className="new-asset-card new-route-placeholder">
+                <div className="route-asset-toolbar new-route-placeholder-toolbar">
+                  <div className="asset-toolbar-actions">{removeAction}{rerunAction}</div>
+                </div>
+                <div className="new-route-preview">
+                  <div className={cx("asset-thumbnail-frame", "route-preview-placeholder", `route-preview-${previewState}`)}>
+                    {previewState === "failed" ? <ImageOff className="route-preview-state-icon" aria-hidden="true" /> : null}
+                    <strong className="route-preview-title">
+                      {previewState === "pending" ? "Waiting for capture" : previewState === "failed" ? "Capture failed" : "No preview"}
+                    </strong>
+                    <span className="route-preview-copy">
+                      {previewState === "pending" ? "Still running or queued" : previewState === "failed" ? "No screenshot available" : "No matching preview"}
+                    </span>
+                  </div>
+                </div>
+                <div className="new-asset-heading">
+                  <ExternalLink href={route.url} label={formatCoreRouteCardLabel(route.path)} title={route.url} />
+                  <div className="new-route-placeholder-status"><StatusBadge status={route.status} /></div>
+                </div>
+                <div className="new-route-placeholder-actions" aria-hidden="true" />
+              </article>
+            );
           }
 
           return (
@@ -1859,7 +1908,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                   className="core-route-card-path"
                   title={route.url}
                 />
-                {canFocusRouteDebug || (!asset && rerunAction) ? (
+                {canFocusRouteDebug || !asset ? (
                   <div className="core-route-card-actions">
                     {asset && canFocusRouteDebug ? (
                       <button type="button" onClick={() => onFocusDebug(asset)}>
@@ -1867,6 +1916,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                       </button>
                     ) : null}
                     {!asset ? rerunAction : null}
+                    {!asset ? removeAction : null}
                   </div>
                 ) : null}
               </div>
@@ -1886,7 +1936,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
                         onOpenFolderPicker={onOpenFolderPicker}
                         onOpenPreview={onOpenPreview}
                         onFocusDebug={onFocusDebug}
-                        trailingToolbarAction={routeAsset.id === asset?.id ? rerunAction : null}
+                        trailingToolbarAction={<>{removeAction}{routeAsset.id === asset?.id ? rerunAction : null}</>}
                       />
                     ))}
                   </div>
@@ -1913,7 +1963,7 @@ const CoreRoutesPanel = memo(function CoreRoutesPanel({
           );
         })}
       </div>
-      {presentation && visibleRoutes.length === 0 ? <div className="new-pages-empty"><strong>{detail.routes.length ? "No pages selected" : "Waiting for capture"}</strong>{detail.routes.length ? <button type="button" onClick={() => presentation.onFilterChange("all")}>View all pages</button> : null}</div> : null}
+      {presentation && visibleRoutes.length === 0 ? <div className="new-pages-empty"><strong>{detail.routes.length ? "No pages selected" : canAddCustomRoute ? "No pages in this task" : "Waiting for capture"}</strong>{detail.routes.length ? <button type="button" onClick={() => presentation.onFilterChange("all")}>View all pages</button> : null}</div> : null}
     </div>
   ) : null;
 });
@@ -1945,8 +1995,10 @@ const AssetGridPanel = memo(function AssetGridPanel({
   const { width, height } = useElementSize(containerRef);
   const [scrollTop, setScrollTop] = useState(0);
   const shouldVirtualize = assets.length > ASSET_VIRTUALIZE_THRESHOLD && presentation?.layout !== "list";
-  const rowHeight = presentation ? 420 : ASSET_GRID_ROW_HEIGHT;
   const columns = useMemo(() => presentation?.layout === "list" ? 1 : getAssetGridColumns(width), [width, presentation?.layout]);
+  const rowHeight = presentation
+    ? Math.ceil(Math.max(0, (width - (columns - 1) * 16) / columns - 32) * 9 / 16) + 144
+    : ASSET_GRID_ROW_HEIGHT;
 
   const virtualWindow = useMemo(() => {
     if (!shouldVirtualize) {
@@ -2022,8 +2074,9 @@ const AssetGridPanel = memo(function AssetGridPanel({
           style={
             {
               transform: `translateY(${virtualWindow.offsetTop}px)`,
+              "--new-virtual-card-height": `${rowHeight - 16}px`,
               gridTemplateColumns: `repeat(${virtualWindow.columns}, minmax(0, 1fr))`,
-            } satisfies CSSProperties
+            } satisfies CSSProperties & { "--new-virtual-card-height": string }
           }
         >
           {virtualWindow.visibleAssets.map((asset) => (
@@ -2048,99 +2101,6 @@ const AssetGridPanel = memo(function AssetGridPanel({
   );
 });
 
-const LogsPanel = memo(function LogsPanel({
-  logs,
-  expanded,
-  onToggle,
-}: {
-  logs: JobLog[];
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const { height } = useElementSize(scrollRef);
-  const [scrollTop, setScrollTop] = useState(0);
-  const shouldVirtualize = expanded && logs.length > LOG_VIRTUALIZE_THRESHOLD;
-  const viewportHeight = Math.max(height || 220, 220);
-  const startIndex = shouldVirtualize ? Math.max(0, Math.floor(scrollTop / LOG_ROW_HEIGHT) - 4) : 0;
-  const visibleCount = shouldVirtualize ? Math.ceil(viewportHeight / LOG_ROW_HEIGHT) + 8 : logs.length;
-  const endIndex = shouldVirtualize ? Math.min(logs.length, startIndex + visibleCount) : logs.length;
-  const visibleLogs = logs.slice(startIndex, endIndex);
-
-  return (
-    <div className="log-box">
-      <div className="collapsible-panel-header">
-        <h4>运行日志</h4>
-        <button type="button" className="collapsible-toggle" onClick={onToggle}>
-          {expanded ? "收起" : `展开 (${logs.length})`}
-        </button>
-      </div>
-      {expanded ? (
-        <div className="log-scroll" ref={scrollRef} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
-          {shouldVirtualize ? (
-            <div style={{ height: `${logs.length * LOG_ROW_HEIGHT}px`, position: "relative" }}>
-              <div
-                style={{ transform: `translateY(${startIndex * LOG_ROW_HEIGHT}px)` }}
-                className="log-scroll-virtual"
-              >
-                {visibleLogs.map((log) => (
-                  <div key={log.id} className={`log-line log-${log.level}`}>
-                    <span>{new Date(log.ts).toLocaleTimeString()}</span>
-                    <span>{log.level.toUpperCase()}</span>
-                    <span>{log.message}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            logs.map((log) => (
-              <div key={log.id} className={`log-line log-${log.level}`}>
-                <span>{new Date(log.ts).toLocaleTimeString()}</span>
-                <span>{log.level.toUpperCase()}</span>
-                <span>{log.message}</span>
-              </div>
-            ))
-          )}
-        </div>
-      ) : (
-        <div className="collapsible-panel-hint">默认折叠，避免大日志列表持续占用渲染和布局开销。</div>
-      )}
-    </div>
-  );
-});
-
-const ManifestPanel = memo(function ManifestPanel({
-  manifest,
-  expanded,
-  onToggle,
-}: {
-  manifest: ManifestView | null;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const manifestText = useMemo(() => {
-    if (!expanded) {
-      return "";
-    }
-    return JSON.stringify(manifest, null, 2);
-  }, [expanded, manifest]);
-
-  return (
-    <div className="manifest-box">
-      <div className="collapsible-panel-header">
-        <h4>Manifest</h4>
-        <button type="button" className="collapsible-toggle" onClick={onToggle}>
-          {expanded ? "收起" : "展开"}
-        </button>
-      </div>
-      {expanded ? (
-        <pre>{manifestText}</pre>
-      ) : (
-        <div className="collapsible-panel-hint">默认折叠，避免在每次 detail 更新时序列化整份 manifest。</div>
-      )}
-    </div>
-  );
-});
 
 const PreviewModal = memo(function PreviewModal({
   onOpenFolderPicker,
@@ -2194,6 +2154,8 @@ const PreviewModal = memo(function PreviewModal({
   const cropStageRef = useRef<HTMLDivElement | null>(null);
   const [cropMode, setCropMode] = useState(false);
   const [annotationMode, setAnnotationMode] = useState(false);
+  const motionController = useAssetMotion(previewAsset.id, previewAsset.motion);
+  const [media, setMedia] = useState<"screenshot" | "motion">(previewAsset.motion?.videoUrl ? "motion" : "screenshot");
   const [cropToolMode, setCropToolMode] = useState<CropToolMode>(readLastCropToolMode);
   const [cropKeepHeight, setCropKeepHeight] = useState(previewAsset.imageHeight);
   const [cropBandStartY, setCropBandStartY] = useState(0);
@@ -2205,6 +2167,7 @@ const PreviewModal = memo(function PreviewModal({
     endY: number;
   } | null>(null);
   const canEditImage =
+    media === "screenshot" &&
     !assetActionsDisabled &&
     previewAsset.importStatus !== "imported" &&
     previewAsset.imageHeight > 64;
@@ -2377,6 +2340,10 @@ const PreviewModal = memo(function PreviewModal({
             <span>{previewRoute ? `${previewRoute.path} · ${previewRoute.status}` : previewAsset.label}</span>
           </div>
           <InterfaceVersionSwitch value={interfaceVersion} onChange={onInterfaceVersionChange} />
+          <div className="asset-preview-media-tabs" role="tablist" aria-label="Asset media">
+            <button type="button" role="tab" aria-selected={media === "screenshot"} onClick={() => { setMedia("screenshot"); setCropMode(false); }}><ImageIcon size={14} />Screenshot</button>
+            <button type="button" role="tab" aria-selected={media === "motion"} onClick={() => { setMedia("motion"); setCropMode(false); }}><Video size={14} />Motion</button>
+          </div>
           <button type="button" className="asset-preview-close" onClick={onClose}>
             Close
           </button>
@@ -2400,6 +2367,7 @@ const PreviewModal = memo(function PreviewModal({
           />
         ) : <div className="asset-preview-modal-body">
           <div className="asset-preview-image-pane">
+          {media === "motion" ? <MotionViewer controller={motionController} poster={previewAsset.previewDisplayUrl} /> : <>
           <div className="asset-preview-image-wrap" ref={imageWrapRef}>
             <div
               className={cx("asset-preview-crop-stage", cropMode && "asset-preview-crop-stage-active")}
@@ -2485,8 +2453,10 @@ const PreviewModal = memo(function PreviewModal({
           </div>
             <ImageMinimap key={previewAsset.previewDisplayUrl} scrollRef={imageWrapRef} contentRef={cropStageRef}
               src={previewAsset.thumbnailUrl} width={previewAsset.imageWidth} height={previewAsset.imageHeight} />
+          </>}
           </div>
           <aside className="asset-preview-sidebar">
+            {media === "motion" ? <MotionControls controller={motionController} disabled={assetActionsDisabled} /> : null}
             <div className="asset-preview-actions">
               <label className="asset-select-control asset-select-control-inline asset-preview-import-control">
                 <input
@@ -2495,11 +2465,11 @@ const PreviewModal = memo(function PreviewModal({
                   disabled={assetActionsDisabled}
                   onChange={(event) => void onToggleSelection(previewAsset.id, event.target.checked)}
                 />
-                <span>Import to Eagle</span>
+                <span>{media === "motion" ? "Import screenshot to Eagle" : "Import to Eagle"}</span>
               </label>
               {!cropMode ? (
                 <>
-                  <button
+                  {media === "screenshot" ? <><button
                     type="button"
                     className="asset-preview-primary-action"
                     disabled={!canEditImage}
@@ -2513,9 +2483,9 @@ const PreviewModal = memo(function PreviewModal({
                     <Crop className="asset-preview-primary-action-icon" aria-hidden="true" />
                     <span>Crop image</span>
                   </button>
-                  <button type="button" className="annotation-open-action" onClick={() => setAnnotationMode(true)}>
+                  <button type="button" className="annotation-open-action" onClick={() => { setMedia("screenshot"); setAnnotationMode(true); }}>
                     <SquareDashedMousePointer size={16} aria-hidden="true" /> Annotate
-                  </button>
+                  </button></> : null}
                   <div
                     className={cx(
                       "asset-preview-secondary-actions",
@@ -2915,6 +2885,7 @@ export function App() {
   const [retryingFailedImport, setRetryingFailedImport] = useState(false);
   const [rescanningJobId, setRescanningJobId] = useState<string | null>(null);
   const [rerunningRouteId, setRerunningRouteId] = useState<number | null>(null);
+  const [removingRouteId, setRemovingRouteId] = useState<number | null>(null);
   const [addingCustomRoute, setAddingCustomRoute] = useState(false);
   const [archivingJobId, setArchivingJobId] = useState<string | null>(null);
   const [exitingJobIds, setExitingJobIds] = useState<Set<string>>(() => new Set());
@@ -2934,9 +2905,7 @@ export function App() {
       return [];
     }
   });
-  const [logsExpanded, setLogsExpanded] = useState(false);
   const hoveredJobIdRef = useRef<string | null>(null);
-  const [manifestExpanded, setManifestExpanded] = useState(false);
   const sseRefreshTimerRef = useRef<number | null>(null);
   const selectedJobDetailRef = useRef<JobDetail | null>(null);
   const pinnedJobIdRef = useRef<string | null>(initialSelectedJobId);
@@ -3487,8 +3456,6 @@ export function App() {
     setFolderSavingAssetIds(new Set());
     setFolderPickerState(null);
     setFolderPickerSaving(false);
-    setLogsExpanded(false);
-    setManifestExpanded(false);
   }, [loadJobDetail, selectedJobId]);
 
   useEffect(() => {
@@ -4020,6 +3987,31 @@ export function App() {
     });
   }, [executeRerunRoute]);
 
+  const removeRoute = useCallback((jobId: string, route: RouteTargetSummary): void => {
+    setActionDialog({
+      title: `Remove ${formatCoreRouteCardLabel(route.path)}?`,
+      description: "This removes the page and its captures from this task. Already imported Eagle items stay untouched. You can capture this URL again with Add page.",
+      confirmLabel: "Remove page",
+      cancelLabel: "Keep page",
+      tone: "danger",
+      onConfirm: async () => {
+        setRemovingRouteId(route.id);
+        try {
+          await apiFetch(`/api/jobs/${jobId}/routes/${route.id}`, { method: "DELETE" });
+          await loadJobs();
+          await loadJobDetail(jobId);
+          setErrorText(null);
+          showToast("Page removed");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Could not remove this page";
+          setErrorText(message);
+        } finally {
+          setRemovingRouteId(null);
+        }
+      },
+    });
+  }, [loadJobs, loadJobDetail, showToast]);
+
   const addCustomRoute = useCallback(async (jobId: string, url: string): Promise<boolean> => {
     if (browserActionsDisabled) {
       setErrorText("Screenshot engine is preparing. Try again shortly.");
@@ -4523,7 +4515,7 @@ export function App() {
 
   return (
     <div className={cx("layout", isNewInterface && "layout-new", isNewInterface && newMobileDetail && "new-mobile-detail", isNewInterface && newPageLayout === "list" && "new-view-list", isNewInterface && newOverview && "new-overview")} data-interface={interfaceVersion}>
-      {isNewInterface ? <NewWorkspaceHeader history={archivedOnly} onHistoryChange={changeHistoryView} version={interfaceVersion} onVersionChange={changeInterfaceVersion} connected={liveConnected} /> : null}
+      {isNewInterface ? <NewWorkspaceHeader version={interfaceVersion} onVersionChange={changeInterfaceVersion} connected={liveConnected} /> : null}
       {showPlaywrightBanner ? (
         <div className="runtime-banner" role="alert">
           <div className="runtime-banner-copy">
@@ -4688,7 +4680,7 @@ export function App() {
 
       <main className="panel panel-main">
         <div className="toolbar">
-          <h2>{isNewInterface && archivedOnly ? "History" : "Queue"}{isNewInterface ? <span className="new-task-count">{totalJobs} tasks</span> : null}</h2>
+          {isNewInterface ? <NewTaskViews history={archivedOnly} onHistoryChange={changeHistoryView} count={totalJobs} /> : <h2>Queue</h2>}
           {isNewInterface ? <NewCaptureButton onClick={() => setNewCaptureOpen(true)} /> : null}
           <div className="toolbar-actions">
             {!isNewInterface ? <InterfaceVersionSwitch value={interfaceVersion} onChange={changeInterfaceVersion} /> : null}
@@ -4852,6 +4844,8 @@ export function App() {
                     onFocusDebug={focusDebugFromAsset}
                     onRerunRoute={rerunRoute}
                     rerunningRouteId={rerunningRouteId}
+                    onRemoveRoute={removeRoute}
+                    removingRouteId={removingRouteId}
                     onAddCustomRoute={addCustomRoute}
                     addingCustomRoute={addingCustomRoute}
                     browserActionsDisabled={browserActionsDisabled}
@@ -4982,20 +4976,6 @@ export function App() {
                   </details>
                 ) : null}
 
-                <div className={cx("detail-columns", selectedJobDetail.job.cleanedAt && "detail-columns-history")}>
-                  <LogsPanel
-                    logs={selectedJobDetail.logs}
-                    expanded={logsExpanded}
-                    onToggle={() => setLogsExpanded((current) => !current)}
-                  />
-                  {!selectedJobDetail.job.cleanedAt ? (
-                    <ManifestPanel
-                      manifest={selectedJobDetail.manifest}
-                      expanded={manifestExpanded}
-                      onToggle={() => setManifestExpanded((current) => !current)}
-                    />
-                  ) : null}
-                </div>
               </>
             )}
           </section>
@@ -5004,6 +4984,7 @@ export function App() {
 
       {previewAsset ? (
         <PreviewModal
+          key={previewAsset.id}
           onOpenFolderPicker={openFolderPicker}
           folderSaving={folderSavingAssetIds.has(previewAsset.id)}
           interfaceVersion={interfaceVersion}

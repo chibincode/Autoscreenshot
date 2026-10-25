@@ -899,6 +899,31 @@ describe("core-routes-service", () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
+  it("skips removed queued pages and discards captures removed while running", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-core-routes-remove-"));
+    const outputDir = path.join(tmpDir, "run");
+    const manifestPath = path.join(outputDir, "manifest.json");
+    const removed = new Set(["https://example.com/pricing"]);
+    discoverCoreRoutesMock.mockResolvedValue({ entryUrl: "https://example.com", routes: [
+      { url: "https://example.com/", path: "/", source: "nav", depth: 0, priorityScore: 1000 },
+      { url: "https://example.com/pricing", path: "/pricing", source: "nav", depth: 0, priorityScore: 900 },
+    ] });
+    captureTaskMock.mockImplementation(async (task: any) => {
+      removed.add(task.url);
+      return { assets: [{ kind: "fullPage", label: "full_page", filePath: path.join(outputDir, "home.jpg"),
+        fileName: "home.jpg", sourceUrl: task.url, quality: 92, dpr: 2, capturedAt: new Date().toISOString() }] };
+    });
+    try {
+      const result = await executeCoreRoutesInstruction({ instruction: "open https://example.com", options: { mode: "core-routes" },
+        runId: "removed-pages", outputDir, manifestPath, shouldSkipRoute: url => removed.has(url) });
+      expect(captureTaskMock).toHaveBeenCalledTimes(1);
+      expect(result.manifest.assets).toEqual([]);
+      expect(result.routes).toEqual([]);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("stops scheduling remaining routes after cancellation is requested", async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autoscreenshot-core-routes-cancel-"));
     const outputDir = path.join(tmpDir, "run");

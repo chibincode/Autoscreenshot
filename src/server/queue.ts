@@ -3,6 +3,7 @@ import type { JobEvent, QueueStats } from "../types.js";
 
 type QueueTask = {
   jobId: string;
+  kind: "capture" | "import";
   run: () => Promise<void>;
 };
 
@@ -11,11 +12,12 @@ export type CancelJobResult = "queued_cancelled" | "running_cancel_requested" | 
 export class JobQueue {
   private readonly queue: QueueTask[] = [];
   private runningJobId: string | null = null;
+  private runningKind: QueueTask["kind"] | null = null;
   private readonly cancellationRequests = new Set<string>();
   readonly events = new EventEmitter();
 
-  enqueue(jobId: string, run: () => Promise<void>): void {
-    this.queue.push({ jobId, run });
+  enqueue(jobId: string, run: () => Promise<void>, kind: QueueTask["kind"] = "capture"): void {
+    this.queue.push({ jobId, run, kind });
     this.emit({
       type: "status",
       jobId,
@@ -35,6 +37,11 @@ export class JobQueue {
 
   hasJob(jobId: string): boolean {
     return this.runningJobId === jobId || this.queue.some((task) => task.jobId === jobId);
+  }
+
+  isImporting(jobId: string): boolean {
+    return (this.runningJobId === jobId && this.runningKind === "import") ||
+      this.queue.some((task) => task.jobId === jobId && task.kind === "import");
   }
 
   emit(event: JobEvent): void {
@@ -70,6 +77,7 @@ export class JobQueue {
     }
 
     this.runningJobId = next.jobId;
+    this.runningKind = next.kind;
     this.emit({
       type: "status",
       jobId: next.jobId,
@@ -82,6 +90,7 @@ export class JobQueue {
     } finally {
       this.cancellationRequests.delete(next.jobId);
       this.runningJobId = null;
+      this.runningKind = null;
       void this.process();
     }
   }

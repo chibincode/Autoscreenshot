@@ -33,6 +33,8 @@ export interface OverlaySnapshot {
   checkboxLikeControlCount: number;
   hostSignalCount: number;
   bookingActionCount?: number;
+  chatLauncherCount?: number;
+  viewportModal?: boolean;
 }
 
 export interface OverlayClassification {
@@ -244,17 +246,27 @@ export function classifyOverlaySnapshot(snapshot: OverlaySnapshot): OverlayClass
   );
   const vendor = detectVendor(haystack);
 
-  const compactBookingWidget =
+  if (
+    (snapshot.chatLauncherCount ?? 0) > 0 && snapshot.position === "fixed" &&
+    snapshot.width >= 24 && snapshot.width <= 120 &&
+    snapshot.height >= 24 && snapshot.height <= 120
+  ) {
+    return { type: "promo", vendor: "generic" };
+  }
+
+  const dismissibleBookingOverlay =
     (snapshot.position === "fixed" || snapshot.position === "sticky") &&
     !["NAV", "HEADER"].includes(snapshot.tagName.toUpperCase()) &&
     snapshot.role !== "navigation" && snapshot.role !== "menubar" &&
     (snapshot.bookingActionCount ?? 0) > 0 &&
-    snapshot.closeActionCount > 0 &&
+    snapshot.closeActionCount > 0;
+  const compactBookingWidget =
     snapshot.width >= 60 && snapshot.height >= 60 &&
     snapshot.width <= Math.min(480, snapshot.viewportWidth * 0.45) &&
     snapshot.height <= Math.min(500, snapshot.viewportHeight * 0.7);
+  const blockingBookingModal = snapshot.position === "fixed" && snapshot.viewportModal === true;
 
-  if (compactBookingWidget) {
+  if (dismissibleBookingOverlay && (compactBookingWidget || blockingBookingModal)) {
     return { type: "promo", vendor: "generic" };
   }
 
@@ -354,6 +366,43 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
       const checkboxSelector =
         'input[type="checkbox"], [role="checkbox"], [role="switch"], [aria-checked="true"], [aria-checked="false"]';
 
+      // Chat SDKs can put a fixed icon inside a zero-height, in-flow shadow host.
+      // Remove only the compact pinned control, not the host's inline demo content.
+      for (const host of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
+        const root = host.shadowRoot;
+        const hostLabel = [host.id, host.className, host.getAttribute("aria-label")].join(" ");
+        if (!root || !/(?:^|[-_\s])(chat|intercom|hubspot|messenger|crisp|tawk|drift)(?:$|[-_\s])/i.test(hostLabel)) continue;
+        for (const action of Array.from(root.querySelectorAll<HTMLElement>(actionSelector))) {
+          let owner: HTMLElement | null = action;
+          while (owner && owner.getRootNode() === root && window.getComputedStyle(owner).position !== "fixed") {
+            owner = owner.parentElement;
+          }
+          if (!owner || owner.getRootNode() !== root) continue;
+          const style = window.getComputedStyle(owner);
+          const rect = owner.getBoundingClientRect();
+          const atEdge = rect.left <= 96 || rect.right >= window.innerWidth - 96 ||
+            rect.top <= 96 || rect.bottom >= window.innerHeight - 96;
+          if (!atEdge || rect.width < 24 || rect.width > 120 || rect.height < 24 || rect.height > 120 ||
+            rect.right <= 0 || rect.left >= window.innerWidth || rect.bottom <= 0 || rect.top >= window.innerHeight ||
+            style.display === "none" || style.visibility === "hidden" || Number(style.opacity || "1") <= 0.02) continue;
+          let overlayId = owner.getAttribute(attrName);
+          if (!overlayId) {
+            overlayId = `overlay-${Math.random().toString(36).slice(2, 10)}`;
+            owner.setAttribute(attrName, overlayId);
+          }
+          if (seen.has(overlayId)) continue;
+          seen.add(overlayId);
+          snapshots.push({
+            overlayId, tagName: owner.tagName, role: owner.getAttribute("role"),
+            ariaLabel: owner.getAttribute("aria-label"), id: owner.id, className: owner.className,
+            text: hostLabel, position: "fixed", width: Math.round(rect.width), height: Math.round(rect.height),
+            viewportWidth: window.innerWidth, viewportHeight: window.innerHeight,
+            acceptActionCount: 0, rejectActionCount: 0, closeActionCount: 0, confirmActionCount: 0,
+            checkboxLikeControlCount: 0, hostSignalCount: 0, chatLauncherCount: 1,
+          });
+        }
+      }
+
       for (const node of nodes) {
         if (!node.isConnected) {
           continue;
@@ -433,6 +482,8 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
         let closeActionCount = 0;
         let confirmActionCount = 0;
         let bookingActionCount = 0;
+        let visibleCloseActionCount = 0;
+        let visibleBookingActionCount = 0;
         const actions = Array.from(node.querySelectorAll<HTMLElement>(actionSelector));
         for (const action of actions) {
           const text = [
@@ -448,6 +499,11 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           if (!text) {
             continue;
           }
+          const actionRect = action.getBoundingClientRect();
+          const actionStyle = window.getComputedStyle(action);
+          const actionVisible = actionRect.width > 0 && actionRect.height > 0 &&
+            actionStyle.display !== "none" && actionStyle.visibility !== "hidden" &&
+            Number.parseFloat(actionStyle.opacity || "1") > 0.02;
           if (acceptWords.some((word) => text.includes(word))) {
             acceptActionCount += 1;
           }
@@ -456,12 +512,14 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           }
           if (closeLabels.some((word) => text.includes(word))) {
             closeActionCount += 1;
+            if (actionVisible) visibleCloseActionCount += 1;
           }
           if (confirmLabels.some((word) => text.includes(word))) {
             confirmActionCount += 1;
           }
           if (bookingLabels.some((word) => text.includes(word))) {
             bookingActionCount += 1;
+            if (actionVisible) visibleBookingActionCount += 1;
           }
         }
         const checkboxLikeControlCount = node.querySelectorAll(checkboxSelector).length;
@@ -486,6 +544,10 @@ async function collectOverlaySnapshots(page: Page): Promise<OverlaySnapshot[]> {
           checkboxLikeControlCount,
           hostSignalCount,
           bookingActionCount,
+          viewportModal: visibleCloseActionCount > 0 && visibleBookingActionCount > 0 &&
+            style.position === "fixed" && Number.parseFloat(style.zIndex || "0") >= 100 &&
+            rect.left <= 8 && rect.top <= 8 &&
+            rect.right >= window.innerWidth - 8 && rect.bottom >= window.innerHeight - 8,
         });
       }
 
@@ -652,6 +714,10 @@ async function clickMatchingAction(
   const matched = await candidates.evaluateAll(
     (elements, { actionAttr, actionId, phrases, excludedWords }) => {
       for (const element of elements) {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        if (rect.width <= 0 || rect.height <= 0 || style.display === "none" ||
+          style.visibility === "hidden" || Number.parseFloat(style.opacity || "1") <= 0.02) continue;
         const text = (
           [
             element.textContent,
@@ -780,6 +846,15 @@ async function handleOverlayCandidate(
   );
 
   const container = page.locator(`[${OVERLAY_ATTR}="${snapshot.overlayId}"]`).first();
+  if ((snapshot.chatLauncherCount ?? 0) > 0) {
+    // Playwright pierces open shadow roots; document.querySelector cannot.
+    const hidden = await container.evaluate((node) => { node.remove(); return true; }).catch(() => false);
+    if (hidden) {
+      log?.("info", `overlay_action phase=${phase} action=hide_chat_launcher type=promo vendor=generic overlay_id=${snapshot.overlayId}`);
+      await page.waitForTimeout(POST_ACTION_SETTLE_MS);
+    }
+    return hidden;
+  }
   if (!(await isLocatorVisible(container))) {
     const hidden = await hideOverlayById(page, snapshot.overlayId);
     if (hidden) {

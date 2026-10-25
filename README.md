@@ -167,6 +167,10 @@ npm test
 RUN_E2E_CAPTURE=1 npm test
 ```
 
+## Motion Capture
+
+Motion 片段录制支持与本地 Website Motion Capture 联动，详见 [接入说明](docs/motion-capture-integration.md)。原截图和 Eagle 图片导入保持不变。
+
 ## 浏览器插件
 
 构建：

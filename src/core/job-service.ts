@@ -122,6 +122,7 @@ function resolveImportFolderId(
       : (() => {
           const classification = classifyFullPageType(asset.sourceUrl, rulesState.rules, {
             pageTitle: asset.pageTitle,
+            authPageIntent: asset.authPageIntent,
           });
           fullPageType = classification.type;
           return resolveFullPageFolder(classification.type, rulesState.rules, folderIndex);

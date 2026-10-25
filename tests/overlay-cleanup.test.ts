@@ -29,11 +29,30 @@ function makeSnapshot(partial: Partial<OverlaySnapshot>): OverlaySnapshot {
 }
 
 describe("overlay cleanup classification", () => {
+  it("classifies verified compact fixed chat launchers without lowering generic overlay thresholds", () => {
+    const launcher = { width: 48, height: 48, chatLauncherCount: 1 };
+    expect(classifyOverlaySnapshot(makeSnapshot(launcher))).toEqual({ type: "promo", vendor: "generic" });
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...launcher, position: "static" }))).toBeNull();
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...launcher, width: 400 }))).toBeNull();
+    expect(classifyOverlaySnapshot(makeSnapshot({ width: 48, height: 48, className: "chat" }))).toBeNull();
+  });
+
   it("classifies compact dismissible booking widgets even below the normal overlay width", () => {
     expect(classifyOverlaySnapshot(makeSnapshot({
       position: "sticky", width: 160, height: 156,
       bookingActionCount: 1, closeActionCount: 1,
     }))).toEqual({ type: "promo", vendor: "generic" });
+  });
+
+  it("classifies dismissible viewport-covering booking modals but preserves large page content", () => {
+    const modal = { position: "fixed", width: 1920, height: 1080,
+      bookingActionCount: 1, closeActionCount: 1, viewportModal: true };
+    expect(classifyOverlaySnapshot(makeSnapshot(modal))).toEqual({ type: "promo", vendor: "generic" });
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...modal, viewportModal: false }))).toBeNull();
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...modal, closeActionCount: 0 }))).toBeNull();
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...modal, bookingActionCount: 0 }))).toBeNull();
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...modal, position: "sticky" }))).toBeNull();
+    expect(classifyOverlaySnapshot(makeSnapshot({ ...modal, tagName: "HEADER" }))).toBeNull();
   });
 
   it("preserves inline booking cards, large sticky sections, and undismissible CTAs", () => {

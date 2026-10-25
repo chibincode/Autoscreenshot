@@ -25,22 +25,30 @@ export function InterfaceVersionSwitch({ value, onChange }: {
   </div>;
 }
 
-export function NewWorkspaceHeader({ history, onHistoryChange, version, onVersionChange, connected }: {
-  history: boolean;
-  onHistoryChange: (history: boolean) => void;
+export function NewWorkspaceHeader({ version, onVersionChange, connected }: {
   version: InterfaceVersion;
   onVersionChange: (version: InterfaceVersion) => void;
   connected: boolean;
 }) {
   return <header className="new-workspace-header">
     <strong>Autoscreenshot</strong>
-    <nav aria-label="Task views">
-      <button type="button" aria-pressed={!history} onClick={() => onHistoryChange(false)}>Queue</button>
-      <button type="button" aria-pressed={history} onClick={() => onHistoryChange(true)}>History</button>
-    </nav>
     <span className="new-live-status" data-connected={connected}>{connected ? "Live" : "Offline"}</span>
     <InterfaceVersionSwitch value={version} onChange={onVersionChange} />
   </header>;
+}
+
+export function NewTaskViews({ history, onHistoryChange, count }: {
+  history: boolean;
+  onHistoryChange: (history: boolean) => void;
+  count: number;
+}) {
+  return <div className="new-queue-heading">
+    <nav className="new-task-views" aria-label="Task views">
+      <button type="button" aria-pressed={!history} onClick={() => onHistoryChange(false)}>Queue</button>
+      <button type="button" aria-pressed={history} onClick={() => onHistoryChange(true)}>History</button>
+    </nav>
+    <span className="new-task-count">{count} tasks</span>
+  </div>;
 }
 
 export function NewPagesToolbar({ presentation, total, selected, children }: {

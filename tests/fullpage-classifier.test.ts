@@ -307,6 +307,25 @@ describe("classifyFullPageType", () => {
     expect(classifyFullPageType("https://example.com/log-in", rules).type).toBe("login");
   });
 
+  it("classifies auth entries by captured form intent rather than guessing from /auth", () => {
+    expect(classifyFullPageType("https://cotrain.com/auth", rules, { authPageIntent: "combined" }).type).toBe("signup");
+    expect(classifyFullPageType("https://example.com/auth", rules, { authPageIntent: "signup" }).type).toBe("signup");
+    expect(classifyFullPageType("https://example.com/en/auth?next=/work", rules, { authPageIntent: "login" }).type).toBe("login");
+    expect(classifyFullPageType("https://example.com/auth", rules, { pageTitle: "Sign in | Example" }).type).toBe("login");
+    expect(classifyFullPageType("https://example.com/auth", rules).type).toBe("unmatched");
+    expect(classifyFullPageType("https://example.com/auth", rules, { pageTitle: "Example" }).type).toBe("unmatched");
+    expect(classifyFullPageType("https://example.com/auth", rules, { pageTitle: "Example - brand, web, and product design" }).type).toBe("unmatched");
+    expect(classifyFullPageType("https://example.com/auth", rules, { authPageIntent: "unknown" as never }).type).toBe("unmatched");
+  });
+
+  it("preserves explicit path mappings and does not apply auth intent to unrelated routes", () => {
+    expect(classifyFullPageType("https://example.com/login", rules, { authPageIntent: "combined" }).type).toBe("login");
+    expect(classifyFullPageType("https://example.com/docs/auth", rules, { authPageIntent: "signup" }).type).toBe("help");
+    expect(classifyFullPageType("https://example.com/auth/callback", rules, { authPageIntent: "signup" }).type).toBe("unmatched");
+    const customRules = normalizeEagleFolderRules({ fullPage: { help: { folderId: "help-id", pathRules: ["/auth"] } } });
+    expect(classifyFullPageType("https://example.com/auth", customRules, { authPageIntent: "combined" }).type).toBe("help");
+  });
+
   it("classifies docs, guides, and api routes as help/documentation pages", () => {
     expect(classifyFullPageType("https://example.com/docs/getting-started", rules).type).toBe(
       "help",

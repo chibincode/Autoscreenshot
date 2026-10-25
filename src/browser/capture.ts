@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { chromium } from "playwright";
 import sharp from "sharp";
 import { detectSections } from "./section-detector.js";
+import { readAuthPageIntent } from "./auth-page.js";
 import { buildFixedSectionClip } from "./section-clip.js";
 import {
   gotoWithFallback,
@@ -1196,6 +1197,7 @@ async function captureOnce(
     await stabilizeCaptureMotion(page, options.log, "post_warmup");
 
     const pageTitle = (await page.title()).trim() || undefined;
+    const authPageIntent = hasFullPageCapture ? await readAuthPageIntent(page, task.url) : undefined;
     let pageSize = await getPageDimensions(page);
     const domain = sanitizeLabel(extractDomain(task.url));
     const timestamp = timestampForFile();
@@ -1282,6 +1284,7 @@ async function captureOnce(
         filePath: fullPath,
         fileName: fullName,
         pageTitle,
+        authPageIntent,
         sourceUrl: task.url,
         quality: task.image.quality,
         dpr: forcedDpr,
@@ -1341,6 +1344,7 @@ async function captureOnce(
         });
         assets.push({
           kind: "section",
+          motionAnchor: { selector: section.selector, bbox: section.bbox, viewport: task.viewport },
           sectionType: section.sectionType,
           label,
           filePath: sectionPath,

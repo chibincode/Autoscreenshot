@@ -2,7 +2,7 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { INTERFACE_VERSION_STORAGE_KEY, readInterfaceVersion, rememberInterfaceVersion, shortTaskDate, siteLabel } from "../web/src/interface-version.js";
-import { InterfaceVersionSwitch, NewPagesToolbar } from "../web/src/WorkspaceChrome.js";
+import { InterfaceVersionSwitch, NewPagesToolbar, NewTaskViews } from "../web/src/WorkspaceChrome.js";
 
 describe("interface version preference", () => {
   it.each([null, "classic", "unknown", "NEW", ""]) ("defaults safely to Classic for %s", value => {
@@ -34,6 +34,17 @@ describe("interface version preference", () => {
 });
 
 describe("shared workspace presentation", () => {
+  it("keeps Queue and History controlled at the task-list entry point", () => {
+    const onHistoryChange = vi.fn();
+    const element = NewTaskViews({ history: true, count: 25, onHistoryChange });
+    const markup = renderToStaticMarkup(element);
+    expect(markup).toContain('aria-pressed="true">History');
+    expect(markup).toContain('25 tasks');
+    const nav = element.props.children[0] as ReactElement<{ children: ReactElement<{ onClick: () => void }>[] }>;
+    nav.props.children[0].props.onClick();
+    nav.props.children[1].props.onClick();
+    expect(onHistoryChange.mock.calls).toEqual([[false], [true]]);
+  });
   it("renders controlled version buttons without submitting any form", () => {
     const onChange = vi.fn();
     const markup = renderToStaticMarkup(createElement(InterfaceVersionSwitch, { value: "classic", onChange }));

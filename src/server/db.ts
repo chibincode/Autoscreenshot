@@ -341,6 +341,14 @@ export class JobsRepository {
         FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS removed_routes (
+        job_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        removed_at TEXT NOT NULL,
+        PRIMARY KEY(job_id, url),
+        FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+      );
+
       CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_assets_job_id ON assets(job_id);
@@ -583,6 +591,9 @@ export class JobsRepository {
         )
       `);
       for (const route of discoveredRoutes) {
+        if (this.isRouteRemoved(id, route.url)) {
+          continue;
+        }
         insert.run({
           jobId: id,
           url: route.url,
@@ -601,6 +612,8 @@ export class JobsRepository {
 
   createRouteTarget(jobId: string, route: RouteDiscoveryTarget): RouteTargetRecord {
     const now = new Date().toISOString();
+    this.db.prepare("DELETE FROM removed_routes WHERE job_id = ? AND url = ?")
+      .run(jobId, route.url);
     const result = this.db
       .prepare(
         `
@@ -628,6 +641,52 @@ export class JobsRepository {
     }
     this.touchJob(jobId, now);
     return created;
+  }
+
+  isRouteRemoved(jobId: string, url: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM removed_routes WHERE job_id = ? AND url = ?")
+      .get(jobId, url));
+  }
+
+  hasRemovedRoutes(jobId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM removed_routes WHERE job_id = ? LIMIT 1").get(jobId));
+  }
+
+  filterRemovedRoutes(jobId: string, manifest: RunManifest): RunManifest {
+    const rows = this.db.prepare("SELECT url FROM removed_routes WHERE job_id = ?")
+      .all(jobId) as Array<{ url: string }>;
+    if (rows.length === 0) {
+      return manifest;
+    }
+    const removed = new Set(rows.map((row) => row.url));
+    if (!manifest.routes?.some((route) => removed.has(route.url)) &&
+        !manifest.assets.some((asset) => removed.has(asset.sourceUrl))) {
+      return manifest;
+    }
+    return {
+      ...manifest,
+      routes: manifest.routes?.filter((route) => !removed.has(route.url)),
+      assets: manifest.assets.filter((asset) => !removed.has(asset.sourceUrl)),
+      scrollSceneDebug: manifest.scrollSceneDebug?.filter((scene) => !scene.sourceUrl || !removed.has(scene.sourceUrl)),
+    };
+  }
+
+  removeRouteTarget(jobId: string, routeId: number): boolean {
+    return this.db.transaction(() => {
+      const route = this.getRouteTargetById(routeId);
+      if (!route || route.jobId !== jobId) {
+        return false;
+      }
+      const now = new Date().toISOString();
+      // Keep a tombstone so an in-flight capture cannot recreate the removed page.
+      this.db.prepare("INSERT OR REPLACE INTO removed_routes (job_id, url, removed_at) VALUES (?, ?, ?)")
+        .run(jobId, route.url, now);
+      this.db.prepare("DELETE FROM route_targets WHERE id = ?").run(routeId);
+      this.db.prepare("DELETE FROM assets WHERE job_id = ? AND source_url = ?").run(jobId, route.url);
+      this.db.prepare("DELETE FROM job_history_urls WHERE job_id = ? AND source_url = ?").run(jobId, route.url);
+      this.touchJob(jobId, now);
+      return true;
+    })();
   }
 
   updateRouteTargetStatus(params: {
@@ -866,7 +925,7 @@ export class JobsRepository {
           now,
         });
     });
-    tx(jobId, manifest);
+    tx(jobId, this.filterRemovedRoutes(jobId, manifest));
     this.touchJob(jobId, now);
   }
 
@@ -1111,6 +1170,7 @@ export class JobsRepository {
 
     const items: JobSummary[] = rows.map((row) => ({
       id: row.id,
+      mode: parseJobMode(row.options_json),
       status: row.status,
       instruction: row.instruction,
       createdAt: row.created_at,

@@ -1482,6 +1482,28 @@ describe("server api", () => {
     });
   });
 
+  it("uses captured auth intent in previews without overriding a manual destination", async () => {
+    const createResponse = await app.inject({ method: "POST", url: "/api/jobs", payload: { instruction: "open https://example.com" } });
+    const jobId = createResponse.json().jobId as string;
+    await waitForTerminalStatus(app, jobId);
+    const manifestPath = repo.getJob(jobId)!.manifestPath!;
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as RunManifest;
+    manifest.assets[0].sourceUrl = "https://example.com/auth";
+    manifest.assets[0].pageTitle = "Example";
+    manifest.assets[0].authPageIntent = "combined";
+    await fs.writeFile(manifestPath, JSON.stringify(manifest));
+    repo.replaceAssets(jobId, manifest);
+    mockEagleFolderList([...DEFAULT_EAGLE_FOLDER_TREE, { id: "JZR6MFOA465XT", name: "Page_Sign up", children: [] }]);
+    const detail = (await app.inject({ method: "GET", url: `/api/jobs/${jobId}` })).json();
+    expect(detail.assets[0]).toMatchObject({ targetEagleFolderId: "JZR6MFOA465XT", folderSelectionSource: "auto", importStatus: "pending_confirmation" });
+    const updated = await app.inject({ method: "PATCH", url: `/api/jobs/${jobId}/assets/${detail.assets[0].id}/folder`, payload: { targetEagleFolderId: "page-pricing-id" } });
+    expect(updated.statusCode).toBe(200);
+    const after = (await app.inject({ method: "GET", url: `/api/jobs/${jobId}` })).json();
+    expect(after.assets[0]).toMatchObject({ resolvedEagleFolderId: "JZR6MFOA465XT", targetEagleFolderId: "page-pricing-id", folderSelectionSource: "manual" });
+    const saved = JSON.parse(await fs.readFile(manifestPath, "utf8")) as RunManifest;
+    expect(saved.assets[0].authPageIntent).toBe("combined");
+  });
+
   it("stores a manual Eagle folder override for a pending asset", async () => {
     const createResponse = await app.inject({
       method: "POST",

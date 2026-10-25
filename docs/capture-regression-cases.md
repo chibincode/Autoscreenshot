@@ -198,6 +198,30 @@ Evidence may be either currently reproducible from local artifacts or historical
 - Validation: Six targeted E2E tests passed, including delayed action islands, compact navigation, sticky hero cards and bottom CTAs; server TypeScript build passed.
 - Status: `site-verified`.
 
+### CR-017 Plain's Shadow DOM chat launcher repeated
+
+- Context: Core Pages capture of `https://www.plain.com/`, job `7ZJLPy8_b6Ed`, asset `#1991`; annotation `x=3682, y=1964, width=158, height=221` in the `3840 x 25956` original.
+- Symptom: The green bottom-right chat entry appeared in every viewport slice.
+- Evidence: Live DOM at `1920 x 1080` shows an in-flow, zero-height `#plain-chat` host with an open Shadow DOM. Its internal `.launcher` button is fixed and `48 x 48 CSS px`, located `10px` from the bottom/right edges. Ordinary document selectors cannot see the internal control.
+- Cause: Overlay discovery did not traverse the chat host's shadow root; the host itself has no fixed position or visible area. Generic overlay minimum dimensions also exclude this small icon.
+- Decision: Inspect open shadow roots belonging to explicitly chat-related hosts. Identify visible, edge-pinned fixed action surfaces between `24px` and `120px` in each dimension, and remove only that control through a shadow-aware locator. Re-scan during capture to catch delayed mounting. Preserve inline chat demos, unrelated shadow components, non-fixed controls, and larger content surfaces. Closed shadow roots and anonymous hosts are not covered by this rule.
+- Regression: `removes initial/late shadow chat launchers without deleting inline demos or unrelated tools` verifies red launcher pixels disappear, inline green content in the same shadow component survives, and an unrelated blue fixed tool stays. Classification tests retain generic minimum dimensions.
+- Validation (2026-10-14): `12` classification tests and `4` targeted E2E cases passed (initial/late launcher, Loops booking, CookieScript). The launcher cases were rerun after strengthening same-component inline-content protection. Server TypeScript build and `git diff --check` passed.
+- Site verification: Independent job `tg_ssBhzY3Ud`, asset `#2075`, remains `3840 x 25956`. The first attempt cleared the launcher but was interrupted by navigation; a homepage-only retry completed. Logs record `action=hide_chat_launcher`. Full-image inspection, before/after crops across all repeated-launcher positions, and a `1920 x 1080` in-app preview confirm the chat entry is absent while product content and the footer remain. Evidence: `/private/tmp/plain-chat-fixed-desktop.jpg`, `/private/tmp/plain-chat-all-slices.png` (original left, fixed right). Original asset `#1991` remains unchanged; the new asset has not been imported to Eagle.
+- Status: `site-verified`.
+
+### CR-018 Bubba's booking promotion covered every stitched viewport
+
+- Context: Core Pages capture of `https://bubba.ai/`, job `P7O7S2OAFHZP`, asset `#2034`; annotation `x=1029, y=442, width=1771, height=1418` in the `3840 x 21338` original.
+- Symptom: A centered "Psst... Want Fewer Headaches?" / "Book a Demo" promotion and darkened backdrop covered the captured page.
+- Evidence: Fresh-context verification job `B8gZZvYIxKk4` reproduced the same promotion before the fix. The site's modal containers use utility classes rather than dialog roles. Its ordinary demo window also exposes a full-viewport high-z-index container and an explicit Close button.
+- Cause: Booking-action discovery found the pinned owner, but classification only accepted compact booking widgets. A viewport-covering promotional container exceeded that geometry. Hidden duplicate Close controls could also be chosen before a usable control.
+- Decision: Treat a fixed, high-layer (`z-index >= 100`) viewport-covering owner as a booking modal only with visible booking and dismissal controls. Exclude navigation/header semantics and preserve ordinary large content. Action matching skips hidden controls and clicks a visible dismissal first so the site can release its own backdrop and scroll lock. No global expansion of promotion text keywords.
+- Regression: Initial and scroll-delayed anonymous full-viewport booking fixtures verify backdrop removal, intact header/inline CTAs/footer, and actual `click_close` behavior despite an earlier hidden Close control. A negative fixture preserves full-viewport application shells with hidden modal controls. Existing compact booking, Shadow DOM chat, Cookie and promo tests protect neighboring cleanup behavior.
+- Validation (2026-10-14): `13` classification tests and `9` focused browser regressions passed, including Osano, ordinary promo modals and offscreen inline consent cards after the action-matching change. Server TypeScript build and `git diff --check` passed. Live logs confirm `overlay_action phase=pre_capture action=click_close type=promo` after the visible-action guard.
+- Site verification: Independent job `B8gZZvYIxKk4`, final asset `#2078`, remains `3840 x 21338`. Full-image inspection and a `1920 x 1080` in-app preview confirm the booking promotion and darkened backdrop are gone; navigation, page sections and footer remain. Evidence: `/private/tmp/bubba-modal-fixed-desktop.jpg`, `/private/tmp/bubba-modal-fixed-overview.jpg`, and `/private/tmp/bubba-modal-reproduced.jpg` (pre-fix). Original user asset `#2034` remains untouched; the verification asset has not been imported to Eagle. Some media-readiness timeouts were logged; this case verifies modal removal, not exhaustive media loading.
+- Status: `site-verified`.
+
 ## Existing executable coverage
 
 The current E2E suite already protects these capture families:
@@ -208,7 +232,8 @@ The current E2E suite already protects these capture families:
 | Fixed bottom chrome | Region selectors and compact CTAs appear only at the page bottom; sticky AI composers are excluded from every slice | Samsara, ianneo, Glide |
 | Fixed side badges | Narrow side badges appear once | Khasiyev / Awwwards badge |
 | Consent overlays | Banners, launchers, inline cards, delayed modals, and anonymous zero-height fixed shells are removed | Jarsy, General Intelligence Company, and other cookie controls |
-| Booking overlays | Compact dismissible fixed/sticky scheduling cards are removed; inline demo CTAs stay visible | Loops |
+| Booking overlays | Compact scheduling cards and dismissible viewport-covering booking promotions are removed; inline demo CTAs and normal full-screen content stay visible | Loops, Bubba |
+| Shadow chat launchers | Compact edge-pinned chat controls inside open shadow roots are excluded; inline demos and unrelated tools remain | Plain |
 | Render readiness | Delayed hero images, lazy backgrounds, viewport media, and WebGL are settled before capture | Aave, Bevel, Incident.io |
 | Scroll scenes | Standalone and split sticky scenes unfold without deleting adjacent or later content | Fruitful, Granola |
 | Footer reveals | Transformed and sticky footers keep their final visual state without replacing page content | Vercel/footer reports and Fruitful |

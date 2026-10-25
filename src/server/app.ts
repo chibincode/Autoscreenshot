@@ -82,8 +82,10 @@ import {
   type PlaywrightRuntimeService,
 } from "./playwright-runtime.js";
 import { JobQueue } from "./queue.js";
+import { hasActiveMotion, readMotionSummary, registerMotionRoutes, withMotionFiles, type MotionClient } from "./asset-motion.js";
 
 export interface BuildServerOptions {
+  motionClient?: MotionClient;
   repo?: JobsRepository;
   queue?: JobQueue;
   webDistDir?: string;
@@ -116,9 +118,12 @@ function statusFromManifest(manifest: RunManifest | null): JobStatus {
   return deriveJobStatusFromImportSummary(summarizeManifestImports(manifest));
 }
 
-function statusFromCoreRouteState(manifest: RunManifest | null, routes: RouteTargetSummary[]): JobStatus {
-  if (!manifest || routes.length === 0) {
+function statusFromCoreRouteState(manifest: RunManifest | null, routes: RouteTargetSummary[], hasRemovedRoutes = false): JobStatus {
+  if (!manifest) {
     return "failed";
+  }
+  if (routes.length === 0) {
+    return hasRemovedRoutes ? "cancelled" : "failed";
   }
   const successCount = routes.filter((route) => route.status === "success").length;
   if (successCount === 0) {
@@ -132,6 +137,25 @@ function statusFromCoreRouteState(manifest: RunManifest | null, routes: RouteTar
 
 function isTerminalJobStatus(status: JobStatus): boolean {
   return status !== "queued" && status !== "running";
+}
+
+async function readActiveManifest(repo: JobsRepository, jobId: string, manifestPath: string): Promise<RunManifest> {
+  return repo.filterRemovedRoutes(jobId, normalizeManifestImports(await readManifest(manifestPath)));
+}
+
+async function persistRouteRemovals(
+  repo: JobsRepository, jobId: string, manifestPath: string, manifest: RunManifest,
+): Promise<RunManifest> {
+  let current = manifest;
+  // A page can be removed while an asynchronous manifest write is in progress.
+  for (;;) {
+    const active = repo.filterRemovedRoutes(jobId, current);
+    if (active === current) {
+      return current;
+    }
+    await writeManifestToPath(manifestPath, active);
+    current = active;
+  }
 }
 
 function getJobBaseUrl(job: JobRecord, routes: RouteTargetSummary[]): string | null {
@@ -196,12 +220,24 @@ async function cleanJobLocalFiles(params: {
   job: JobRecord;
   log: FastifyInstance["log"];
 }): Promise<{ job: JobRecord; filesDeleted: boolean }> {
-  const { repo, job, log } = params;
+  return withMotionFiles(params.job.id, () => cleanJobLocalFilesLocked(params));
+}
+
+async function cleanJobLocalFilesLocked(params: {
+  repo: JobsRepository;
+  job: JobRecord;
+  log: FastifyInstance["log"];
+}): Promise<{ job: JobRecord; filesDeleted: boolean }> {
+  const { repo, log } = params;
+  const job = repo.getJob(params.job.id) ?? params.job;
   if (!isTerminalJobStatus(job.status)) {
     throw new JobCleanupError("Local files can only be cleaned after the job finishes", 409);
   }
   if (job.cleanedAt) {
     throw new JobCleanupError("Local files for this job have already been cleaned", 409);
+  }
+  if (await hasActiveMotion(repo.getJobDetail(job.id)?.assets ?? [])) {
+    throw new JobCleanupError("Finish or cancel the motion recording before cleaning this job", 409);
   }
 
   let outputTarget: string | null;
@@ -371,7 +407,7 @@ function buildAssetRecordLookup(assets: AssetRecord[]): Map<string, AssetRecord[
 
 function resolveAssetFolderState(
   asset: Pick<AssetRecord, "kind" | "sectionType" | "sourceUrl" | "folderOverrideId">,
-  pageTitle: string | null | undefined,
+  classificationContext: Pick<RunManifest["assets"][number], "pageTitle" | "authPageIntent"> | null | undefined,
   rulesState: Awaited<ReturnType<typeof loadEagleFolderRules>>,
   folderIndex: ReturnType<typeof buildFolderIndex>,
 ): AssetFolderState {
@@ -379,9 +415,7 @@ function resolveAssetFolderState(
     asset.kind === "section"
       ? resolveSectionFolder(asset.sectionType ?? undefined, rulesState.rules, folderIndex)
       : resolveFullPageFolder(
-          classifyFullPageType(asset.sourceUrl, rulesState.rules, {
-            pageTitle,
-          }).type,
+          classifyFullPageType(asset.sourceUrl, rulesState.rules, classificationContext ?? undefined).type,
           rulesState.rules,
           folderIndex,
         );
@@ -525,7 +559,7 @@ async function decorateAssetsForResponse(
         ...asset,
         folderOverrideId: manifestAsset?.folderOverrideId ?? asset.folderOverrideId,
       },
-      manifestAsset?.pageTitle,
+      manifestAsset,
       rulesState,
       folderIndex,
     );
@@ -543,6 +577,7 @@ async function decorateAssetsForResponse(
 
     return {
       ...asset,
+      motion: await readMotionSummary(asset),
       pageTitle: manifestAsset?.pageTitle,
       previewUrl: `/api/assets/${asset.id}/file?v=${cacheVersion}`,
       previewDisplayUrl: buildThumbnailUrl(
@@ -605,7 +640,7 @@ async function collectAssetsMissingFolderTarget(
         ...asset,
         folderOverrideId: manifestAsset?.folderOverrideId ?? asset.folderOverrideId,
       },
-      manifestAsset?.pageTitle,
+      manifestAsset,
       rulesState,
       folderIndex,
     );
@@ -636,7 +671,7 @@ async function refreshPersistedTerminalJobState(
 
   let manifest: RunManifest;
   try {
-    manifest = normalizeManifestImports(await readManifest(job.manifestPath));
+    manifest = await readActiveManifest(repo, job.id, job.manifestPath);
   } catch {
     return job;
   }
@@ -715,6 +750,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
   const app = Fastify({ logger: false });
   const repo = options.repo ?? new JobsRepository();
   const queue = options.queue ?? new JobQueue();
+  registerMotionRoutes(app, repo, options.motionClient, jobId => emitToQueue(queue, { type: "assets_updated", jobId, at: new Date().toISOString() }));
   const webDistDir = options.webDistDir ?? path.resolve(process.cwd(), "web/dist");
   const playwrightRuntimeService =
     options.playwrightRuntimeService ?? buildPlaywrightRuntimeService({ cwd: process.cwd() });
@@ -925,6 +961,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
                 manifestPath,
                 log,
                 shouldCancel: () => queue.isCancellationRequested(jobId),
+                shouldSkipRoute: (url) => repo.isRouteRemoved(jobId, url),
                 onRoutesDiscovered: async (routes) => {
                   repo.replaceRouteTargets(jobId, routes);
                   emitToQueue(queue, {
@@ -957,13 +994,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
                 log,
               });
 
+        result.manifest = await persistRouteRemovals(repo, jobId, result.manifestPath, result.manifest);
         repo.replaceAssets(jobId, result.manifest);
         const wasCancelled = jobOptions.mode === "core-routes" && "cancelled" in result && result.cancelled;
         const finalStatus =
           jobOptions.mode === "core-routes"
             ? wasCancelled
               ? "cancelled"
-              : statusFromCoreRouteState(result.manifest, repo.listRouteTargets(jobId))
+              : statusFromCoreRouteState(result.manifest, repo.listRouteTargets(jobId), repo.hasRemovedRoutes(jobId))
             : statusFromManifest(result.manifest);
         repo.setJobResult({
           jobId,
@@ -1236,7 +1274,9 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
       });
 
       try {
-        const captured = await retryCoreRouteFn({
+        const captured = repo.isRouteRemoved(job.id, route.url)
+          ? { manifest: await readManifest(job.manifestPath!), route }
+          : await retryCoreRouteFn({
           manifestPath: job.manifestPath!,
           routeUrl: route.url,
           routePath: route.path,
@@ -1257,6 +1297,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           },
         });
 
+        captured.manifest = await persistRouteRemovals(repo, job.id, job.manifestPath!, captured.manifest);
         repo.updateRouteTargetById({
           id: route.id,
           status: "success",
@@ -1266,7 +1307,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           finishedAt: captured.route.finishedAt ?? new Date().toISOString(),
         });
         repo.replaceAssets(job.id, captured.manifest);
-        const finalStatus = statusFromCoreRouteState(captured.manifest, repo.listRouteTargets(job.id));
+        const finalStatus = statusFromCoreRouteState(captured.manifest, repo.listRouteTargets(job.id), repo.hasRemovedRoutes(job.id));
         repo.setJobResult({
           jobId: job.id,
           status: finalStatus,
@@ -1304,12 +1345,12 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           attemptCount: route.attemptCount + attempts,
           finishedAt: new Date().toISOString(),
         });
-        const latestManifest = await readManifest(job.manifestPath!).catch(() => null);
-        const finalStatus = statusFromCoreRouteState(latestManifest, repo.listRouteTargets(job.id));
+        const latestManifest = await readActiveManifest(repo, job.id, job.manifestPath!).catch(() => null);
+        const finalStatus = statusFromCoreRouteState(latestManifest, repo.listRouteTargets(job.id), repo.hasRemovedRoutes(job.id));
         repo.setJobResult({
           jobId: job.id,
           status: finalStatus,
-          error: message,
+          error: deriveTerminalJobError(finalStatus, message),
         });
         emitToQueue(queue, {
           type: "assets_updated",
@@ -1458,7 +1499,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
     let manifest = null;
     if (detail.job.manifestPath) {
       try {
-        manifest = normalizeManifestImports(await readManifest(detail.job.manifestPath));
+        manifest = await readActiveManifest(repo, detail.job.id, detail.job.manifestPath);
       } catch {
         manifest = null;
       }
@@ -1782,7 +1823,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
 
     let manifest: RunManifest;
     try {
-      manifest = normalizeManifestImports(await readManifest(job.manifestPath));
+      manifest = await readActiveManifest(repo, job.id, job.manifestPath);
     } catch {
       reply.code(500);
       return { error: "Failed to read manifest for this job" };
@@ -1867,7 +1908,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
 
     let manifest: RunManifest;
     try {
-      manifest = normalizeManifestImports(await readManifest(job.manifestPath));
+      manifest = await readActiveManifest(repo, job.id, job.manifestPath);
     } catch {
       reply.code(500);
       return { error: "Failed to read manifest for this job" };
@@ -1939,7 +1980,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
 
     let manifest: RunManifest;
     try {
-      manifest = normalizeManifestImports(await readManifest(job.manifestPath));
+      manifest = await readActiveManifest(repo, job.id, job.manifestPath);
     } catch {
       reply.code(500);
       return { error: "Failed to read manifest for this job" };
@@ -1977,6 +2018,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
         at: new Date().toISOString(),
       });
       try {
+        await writeManifestToPath(job.manifestPath!, await readActiveManifest(repo, job.id, job.manifestPath!));
         const manifest = await importSelectedFn(job.manifestPath!, (level, message) => {
           repo.addLog(job.id, level, message);
           emitToQueue(queue, {
@@ -2031,7 +2073,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           message,
         });
       }
-    });
+    }, "import");
 
     reply.code(202);
     return { jobId: job.id, status: "queued" };
@@ -2063,7 +2105,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
 
     let manifest: RunManifest;
     try {
-      manifest = normalizeManifestImports(await readManifest(job.manifestPath));
+      manifest = await readActiveManifest(repo, job.id, job.manifestPath);
     } catch {
       reply.code(500);
       return { error: "Failed to read manifest for this job" };
@@ -2101,6 +2143,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
         at: new Date().toISOString(),
       });
       try {
+        await writeManifestToPath(job.manifestPath!, await readActiveManifest(repo, job.id, job.manifestPath!));
         const manifest = await retryImportFn(job.manifestPath!, (level, message) => {
           repo.addLog(job.id, level, message);
           emitToQueue(queue, {
@@ -2155,10 +2198,62 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<Fas
           message,
         });
       }
-    });
+    }, "import");
 
     reply.code(202);
     return { jobId: job.id, status: "queued" };
+  });
+
+  app.delete<{ Params: { jobId: string; routeId: string } }>("/api/jobs/:jobId/routes/:routeId", async (request, reply) => {
+    const job = repo.getJob(request.params.jobId);
+    if (!job) {
+      return reply.code(404).send({ error: "Job not found" });
+    }
+    if (parseJobMode(job.optionsJson) !== "core-routes" || job.cleanedAt) {
+      return reply.code(400).send({ error: "Pages can only be removed from an active Core Pages task" });
+    }
+    const routeId = Number(request.params.routeId);
+    if (!Number.isSafeInteger(routeId) || routeId <= 0) {
+      return reply.code(400).send({ error: "A valid route ID is required" });
+    }
+    return withMotionFiles(job.id, async () => {
+      const route = repo.getRouteTargetById(routeId);
+      if (!route || route.jobId !== job.id) {
+        return reply.code(404).send({ error: "Page not found in this task" });
+      }
+      if (await hasActiveMotion(repo.getAssets(job.id).filter(asset => asset.sourceUrl === route.url))) {
+        return reply.code(409).send({ error: "Finish or cancel this page's motion recording before removing it" });
+      }
+      const currentJob = repo.getJob(job.id)!;
+      let manifest: RunManifest | null = null;
+      if (currentJob.manifestPath) {
+        try {
+          manifest = await readManifest(currentJob.manifestPath);
+        } catch {
+          return reply.code(500).send({ error: "Could not read the task manifest. No page was removed." });
+        }
+      }
+      if (queue.isImporting(job.id)) {
+        return reply.code(409).send({ error: "Wait for the Eagle import to finish before removing a page" });
+      }
+      if (!repo.removeRouteTarget(job.id, routeId)) {
+        return reply.code(404).send({ error: "Page not found in this task" });
+      }
+      // The capture worker owns its manifest until completion; it applies the same tombstones.
+      if (!queue.hasJob(job.id) && manifest && currentJob.manifestPath) {
+        manifest = await persistRouteRemovals(repo, job.id, currentJob.manifestPath, manifest);
+        if (!queue.hasJob(job.id)) repo.replaceAssets(job.id, manifest);
+      }
+      if (!queue.hasJob(job.id)) {
+        const remainingRoutes = repo.listRouteTargets(job.id);
+        const status = remainingRoutes.length === 0 ? "cancelled" : statusFromCoreRouteState(manifest, remainingRoutes);
+        repo.setJobResult({ jobId: job.id, status, error: deriveTerminalJobError(status, "Some pages still require attention") });
+        emitToQueue(queue, { type: "status", jobId: job.id, status, at: new Date().toISOString() });
+      }
+      repo.addLog(job.id, "info", `Page removed: ${route.path}`);
+      emitToQueue(queue, { type: "assets_updated", jobId: job.id, at: new Date().toISOString() });
+      return { jobId: job.id, removedRouteId: routeId };
+    });
   });
 
   app.post<{

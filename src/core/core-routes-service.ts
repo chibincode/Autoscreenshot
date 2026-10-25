@@ -74,6 +74,7 @@ export interface ExecuteCoreRoutesParams {
   manifestPath: string;
   log?: LogHandler;
   shouldCancel?: () => boolean;
+  shouldSkipRoute?: (url: string) => boolean;
   onRoutesDiscovered?: (routes: RouteDiscoveryTarget[]) => Promise<void> | void;
   onRouteStatus?: (update: {
     route: RouteDiscoveryTarget;
@@ -692,6 +693,10 @@ export async function executeCoreRoutesInstruction(
 
     const plannedRoute = planning.plannedRoutes[routeIndex]!;
     const route = plannedRoute.route;
+    if (params.shouldSkipRoute?.(route.url)) {
+      emit(log, "info", `route_removed path=${route.path}`);
+      continue;
+    }
     const startedAt = new Date().toISOString();
     emit(log, "info", `route_started path=${route.path} url=${route.url}`);
     await params.onRouteStatus?.({
@@ -711,6 +716,9 @@ export async function executeCoreRoutesInstruction(
         initialDpr: preferredDpr,
         log,
       });
+      if (params.shouldSkipRoute?.(route.url)) {
+        continue;
+      }
       if (captured.fallbackToDpr1) {
         fallbackRoutes += 1;
       }
@@ -753,6 +761,9 @@ export async function executeCoreRoutesInstruction(
         break;
       }
     } catch (error) {
+      if (params.shouldSkipRoute?.(route.url)) {
+        continue;
+      }
       const message = error instanceof Error ? error.message : String(error);
       const attemptCount =
         error && typeof error === "object" && "attempts" in error && typeof error.attempts === "number"

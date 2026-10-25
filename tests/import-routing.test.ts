@@ -237,6 +237,51 @@ describe("import routing", () => {
     }
   });
 
+  it("routes auth evidence consistently during import and preserves manual destinations", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-routing-auth-"));
+    const originalCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      await fs.mkdir(path.join(tmpDir, "data"));
+      await fs.writeFile(path.join(tmpDir, "data", "eagle-folder-rules.json"), JSON.stringify({
+        version: 1, policy: { allowCreateFolder: false },
+        fullPage: { login: { folderId: "login-id", pathRules: ["/login"] }, signup: { folderId: "signup-id", pathRules: ["/signup"] } },
+      }));
+      const imagePath = path.join(tmpDir, "auth.jpg");
+      await fs.writeFile(imagePath, "auth screenshot");
+      const intents = ["login", "signup", "combined", undefined, "combined"] as const;
+      const manifest: RunManifest = {
+        runId: "auth-routing", instruction: "capture auth", createdAt: new Date().toISOString(), sectionScope: "classic", outputDir: tmpDir,
+        task: { url: "https://example.com/auth", waitUntil: "networkidle", captures: [{ mode: "fullPage" }],
+          image: { format: "jpg", quality: 92, dpr: 2 }, viewport: { width: 1920, height: 1080 }, tags: [], eagle: {} },
+        assets: intents.map((authPageIntent, index) => ({ kind: "fullPage", label: `auth-${index}`, filePath: imagePath, fileName: "auth.jpg",
+          sourceUrl: "https://example.com/auth", pageTitle: "Example", authPageIntent, quality: 92, dpr: 2,
+          capturedAt: new Date().toISOString(), folderOverrideId: index === 4 ? "manual-id" : undefined, import: createPendingImportResult() })),
+      };
+      const destinations: unknown[] = [];
+      global.fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        let data: unknown = {};
+        if (url.endsWith("/api/folder/list")) {
+          data = [{ id: "login-id", name: "Page_Login" }, { id: "signup-id", name: "Page_Sign up" },
+            { id: "general-id", name: "Page_Gerneral" }, { id: "manual-id", name: "Manual" }];
+        } else if (url.endsWith("/api/item/addFromPath")) {
+          destinations.push(JSON.parse(String(init?.body)).folderId);
+          data = { id: `imported-${destinations.length}` };
+        } else if (!url.endsWith("/api/library/info")) {
+          throw new Error(`Unexpected Eagle request: ${url}`);
+        }
+        return new Response(JSON.stringify({ status: "success", data }), { status: 200 });
+      }) as typeof fetch;
+      const result = await importManifestAssets(manifest, path.join(tmpDir, "manifest.json"));
+      expect(destinations).toEqual(["login-id", "signup-id", "signup-id", "general-id", "manual-id"]);
+      expect(result.assets.every(asset => asset.import.ok)).toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("prefers a manual folder override over automatic routing", async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-routing-override-"));
     const originalCwd = process.cwd();

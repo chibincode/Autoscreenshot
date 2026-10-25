@@ -307,4 +307,15 @@ describe("jobs repository route targets", () => {
 
     expect(summary?.sourceUrl).toBe("https://example.com/pricing");
   });
+
+  it("distinguishes section and page jobs for the same website from saved options", () => {
+    for (const mode of ["single", "core-routes"] as const) {
+      repo.createJob({ id: `job-mode-${mode}`, instruction: "open https://same.example", options: { ...DEFAULT_OPTIONS, mode } });
+    }
+    const summaries = repo.listJobs({ pageSize: 100 }).items;
+    expect(summaries.find(job => job.id === "job-mode-single")?.mode).toBe("single");
+    expect(summaries.find(job => job.id === "job-mode-core-routes")?.mode).toBe("core-routes");
+    repo.setJobArchived("job-mode-core-routes", true);
+    expect(repo.listJobs({ archivedOnly: true, pageSize: 100 }).items.find(job => job.id === "job-mode-core-routes")?.mode).toBe("core-routes");
+  });
 });

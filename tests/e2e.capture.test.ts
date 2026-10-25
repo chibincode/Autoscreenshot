@@ -13,6 +13,8 @@ import {
 } from "../src/browser/capture.js";
 import { stabilizeCaptureMotion } from "../src/browser/motion-stabilizer.js";
 import { hideTopOverlaysForCapture } from "../src/browser/top-overlays.js";
+import { cleanupCaptureOverlays } from "../src/browser/overlay-cleanup.js";
+import { readAuthPageIntent } from "../src/browser/auth-page.js";
 import type { ParsedTask } from "../src/types.js";
 
 let server: http.Server | null = null;
@@ -3020,6 +3022,13 @@ function splitScrollSceneUnfoldPageTemplate(): string {
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     const pathname = req.url ?? "/";
+    if (pathname.startsWith("/auth")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<html><head><title>Example</title></head><body><main><form><h1>One place to work</h1>
+        <p>Sign in or create your account</p><label>Email<input type="email"></label>
+        <button>Continue with Google</button><button type="submit">Continue</button></form></main></body></html>`);
+      return;
+    }
     if (pathname.startsWith("/slow-feature-art/")) {
       const color = pathname.includes("blue")
         ? "#38bdf8"
@@ -3178,6 +3187,54 @@ beforeAll(async () => {
     if (pathname.startsWith("/consent-banner")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(consentBannerPageTemplate());
+      return;
+    }
+    if (pathname.startsWith("/blocking-booking-modal")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><title>Blocking booking fixture</title><style>
+        body { margin:0; background:white; } main { height:3300px; padding-top:100px; box-sizing:border-box; }
+        header { position:fixed; top:0; width:100%; height:64px; background:rgb(0,0,230); }
+        .inline { display:block; width:220px; height:90px; background:rgb(0,180,0); }
+      </style></head><body>
+        <header><button>Book a demo</button><button aria-label="Close menu">x</button></header>
+        <main><a class="inline" href="#demo">Book a demo</a><footer style="position:absolute;top:3100px;background:rgb(0,180,0);width:220px;height:90px">Footer</footer></main>
+        <script>
+          let mounted = false;
+          const mount = () => {
+            if (mounted || (${pathname.includes("late") ? "true" : "false"} && scrollY < 1500)) return;
+            mounted = true;
+            document.body.style.overflow = 'hidden';
+            const shade = document.createElement('div');
+            shade.style.cssText = 'position:fixed;inset:0;z-index:109;background:rgb(230,0,0)';
+            const shell = document.createElement('div');
+            shell.style.cssText = 'position:fixed;inset:0;z-index:110;display:grid;place-items:center';
+            shell.innerHTML = '<div style="position:relative;width:600px;height:400px;background:rgb(230,0,0)"><button aria-label="Close" hidden>x</button><button data-visible-close aria-label="Close" style="position:absolute;top:16px;right:16px">x</button><p>A short demo says it all.</p><button>Book a Demo</button></div>';
+            shell.querySelector('[data-visible-close]').onclick = () => { shell.remove(); shade.remove(); document.body.style.overflow = ''; };
+            document.body.append(shade, shell);
+          };
+          addEventListener('scroll', mount); mount();
+        </script></body></html>`);
+      return;
+    }
+    if (pathname.startsWith("/shadow-chat-launcher")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><title>Shadow chat launcher fixture</title>
+        <style>body { margin: 0; background: white; } main { height: 3300px; }</style>
+        </head><body><main><h1>Chat product demo</h1><div id="floating-chat"></div></main>
+        <div id="ordinary-tools"></div>
+        <script>
+          document.getElementById('ordinary-tools').attachShadow({mode:'open'}).innerHTML =
+            '<button style="position:fixed;bottom:20px;left:20px;width:48px;height:48px;background:rgb(0,0,230)">Tool</button>';
+          const root = document.getElementById('floating-chat').attachShadow({mode:'open'});
+          root.innerHTML = '<button style="display:block;width:220px;height:90px;background:rgb(0,180,0)">Inline chat demo</button><div style="position:relative;height:0"></div>';
+          let mounted = false;
+          const mount = () => {
+            if (mounted || (${pathname.includes("late") ? "true" : "false"} && scrollY < 1500)) return;
+            mounted = true;
+            root.lastChild.innerHTML = '<button class="launcher" style="position:fixed;bottom:10px;right:10px;width:48px;height:48px;background:rgb(230,0,0);visibility:visible"><svg width="24" height="24"></svg></button>';
+          };
+          addEventListener('scroll', mount); mount();
+        </script></body></html>`);
       return;
     }
     if (pathname.startsWith("/anonymous-booking-widget")) {
@@ -4841,6 +4898,68 @@ describe("scroll scene unfolding", () => {
 });
 
 describe("overlay cleanup", () => {
+  it("preserves fullscreen app shells when their modal close controls are hidden", async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+      await page.setContent(`<div id="app-shell" style="position:fixed;inset:0;z-index:110">
+        <h1>Normal page content</h1><button>Book a demo</button>
+        <div hidden><button aria-label="Close">x</button></div>
+      </div>`);
+      const result = await cleanupCaptureOverlays(page);
+      expect(result.handled).toBe(0);
+      expect(await page.locator('#app-shell').count()).toBe(1);
+    } finally { await browser.close(); }
+  });
+
+  it.each(["initial", "late"])("closes %s blocking booking modals and preserves the page, header and footer", async (timing) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-booking-modal-"));
+    const logs: string[] = [];
+    const result = await captureTask({
+      url: `${baseUrl}/blocking-booking-modal-${timing}`, waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }], image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 }, tags: [], eagle: {},
+    }, { outputDir, sectionScope: "classic", classicMaxSections: 10, log: (_level, message) => logs.push(message) });
+    const asset = result.assets.find((item) => item.kind === "fullPage")!;
+    expect(asset).toBeTruthy();
+    const { data, info } = await sharp(asset.filePath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    let red = 0, green = 0, blue = 0;
+    for (let i = 0; i < data.length; i += info.channels) {
+      if (data[i] > 180 && data[i + 1] < 70 && data[i + 2] < 70) red++;
+      if (data[i] < 70 && data[i + 1] > 120 && data[i + 2] < 70) green++;
+      if (data[i] < 70 && data[i + 1] < 70 && data[i + 2] > 180) blue++;
+    }
+    expect(red).toBe(0);
+    expect(green).toBeGreaterThan(30000);
+    expect(blue).toBeGreaterThan(100000);
+    expect(info.height).toBeGreaterThanOrEqual(3300);
+    expect(logs.some((message) => message.includes("action=click_close type=promo"))).toBe(true);
+  }, 30_000);
+
+  it.each(["initial", "late"])("removes %s shadow chat launchers without deleting inline demos or unrelated tools", async (timing) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-shadow-chat-"));
+    const logs: string[] = [];
+    const result = await captureTask({
+      url: `${baseUrl}/shadow-chat-launcher-${timing}`, waitUntil: "domcontentloaded",
+      captures: [{ mode: "fullPage" }], image: { format: "jpg", quality: 92, dpr: 1 },
+      viewport: { width: 1920, height: 1080 }, tags: [], eagle: {},
+    }, { outputDir, sectionScope: "classic", classicMaxSections: 10, log: (_level, message) => logs.push(message) });
+    const asset = result.assets.find((item) => item.kind === "fullPage")!;
+    expect(asset).toBeTruthy();
+    const { data, info } = await sharp(asset.filePath).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    let red = 0, green = 0, blue = 0;
+    for (let i = 0; i < data.length; i += info.channels) {
+      if (data[i] > 180 && data[i + 1] < 70 && data[i + 2] < 70) red++;
+      if (data[i] < 70 && data[i + 1] > 120 && data[i + 2] < 70) green++;
+      if (data[i] < 70 && data[i + 1] < 70 && data[i + 2] > 180) blue++;
+    }
+    expect(red).toBe(0);
+    expect(green).toBeGreaterThan(15000);
+    expect(blue).toBeGreaterThan(1500);
+    expect(info.height).toBeGreaterThanOrEqual(3300);
+    expect(logs.some((message) => message.includes("action=hide_chat_launcher"))).toBe(true);
+  }, 30_000);
+
   it("removes anonymous zero-size sticky booking widgets without deleting inline demo CTAs", async () => {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-booking-"));
     const logs: string[] = [];
@@ -5105,6 +5224,39 @@ describe("overlay cleanup", () => {
 });
 
 describe.runIf(process.env.RUN_E2E_CAPTURE === "1")("capture e2e", () => {
+  it("reads visible auth page evidence without using alternate links or hidden panels", async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.setContent(`<nav><button>Sign up</button></nav><main><h1>Welcome back</h1><form>
+        <input type="email" value="private@example.com"><input type="password" value="private-password">
+        <button type="submit">Sign in</button><a href="/signup">Create an account</a>
+        <section hidden><h2>Create your account</h2><button>Sign up</button></section></form></main>`);
+      expect(await readAuthPageIntent(page, "https://example.com/auth")).toBe("login");
+      await page.setContent(`<main><h1>Create your account</h1><button>Sign in with Google</button><a href="/login">Sign in</a></main>`);
+      expect(await readAuthPageIntent(page, "https://example.com/auth")).toBe("signup");
+      await page.setContent(`<main><h1>One place to work</h1><p>Sign in or create your account</p><button>Continue</button></main>`);
+      expect(await readAuthPageIntent(page, "https://example.com/auth")).toBe("combined");
+      expect(await readAuthPageIntent(page, "https://example.com/docs/auth")).toBeUndefined();
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("persists auth page intent alongside a full-page capture", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-auth-"));
+    try {
+      const task: ParsedTask = { url: `${baseUrl}/auth`, waitUntil: "networkidle", captures: [{ mode: "fullPage" }],
+        image: { format: "jpg", quality: 92, dpr: 1 }, viewport: { width: 1920, height: 1080 }, tags: [], eagle: {} };
+      const result = await captureTask(task, { outputDir, sectionScope: "classic", classicMaxSections: 10 });
+      expect(result.assets[0].authPageIntent).toBe("combined");
+      expect(result.assets[0].pageTitle).toBe("Example");
+      expect(Object.keys(result.assets[0])).not.toContain("text");
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   async function runCase(pathname: string) {
     const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "autosnap-e2e-"));
     const task: ParsedTask = {
